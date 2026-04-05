@@ -18,11 +18,11 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Check package.json
-        run: cat package.json
-
       - name: Install dependencies
         run: npm install
+
+      - name: Install react-scripts
+        run: npm install react-scripts --save
 
       - name: Build
         run: npm run build
