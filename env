@@ -1,0 +1,8 @@
+# .env.example — copy to .env and fill in your values
+
+# Google OAuth Client ID
+# Get this from https://console.cloud.google.com/
+# → APIs & Services → Credentials → Create OAuth 2.0 Client ID
+# → Application type: Web application
+# → Authorised JavaScript origins: https://YOUR-USERNAME.github.io
+REACT_APP_GOOGLE_CLIENT_ID=771489989549-di3h0cglt71ed7hmgtknksm3ks0afdtj.apps.googleusercontent.com
