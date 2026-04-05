@@ -1,0 +1,11 @@
+{
+  "short_name": "CloudOps Rota",
+  "name": "CloudOps Rota — Cloud Run Operations",
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#0a0f1e",
+  "background_color": "#0a0f1e",
+  "icons": [
+    { "src": "favicon.ico", "sizes": "64x64 32x32 24x24 16x16", "type": "image/x-icon" }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "files": {
+    "main.css": "/cloudops-rota/static/css/main.bf6411ba.css",
+    "main.js": "/cloudops-rota/static/js/main.fcb94574.js",
+    "index.html": "/cloudops-rota/index.html",
+    "main.bf6411ba.css.map": "/cloudops-rota/static/css/main.bf6411ba.css.map",
+    "main.fcb94574.js.map": "/cloudops-rota/static/js/main.fcb94574.js.map"
+  },
+  "entrypoints": [
+    "static/css/main.bf6411ba.css",
+    "static/js/main.fcb94574.js"
+  ]
+}
