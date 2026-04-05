@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
@@ -13,7 +16,10 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
+
+      - name: Check package.json
+        run: cat package.json
 
       - name: Install dependencies
         run: npm install
@@ -22,6 +28,7 @@ jobs:
         run: npm run build
         env:
           REACT_APP_GOOGLE_CLIENT_ID: 771489989549-di3h0cglt71ed7hmgtknksm3ks0afdtj.apps.googleusercontent.com
+          CI: false
 
       - name: Deploy
         uses: peaceiris/actions-gh-pages@v3
