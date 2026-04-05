@@ -2,7 +2,7 @@
   "name": "cloudops-rota",
   "version": "1.0.0",
   "private": true,
-  "homepage": "https://github.com/dsmeetul-cpu/cloudops-rota.git",
+  "homepage": "https://dsmeetul-cpu.github.io/cloudops-rota",
   "dependencies": {
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
