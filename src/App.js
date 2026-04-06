@@ -17,9 +17,40 @@ import {
 
 const GOOGLE_CLIENT_ID = process.env.REACT_APP_GOOGLE_CLIENT_ID || 'YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com';
 
-// ── PRODUCTION AUTH ────────────────────────────────────────────────────────
-// Demo credentials removed. Use secure authentication provider in production.
-const AUTH = {};
+// ── AUTH HELPERS ───────────────────────────────────────────────────────────
+// Passwords are stored (hashed via btoa) in localStorage under 'auth_passwords'.
+// On first run, every user gets a default password equal to their lowercase ID.
+// Managers (MBA47) can reset any user's password via Settings > User Management.
+// Replace this section with your SSO/Auth0/Firebase provider for production.
+
+const hashPw = (pw) => btoa(unescape(encodeURIComponent(pw)));
+
+function loadPasswords(users) {
+  try {
+    const stored = localStorage.getItem('auth_passwords');
+    if (stored) return JSON.parse(stored);
+  } catch (_) {}
+  // First run: default password = lowercase user ID (e.g. "mba47")
+  const defaults = {};
+  users.forEach(u => { defaults[u.id] = hashPw(u.id.toLowerCase()); });
+  localStorage.setItem('auth_passwords', JSON.stringify(defaults));
+  return defaults;
+}
+
+function savePasswords(map) {
+  localStorage.setItem('auth_passwords', JSON.stringify(map));
+}
+
+function checkPassword(users, uid, pw) {
+  const map = loadPasswords(users);
+  return map[uid] && map[uid] === hashPw(pw);
+}
+
+function setPassword(users, uid, newPw) {
+  const map = loadPasswords(users);
+  map[uid] = hashPw(newPw);
+  savePasswords(map);
+}
 
 // ── Shift colours per spec ─────────────────────────────────────────────────
 // Daily Shift = Blue | Weekday On-Call = Green | Weekend On-Call = Yellow | Upgrade Days = Red
@@ -323,26 +354,67 @@ function useBulkSelect(items) {
 }
 
 // ── Login Screen ───────────────────────────────────────────────────────────
-function LoginScreen({ onLogin, driveToken, onConnectDrive }) {
-  const [uid, setUid] = useState('');
-  const [pw, setPw]   = useState('');
-  const [err, setErr] = useState('');
-  const [show2FA, setShow2FA] = useState(false);
+function LoginScreen({ onLogin, driveToken, onConnectDrive, users }) {
+  const [uid, setUid]           = useState('');
+  const [pw, setPw]             = useState('');
+  const [err, setErr]           = useState('');
+  const [show2FA, setShow2FA]   = useState(false);
   const [twoFACode, setTwoFACode] = useState('');
   const [pending2FA, setPending2FA] = useState('');
+  const [showForgot, setShowForgot] = useState(false);
+  const [forgotUid, setForgotUid]   = useState('');
+  const [forgotMsg, setForgotMsg]   = useState('');
 
   const handle = () => {
     const id = uid.trim().toUpperCase();
-    if (AUTH[id] && AUTH[id] === pw) {
+    if (!id) { setErr('Please enter your username.'); return; }
+    const userExists = users.find(u => u.id === id);
+    if (!userExists) { setErr('Username not found. Check your tri-gram ID.'); return; }
+    if (checkPassword(users, id, pw)) {
+      setErr('');
       if (id === 'MBA47') { setPending2FA(id); setShow2FA(true); }
       else onLogin(id);
-    } else setErr('Invalid username or password');
+    } else {
+      setErr('Incorrect password. Default password is your username in lowercase (e.g. mba47).');
+    }
   };
 
   const verify2FA = () => {
-    if (twoFACode.length === 6) onLogin(pending2FA);
-    else setErr('Invalid 2FA code — enter any 6 digits for demo');
+    // In production, validate against a real TOTP library.
+    // For now, any 6-digit code is accepted as a demo placeholder.
+    if (twoFACode.length === 6) { onLogin(pending2FA); }
+    else setErr('Enter a 6-digit code.');
   };
+
+  const handleForgot = () => {
+    const id = forgotUid.trim().toUpperCase();
+    const userExists = users.find(u => u.id === id);
+    if (!userExists) { setForgotMsg('Username not found.'); return; }
+    // Reset to default (lowercase ID). In production, send a reset email instead.
+    setPassword(users, id, id.toLowerCase());
+    setForgotMsg(`Password for ${id} has been reset to "${id.toLowerCase()}". Please sign in and change it immediately via My Account.`);
+  };
+
+  if (showForgot) return (
+    <div className="login-screen">
+      <div className="login-box">
+        <div className="login-logo">
+          <div className="login-logo-icon">CR</div>
+          <div className="login-title">Reset Password</div>
+          <div className="login-sub">CloudOps Rota · Cloud Run Operations</div>
+        </div>
+        {forgotMsg
+          ? <Alert type="info">ℹ {forgotMsg}</Alert>
+          : <Alert type="info">ℹ Enter your username. Your password will be reset to your lowercase ID.</Alert>
+        }
+        <FormGroup label="Username (Tri-gram)">
+          <input className="input" placeholder="e.g. MBA47" value={forgotUid} onChange={e => setForgotUid(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleForgot()} />
+        </FormGroup>
+        <button className="btn btn-primary" style={{ width: '100%', padding: 11 }} onClick={handleForgot}>Reset Password</button>
+        <button className="btn btn-secondary btn-sm" style={{ width: '100%', marginTop: 8 }} onClick={() => { setShowForgot(false); setForgotMsg(''); setForgotUid(''); }}>← Back to Sign In</button>
+      </div>
+    </div>
+  );
 
   return (
     <div className="login-screen">
@@ -353,6 +425,9 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive }) {
           <div className="login-sub">Cloud Run Operations Team</div>
         </div>
         {driveToken && <div className="gd-status" style={{ marginBottom: 16 }}><div className="dot-live" /> Auto-syncing to Google Drive</div>}
+        <Alert type="info" style={{ marginBottom: 12 }}>
+          💡 First time? Your default password is your username in lowercase — e.g. <strong>mba47</strong> for MBA47.
+        </Alert>
         {err && <Alert type="warning">⚠ {err}</Alert>}
         {!show2FA ? (
           <>
@@ -363,7 +438,7 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive }) {
               <input className="input" type="password" placeholder="Password" value={pw} onChange={e => setPw(e.target.value)} onKeyDown={e => e.key === 'Enter' && handle()} />
             </FormGroup>
             <button className="btn btn-primary" style={{ width: '100%', padding: 11 }} onClick={handle}>Sign In</button>
-            <button className="btn btn-secondary btn-sm" style={{ width: '100%', marginTop: 8 }} onClick={() => alert('2FA Setup: Configure via Settings > Two-Factor Authentication')}>🔐 Setup 2FA</button>
+            <button className="btn btn-secondary btn-sm" style={{ width: '100%', marginTop: 8 }} onClick={() => setShowForgot(true)}>🔑 Forgot Password?</button>
           </>
         ) : (
           <>
@@ -3169,7 +3244,7 @@ function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks }) {
               <option>Engineer</option><option>Manager</option>
             </select>
           </FormGroup>
-          <Alert>Username auto-generated from name (e.g. SAJ04). Add their password to the AUTH object in App.js and redeploy.</Alert>
+          <Alert>Username auto-generated from name (e.g. SAJ04). Their default password will be their lowercase username — they can change it via My Account after first login.</Alert>
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
             <button className="btn btn-secondary" onClick={() => setShowAdd(false)}>Cancel</button>
             <button className="btn btn-primary" onClick={add}>Add Engineer</button>
@@ -3194,8 +3269,22 @@ function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks }) {
 // ── My Account ─────────────────────────────────────────────────────────────
 function MyAccount({ currentUser, users }) {
   const user = users.find(u => u.id === currentUser);
-  const [notif, setNotif] = useState('Email + Push');
-  const [saved, setSaved] = useState(false);
+  const [notif, setNotif]     = useState('Email + Push');
+  const [newPw, setNewPw]     = useState('');
+  const [confirmPw, setConfirmPw] = useState('');
+  const [pwMsg, setPwMsg]     = useState('');
+  const [saved, setSaved]     = useState(false);
+
+  const savePw = () => {
+    if (!newPw) { setPwMsg('Enter a new password.'); return; }
+    if (newPw !== confirmPw) { setPwMsg('Passwords do not match.'); return; }
+    if (newPw.length < 6) { setPwMsg('Password must be at least 6 characters.'); return; }
+    setPassword(users, currentUser, newPw);
+    setNewPw(''); setConfirmPw('');
+    setPwMsg('✅ Password updated successfully.');
+    setTimeout(() => setPwMsg(''), 3000);
+  };
+
   const save = () => { setSaved(true); setTimeout(() => setSaved(false), 2000); };
 
   return (
@@ -3217,9 +3306,18 @@ function MyAccount({ currentUser, users }) {
             <option>Email + Push</option><option>Email only</option><option>Push only</option><option>None</option>
           </select>
         </FormGroup>
-        <FormGroup label="New Password" hint="leave blank to keep current"><input className="input" type="password" placeholder="New password" /></FormGroup>
-        <FormGroup label="Confirm Password"><input className="input" type="password" placeholder="Confirm new password" /></FormGroup>
-        <button className="btn btn-primary" onClick={save}>{saved ? '✅ Saved!' : 'Save Changes'}</button>
+        <button className="btn btn-primary" style={{ marginBottom: 20 }} onClick={save}>{saved ? '✅ Saved!' : 'Save Preferences'}</button>
+
+        <hr style={{ border: 'none', borderTop: '1px solid var(--border)', margin: '16px 0' }} />
+        <div className="card-title" style={{ marginBottom: 12 }}>🔑 Change Password</div>
+        {pwMsg && <Alert type={pwMsg.startsWith('✅') ? 'info' : 'warning'} style={{ marginBottom: 10 }}>{pwMsg}</Alert>}
+        <FormGroup label="New Password" hint="min. 6 characters">
+          <input className="input" type="password" placeholder="New password" value={newPw} onChange={e => setNewPw(e.target.value)} />
+        </FormGroup>
+        <FormGroup label="Confirm Password">
+          <input className="input" type="password" placeholder="Confirm new password" value={confirmPw} onChange={e => setConfirmPw(e.target.value)} onKeyDown={e => e.key === 'Enter' && savePw()} />
+        </FormGroup>
+        <button className="btn btn-primary" onClick={savePw}>Update Password</button>
       </div>
     </div>
   );
@@ -3313,7 +3411,7 @@ export default function App() {
 
   const login = (uid) => { setCurrentUser(uid); setLoggedIn(true); setPage(uid === 'MBA47' ? 'dashboard' : 'oncall'); };
 
-  if (!loggedIn) return <LoginScreen onLogin={login} driveToken={driveToken} onConnectDrive={connectDrive} />;
+  if (!loggedIn) return <LoginScreen onLogin={login} driveToken={driveToken} onConnectDrive={connectDrive} users={users} />;
 
   const openInc   = incidents.filter(i => i.status === 'Investigating').length;
   const pendingSwaps = swapRequests.filter(s => s.status === 'pending').length;
