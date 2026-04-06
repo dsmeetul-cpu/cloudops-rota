@@ -1,0 +1,44 @@
+name: Convert DOCX using Mammoth
+
+on:
+  push:
+    paths:
+      - "*.docx"
+
+jobs:
+  convert:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Install Mammoth
+        run: npm install mammoth
+
+      - name: Convert DOCX to HTML
+        run: |
+          node <<EOF
+          const mammoth = require("mammoth");
+          const fs = require("fs");
+
+          async function run() {
+            const result = await mammoth.convertToHtml({ path: "example.docx" });
+            fs.writeFileSync("output.html", result.value);
+          }
+
+          run();
+          EOF
+
+      - name: Commit output
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add output.html
+          git commit -m "Auto convert DOCX to HTML"
+          git push
