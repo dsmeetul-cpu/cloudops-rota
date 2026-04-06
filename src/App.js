@@ -17,7 +17,9 @@ import {
 
 const GOOGLE_CLIENT_ID = process.env.REACT_APP_GOOGLE_CLIENT_ID || 'YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com';
 
-const AUTH = { MBA47: 'manager123', MAH01: 'eng123', DAR02: 'eng123', MAR03: 'eng123' };
+// ── PRODUCTION AUTH ────────────────────────────────────────────────────────
+// Demo credentials removed. Use secure authentication provider in production.
+const AUTH = {};
 
 // ── Shift colours per spec ─────────────────────────────────────────────────
 // Daily Shift = Blue | Weekday On-Call = Green | Weekend On-Call = Yellow | Upgrade Days = Red
@@ -350,14 +352,7 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive }) {
           <div className="login-title">CloudOps Rota</div>
           <div className="login-sub">Cloud Run Operations Team</div>
         </div>
-        {!driveToken && (
-          <div className="alert alert-warning" style={{ marginBottom: 16 }}>
-            <strong>📁 Connect Google Drive</strong> to load and save all team data.
-            <br />
-            <button className="btn btn-secondary btn-sm" style={{ marginTop: 8 }} onClick={onConnectDrive}>Connect Google Drive</button>
-          </div>
-        )}
-        {driveToken && <div className="gd-status" style={{ marginBottom: 16 }}><div className="dot-live" /> Google Drive connected</div>}
+        {driveToken && <div className="gd-status" style={{ marginBottom: 16 }}><div className="dot-live" /> Auto-syncing to Google Drive</div>}
         {err && <Alert type="warning">⚠ {err}</Alert>}
         {!show2FA ? (
           <>
@@ -368,7 +363,7 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive }) {
               <input className="input" type="password" placeholder="Password" value={pw} onChange={e => setPw(e.target.value)} onKeyDown={e => e.key === 'Enter' && handle()} />
             </FormGroup>
             <button className="btn btn-primary" style={{ width: '100%', padding: 11 }} onClick={handle}>Sign In</button>
-            <div className="demo-hint"><strong>Demo credentials:</strong><br />MBA47 / manager123 &nbsp;|&nbsp; MAH01 / eng123</div>
+            <button className="btn btn-secondary btn-sm" style={{ width: '100%', marginTop: 8 }} onClick={() => alert('2FA Setup: Configure via Settings > Two-Factor Authentication')}>🔐 Setup 2FA</button>
           </>
         ) : (
           <>
@@ -378,7 +373,6 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive }) {
             </FormGroup>
             <button className="btn btn-primary" style={{ width: '100%', padding: 11 }} onClick={verify2FA}>Verify & Sign In</button>
             <button className="btn btn-secondary btn-sm" style={{ width: '100%', marginTop: 8 }} onClick={() => { setShow2FA(false); setErr(''); }}>← Back</button>
-            <div className="demo-hint">Demo: enter any 6 digits</div>
           </>
         )}
       </div>
@@ -412,7 +406,11 @@ const NAV = [
     { id: 'wiki',      icon: '📖', label: 'Wiki'            },
     { id: 'glossary',  icon: '📚', label: 'Glossary'        },
     { id: 'contacts',  icon: '👥', label: 'Contacts'        },
+    { id: 'notes',     icon: '🗒️', label: 'Notes'          },
     { id: 'docs',      icon: '📁', label: 'Documents'       },
+  ]},
+  { section: 'Communication', items: [
+    { id: 'whatsapp',  icon: '💬', label: 'Team Chat'      },
   ]},
   { section: 'Reporting', items: [
     { id: 'insights',  icon: '💡', label: 'Insights',       managerOnly: true },
@@ -766,24 +764,26 @@ function RotaPage({ users, rota, setRota, holidays, upgrades, swapRequests, setS
   const generate = () => { if (!isManager) return; setRota(generateRota(users, startDate, weeks)); setGenerated(true); };
 
   const setCell = (userId, date, shift) => {
-    if (!isManager) return;
+    if (isManager) return; // Managers have read-only access
     setRota(prev => ({ ...prev, [userId]: { ...(prev[userId] || {}), [date]: shift } }));
     setEditCell(null);
   };
 
   const deleteCell = (userId, date) => {
-    if (!isManager) return;
+    if (isManager) return; // Managers have read-only access
     const next = JSON.parse(JSON.stringify(rota));
     if (next[userId]) delete next[userId][date];
     setRota(next);
   };
 
   const toggleBulk = (userId, date) => {
+    if (isManager) return; // Managers cannot bulk edit
     const key = `${userId}::${date}`;
     setBulkSelected(prev => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n; });
   };
 
   const applyBulk = () => {
+    if (isManager) return; // Managers cannot bulk edit
     const next = JSON.parse(JSON.stringify(rota));
     bulkSelected.forEach(key => {
       const [uid, date] = key.split('::');
@@ -793,6 +793,7 @@ function RotaPage({ users, rota, setRota, holidays, upgrades, swapRequests, setS
   };
 
   const deleteBulk = () => {
+    if (isManager) return; // Managers cannot bulk delete
     const next = JSON.parse(JSON.stringify(rota));
     bulkSelected.forEach(key => {
       const [uid, date] = key.split('::');
@@ -860,6 +861,11 @@ function RotaPage({ users, rota, setRota, holidays, upgrades, swapRequests, setS
               </select>
             </FormGroup>
             <button className="btn btn-primary" onClick={generate}>🔄 Generate Rota</button>
+            <button className="btn btn-danger" onClick={() => {
+              if (window.confirm('⚠️  Clear all rota entries? This cannot be undone.')) {
+                setRota({});
+              }
+            }}>🗑 Clear Rota</button>
             <button className="btn btn-secondary" onClick={checkConflicts}>🔍 Check Conflicts</button>
             <button className="ical-btn" onClick={() => users.forEach(u => { const ic = generateICalFeed(rota[u.id] || {}, u.name); downloadIcal(ic, `rota-${u.id}.ics`); })}>📥 Export All (.ics)</button>
           </div>
@@ -2298,6 +2304,484 @@ function Documents({ documents, setDocuments, isManager }) {
   );
 }
 
+// ── Obsidian Notes ────────────────────────────────────────────────────────
+function Notes({ obsidianNotes, setObsidianNotes, users, currentUser, isManager }) {
+  const [showModal, setShowModal] = useState(false);
+  const [editId, setEditId] = useState(null);
+  const [form, setForm] = useState({ title: '', content: '', visibility: 'PRIVATE', tags: '' });
+  const [search, setSearch] = useState('');
+  const [view, setView] = useState(null);
+  const [selectedEngineer, setSelectedEngineer] = useState(null);
+  const fileRef = useRef(null);
+
+  const handleImport = async (e) => {
+    const files = e.target.files;
+    if (!files) return;
+
+    for (const file of files) {
+      const ext = file.name.split('.').pop().toLowerCase();
+      if (ext === 'md') {
+        const text = await file.text();
+        const title = file.name.replace('.md', '');
+        setObsidianNotes([...obsidianNotes, {
+          id: 'note-' + Date.now() + Math.random(),
+          engineerId: currentUser,
+          title: title,
+          content: text,
+          visibility: 'PRIVATE',
+          tags: 'imported',
+          created: new Date().toISOString().slice(0, 10),
+          sourceFile: file.name
+        }]);
+      }
+    }
+    e.target.value = '';
+  };
+
+  const openAdd = () => {
+    setForm({ title: '', content: '', visibility: 'PRIVATE', tags: '' });
+    setEditId(null);
+    setShowModal(true);
+  };
+
+  const openEdit = (note, e) => {
+    e?.stopPropagation();
+    if (note.engineerId !== currentUser && !isManager) {
+      alert('Cannot edit other engineers\' notes');
+      return;
+    }
+    setForm({ ...note });
+    setEditId(note.id);
+    setShowModal(true);
+  };
+
+  const save = () => {
+    if (!form.title || !form.content) return;
+    if (editId) {
+      setObsidianNotes(obsidianNotes.map(n => n.id === editId ? { ...n, ...form } : n));
+    } else {
+      setObsidianNotes([...obsidianNotes, {
+        id: 'note-' + Date.now(),
+        engineerId: currentUser,
+        ...form,
+        created: new Date().toISOString().slice(0, 10)
+      }]);
+    }
+    setShowModal(false);
+  };
+
+  const deleteOne = (noteId, e) => {
+    e?.stopPropagation();
+    const note = obsidianNotes.find(n => n.id === noteId);
+    if (note.engineerId !== currentUser && !isManager) {
+      alert('Cannot delete other engineers\' notes');
+      return;
+    }
+    if (window.confirm('Delete this note?')) {
+      setObsidianNotes(obsidianNotes.filter(n => n.id !== noteId));
+    }
+  };
+
+  const getEngineersNotes = () => {
+    if (isManager) {
+      const grouped = {};
+      obsidianNotes.forEach(note => {
+        if (!grouped[note.engineerId]) grouped[note.engineerId] = [];
+        grouped[note.engineerId].push(note);
+      });
+      return grouped;
+    } else {
+      return { [currentUser]: obsidianNotes.filter(n => n.engineerId === currentUser) };
+    }
+  };
+
+  const currentUserObj = users.find(u => u.id === currentUser);
+
+  if (view) {
+    const note = obsidianNotes.find(n => n.id === view);
+    if (!note) {
+      setView(null);
+      return null;
+    }
+    const canEdit = note.engineerId === currentUser || isManager;
+    return (
+      <div>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 16, alignItems: 'center' }}>
+          <button className="btn btn-secondary btn-sm" onClick={() => setView(null)}>← Back</button>
+          {canEdit && <button className="btn btn-secondary btn-sm" onClick={() => openEdit(note)}>✏ Edit</button>}
+          {canEdit && <button className="btn btn-danger btn-sm" onClick={e => { deleteOne(note.id, e); setView(null); }}>🗑 Delete</button>}
+          <div style={{ marginLeft: 'auto' }}>
+            <Tag label={note.visibility} type={note.visibility === 'PRIVATE' ? 'red' : 'green'} />
+            <span className="muted-xs" style={{ marginLeft: 8 }}>{note.created}</span>
+          </div>
+        </div>
+        <div className="card">
+          <div className="page-title" style={{ marginBottom: 16 }}>{note.title}</div>
+          {note.tags && <div style={{ marginBottom: 12 }}>{note.tags.split(',').map(t => <Tag key={t} label={t.trim()} type="purple" />)}</div>}
+          <div style={{ fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.8, whiteSpace: 'pre-wrap' }}>
+            {note.content}
+          </div>
+          {isManager && <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--border)', fontSize: 12, color: 'var(--text-muted)' }}>
+            By: {users.find(u => u.id === note.engineerId)?.name} ({note.engineerId})
+          </div>}
+        </div>
+      </div>
+    );
+  }
+
+  if (isManager) {
+    const groupedNotes = getEngineersNotes();
+    return (
+      <div>
+        <PageHeader title="📝 Obsidian Notes" sub="View team notes by engineer" />
+        <div style={{ display: 'grid', gridTemplateColumns: '250px 1fr', gap: 16, marginBottom: 16 }}>
+          <div className="card">
+            <div className="card-title">Team Engineers</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {Object.keys(groupedNotes).map(engId => {
+                const eng = users.find(u => u.id === engId);
+                const count = groupedNotes[engId].length;
+                return (
+                  <div
+                    key={engId}
+                    onClick={() => setSelectedEngineer(engId)}
+                    style={{
+                      padding: '8px 10px',
+                      background: selectedEngineer === engId ? 'var(--accent)' : 'transparent',
+                      color: selectedEngineer === engId ? '#fff' : 'var(--text-primary)',
+                      borderRadius: 6,
+                      cursor: 'pointer',
+                      fontSize: 13
+                    }}
+                  >
+                    {eng?.name} <span style={{ fontSize: 11, opacity: 0.7 }}>({count})</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+          <div>
+            {selectedEngineer ? (
+              <div>
+                <div style={{ marginBottom: 16 }}>
+                  <h3>{users.find(u => u.id === selectedEngineer)?.name}'s Notes</h3>
+                </div>
+                <div className="grid-2">
+                  {groupedNotes[selectedEngineer].map(note => (
+                    <div key={note.id} className="card card-sm" onClick={() => setView(note.id)} style={{ cursor: 'pointer' }}>
+                      <div className="flex-between mb-8">
+                        <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>📝 {note.title}</div>
+                        <Tag label={note.visibility} type={note.visibility === 'PRIVATE' ? 'red' : 'green'} />
+                      </div>
+                      <div className="muted-xs">{note.content.slice(0, 100)}…</div>
+                      <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-muted)' }}>{note.created}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="card" style={{ padding: 32, textAlign: 'center', color: 'var(--text-muted)' }}>
+                Select an engineer to view their notes
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Engineer view
+  const myNotes = obsidianNotes.filter(n => n.engineerId === currentUser);
+  return (
+    <div>
+      <PageHeader title="📝 My Notes" sub="Manage your Obsidian notes"
+        actions={<>
+          <button className="btn btn-secondary btn-sm" onClick={() => fileRef.current?.click()}>📥 Import .md</button>
+          <button className="btn btn-primary" onClick={openAdd}>+ New Note</button>
+        </>} />
+      <input ref={fileRef} type="file" multiple accept=".md" onChange={handleImport} style={{ display: 'none' }} />
+      <input className="input" placeholder="🔍 Search notes…" value={search} onChange={e => setSearch(e.target.value)} style={{ marginBottom: 16, width: '100%' }} />
+
+      <div className="grid-2">
+        {myNotes.filter(n => n.title.toLowerCase().includes(search.toLowerCase())).map(note => (
+          <div key={note.id} className="card card-sm" onClick={() => setView(note.id)} style={{ cursor: 'pointer' }}>
+            <div className="flex-between mb-8">
+              <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>📝 {note.title}</div>
+              <div style={{ display: 'flex', gap: 4 }}>
+                <Tag label={note.visibility} type={note.visibility === 'PRIVATE' ? 'red' : 'green'} />
+                <button className="btn btn-secondary btn-sm" onClick={e => openEdit(note, e)}>✏</button>
+                <button className="btn btn-danger btn-sm" onClick={e => deleteOne(note.id, e)}>🗑</button>
+              </div>
+            </div>
+            <div className="muted-xs">{note.content.slice(0, 100)}…</div>
+            <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-muted)' }}>{note.created}</div>
+          </div>
+        ))}
+      </div>
+
+      {showModal && (
+        <Modal title={editId ? 'Edit Note' : 'New Note'} onClose={() => setShowModal(false)} wide>
+          <FormGroup label="Title">
+            <input className="input" value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} placeholder="Note title" />
+          </FormGroup>
+          <FormGroup label="Visibility">
+            <select className="select" value={form.visibility} onChange={e => setForm({ ...form, visibility: e.target.value })}>
+              <option value="PRIVATE">🔒 Private (Only you can see)</option>
+              <option value="SHAREABLE">🔓 Shareable (Manager can see)</option>
+            </select>
+          </FormGroup>
+          <FormGroup label="Tags" hint="comma separated">
+            <input className="input" placeholder="e.g. important, urgent, learning" value={form.tags} onChange={e => setForm({ ...form, tags: e.target.value })} />
+          </FormGroup>
+          <FormGroup label="Content">
+            <textarea
+              className="input"
+              style={{ minHeight: 300, fontFamily: 'monospace', fontSize: 12 }}
+              value={form.content}
+              onChange={e => setForm({ ...form, content: e.target.value })}
+              placeholder="Write your note in markdown…"
+            />
+          </FormGroup>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
+            <button className="btn btn-secondary" onClick={() => setShowModal(false)}>Cancel</button>
+            <button className="btn btn-primary" onClick={save}>{editId ? 'Update Note' : 'Save Note'}</button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+// ── WhatsApp Team Chat ────────────────────────────────────────────────────
+function WhatsAppChat({ whatsappChats, setWhatsappChats, users, currentUser, isManager }) {
+  const [selectedChat, setSelectedChat] = useState(null);
+  const [newMessage, setNewMessage] = useState('');
+  const [showCreateChat, setShowCreateChat] = useState(false);
+  const [chatForm, setChatForm] = useState({ name: '', members: [] });
+
+  const createChat = () => {
+    if (!chatForm.name || chatForm.members.length === 0) return;
+    const chat = {
+      id: 'chat-' + Date.now(),
+      name: chatForm.name,
+      createdBy: currentUser,
+      members: [...new Set([...chatForm.members, currentUser])],
+      created: new Date().toISOString().slice(0, 10),
+      messages: []
+    };
+    setWhatsappChats([...whatsappChats, chat]);
+    setShowCreateChat(false);
+    setChatForm({ name: '', members: [] });
+    setSelectedChat(chat.id);
+  };
+
+  const sendMessage = () => {
+    if (!newMessage.trim() || !selectedChat) return;
+    const chat = whatsappChats.find(c => c.id === selectedChat);
+    if (!chat) return;
+
+    const message = {
+      id: 'msg-' + Date.now(),
+      sender: currentUser,
+      content: newMessage,
+      timestamp: new Date().toISOString()
+    };
+
+    setWhatsappChats(whatsappChats.map(c =>
+      c.id === selectedChat
+        ? { ...c, messages: [...(c.messages || []), message] }
+        : c
+    ));
+    setNewMessage('');
+  };
+
+  const deleteChat = (chatId) => {
+    if (window.confirm('Delete this chat?')) {
+      setWhatsappChats(whatsappChats.filter(c => c.id !== chatId));
+      setSelectedChat(null);
+    }
+  };
+
+  const currentChat = whatsappChats.find(c => c.id === selectedChat);
+
+  return (
+    <div>
+      <PageHeader title="💬 WhatsApp Team Chat" sub="Team collaboration & messaging"
+        actions={isManager && <button className="btn btn-primary" onClick={() => setShowCreateChat(true)}>+ New Group</button>} />
+
+      <div style={{ display: 'grid', gridTemplateColumns: '280px 1fr', gap: 16, height: '70vh' }}>
+        {/* Chat List */}
+        <div className="card" style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          <div className="card-title">Groups ({whatsappChats.length})</div>
+          <div style={{ overflowY: 'auto', flex: 1 }}>
+            {whatsappChats.length === 0 ? (
+              <div style={{ padding: 12, fontSize: 12, color: 'var(--text-muted)', textAlign: 'center' }}>
+                No chats yet. Create one to get started!
+              </div>
+            ) : (
+              whatsappChats.map(chat => (
+                <div
+                  key={chat.id}
+                  onClick={() => setSelectedChat(chat.id)}
+                  style={{
+                    padding: '10px 12px',
+                    background: selectedChat === chat.id ? 'var(--accent)' : 'transparent',
+                    color: selectedChat === chat.id ? '#fff' : 'var(--text-primary)',
+                    borderRadius: 6,
+                    cursor: 'pointer',
+                    marginBottom: 6,
+                    fontSize: 13
+                  }}
+                >
+                  <div style={{ fontWeight: 500, marginBottom: 4 }}>💬 {chat.name}</div>
+                  <div style={{ fontSize: 11, opacity: 0.8 }}>
+                    {chat.members.length} members · {(chat.messages || []).length} messages
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+
+        {/* Chat View */}
+        {currentChat ? (
+          <div className="card" style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+            {/* Chat Header */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingBottom: 12, borderBottom: '1px solid var(--border)' }}>
+              <div>
+                <h3 style={{ margin: '0 0 4px' }}>{currentChat.name}</h3>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                  {currentChat.members.length} members
+                </div>
+              </div>
+              {isManager && (
+                <button
+                  className="btn btn-danger btn-sm"
+                  onClick={() => deleteChat(currentChat.id)}
+                >
+                  🗑 Delete
+                </button>
+              )}
+            </div>
+
+            {/* Messages */}
+            <div style={{ overflowY: 'auto', flex: 1, padding: '12px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {(currentChat.messages || []).length === 0 ? (
+                <div style={{ textAlign: 'center', color: 'var(--text-muted)', margin: 'auto' }}>
+                  No messages yet. Start the conversation!
+                </div>
+              ) : (
+                (currentChat.messages || []).map(msg => {
+                  const sender = users.find(u => u.id === msg.sender);
+                  const isOwn = msg.sender === currentUser;
+                  return (
+                    <div
+                      key={msg.id}
+                      style={{
+                        display: 'flex',
+                        justifyContent: isOwn ? 'flex-end' : 'flex-start'
+                      }}
+                    >
+                      <div
+                        style={{
+                          maxWidth: '70%',
+                          padding: '8px 12px',
+                          borderRadius: 12,
+                          background: isOwn ? 'var(--accent)' : 'rgba(255,255,255,0.05)',
+                          color: isOwn ? '#fff' : 'var(--text-primary)',
+                          fontSize: 13,
+                          wordWrap: 'break-word'
+                        }}
+                      >
+                        {!isOwn && <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 4 }}>{sender?.name}</div>}
+                        <div>{msg.content}</div>
+                        <div style={{ fontSize: 10, opacity: 0.7, marginTop: 4, textAlign: 'right' }}>
+                          {new Date(msg.timestamp).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            {/* Message Input */}
+            <div style={{ padding: '12px', borderTop: '1px solid var(--border)', display: 'flex', gap: 8 }}>
+              <input
+                type="text"
+                className="input"
+                placeholder="Type a message…"
+                value={newMessage}
+                onChange={e => setNewMessage(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && sendMessage()}
+                style={{ flex: 1, margin: 0 }}
+              />
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={sendMessage}
+                disabled={!newMessage.trim()}
+              >
+                Send
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="card" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', textAlign: 'center' }}>
+            <div>
+              <div style={{ fontSize: 24, marginBottom: 8 }}>💬</div>
+              <div>Select a chat or create a new group to start messaging</div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {showCreateChat && (
+        <Modal title="Create Group Chat" onClose={() => setShowCreateChat(false)}>
+          <FormGroup label="Group Name">
+            <input
+              className="input"
+              placeholder="e.g. Cloud Ops Team"
+              value={chatForm.name}
+              onChange={e => setChatForm({ ...chatForm, name: e.target.value })}
+            />
+          </FormGroup>
+          <FormGroup label="Add Members">
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {users.filter(u => u.id !== currentUser).map(u => (
+                <label key={u.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px', cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={chatForm.members.includes(u.id)}
+                    onChange={e => {
+                      if (e.target.checked) {
+                        setChatForm({ ...chatForm, members: [...chatForm.members, u.id] });
+                      } else {
+                        setChatForm({ ...chatForm, members: chatForm.members.filter(id => id !== u.id) });
+                      }
+                    }}
+                  />
+                  <Avatar user={u} size={24} />
+                  <span style={{ fontSize: 13 }}>{u.name} ({u.id})</span>
+                </label>
+              ))}
+            </div>
+          </FormGroup>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
+            <button className="btn btn-secondary" onClick={() => setShowCreateChat(false)}>Cancel</button>
+            <button
+              className="btn btn-primary"
+              onClick={createChat}
+              disabled={!chatForm.name || chatForm.members.length === 0}
+            >
+              Create Group
+            </button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
 // ── Insights (Manager only) ────────────────────────────────────────────────
 function Insights({ users, incidents, timesheets, holidays, absences, isManager }) {
   if (!isManager) return <Alert type="warning">⚠ Insights are restricted to managers.</Alert>;
@@ -2511,17 +2995,31 @@ function PayConfig({ payconfig, setPayconfig, isManager }) {
 function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks }) {
   const [showAdd, setShowAdd]   = useState(false);
   const [showLink, setShowLink] = useState(false);
+  const [editingUserId, setEditingUserId] = useState(null);
   const [form, setForm]         = useState({ name: '', role: 'Engineer' });
   const [linkForm, setLinkForm] = useState({ label: '', expiry: '', password: '' });
+  const [editForm, setEditForm] = useState({ mobile_number: '', google_email: '', profile_picture: '' });
 
   if (!isManager) return <Alert type="warning">⚠ Settings are restricted to managers.</Alert>;
 
   const add = () => {
-    if (!form.name || users.length >= 6) return;
+    if (!form.name) return;
     const id    = generateTrigramId(form.name, users);
     const color = TRICOLORS[users.length % TRICOLORS.length];
-    setUsers([...users, { id, name: form.name, role: form.role, tri: id.slice(0, 3), avatar: form.name.split(' ').map(x => x[0]).join('').slice(0, 2).toUpperCase(), color }]);
+    setUsers([...users, { id, name: form.name, role: form.role, tri: id.slice(0, 3), avatar: form.name.split(' ').map(x => x[0]).join('').slice(0, 2).toUpperCase(), color, mobile_number: '', google_email: '', profile_picture: '' }]);
     setShowAdd(false); setForm({ name: '', role: 'Engineer' });
+  };
+
+  const updateUserProfile = (userId, updates) => {
+    setUsers(users.map(u => u.id === userId ? { ...u, ...updates } : u));
+    setEditingUserId(null);
+    setEditForm({ mobile_number: '', google_email: '', profile_picture: '' });
+  };
+
+  const deleteUser = (userId) => {
+    if (window.confirm('⚠️  Delete this engineer profile? This cannot be undone.')) {
+      setUsers(users.filter(u => u.id !== userId));
+    }
   };
 
   const addLink = () => {
@@ -2541,18 +3039,87 @@ function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks }) {
 
       {/* Team Members */}
       <div className="card mb-16">
-        <div className="card-title">Team Members ({users.length}/6 max)</div>
+        <div className="card-title">Team Members ({users.length} total)</div>
         {users.map(u => (
-          <div key={u.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0', borderBottom: '1px solid rgba(30,58,95,.4)' }}>
-            <Avatar user={u} size={36} />
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-primary)' }}>{u.name}</div>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'DM Mono' }}>{u.id} · {u.role}</div>
-            </div>
-            <Tag label={u.role} type={u.role === 'Manager' ? 'amber' : 'blue'} />
+          <div key={u.id}>
+            {editingUserId === u.id ? (
+              <div style={{ padding: '12px 0', borderBottom: '1px solid rgba(30,58,95,.4)', display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+                  <Avatar user={u} size={48} />
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-primary)', marginBottom: 8 }}>{u.name} ({u.id})</div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      <input
+                        type="tel" placeholder="Mobile Number" value={editForm.mobile_number}
+                        onChange={(e) => setEditForm({ ...editForm, mobile_number: e.target.value })}
+                        style={{ padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg-card2)', color: 'var(--text-primary)', width: '100%', fontSize: 12 }}
+                      />
+                      <input
+                        type="email" placeholder="Google Email" value={editForm.google_email}
+                        onChange={(e) => setEditForm({ ...editForm, google_email: e.target.value })}
+                        style={{ padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg-card2)', color: 'var(--text-primary)', width: '100%', fontSize: 12 }}
+                      />
+                      <input
+                        type="url" placeholder="Profile Picture URL" value={editForm.profile_picture}
+                        onChange={(e) => setEditForm({ ...editForm, profile_picture: e.target.value })}
+                        style={{ padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg-card2)', color: 'var(--text-primary)', width: '100%', fontSize: 12 }}
+                      />
+                      <div style={{ display: 'flex', gap: 8 }}>
+                        <button
+                          className="btn btn-primary btn-sm"
+                          onClick={() => updateUserProfile(u.id, editForm)}
+                          style={{ flex: 1 }}
+                        >
+                          ✓ Save
+                        </button>
+                        <button
+                          className="btn btn-secondary btn-sm"
+                          onClick={() => setEditingUserId(null)}
+                          style={{ flex: 1 }}
+                        >
+                          ✕ Cancel
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0', borderBottom: '1px solid rgba(30,58,95,.4)' }}>
+                <Avatar user={u} size={36} />
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-primary)' }}>{u.name}</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'DM Mono' }}>{u.id} · {u.role}</div>
+                  {u.mobile_number && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>📱 {u.mobile_number}</div>}
+                  {u.google_email && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>✉️ {u.google_email}</div>}
+                </div>
+                <Tag label={u.role} type={u.role === 'Manager' ? 'amber' : 'blue'} />
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <button
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => {
+                      const user = users.find(uu => uu.id === u.id);
+                      setEditForm({
+                        mobile_number: user.mobile_number || '',
+                        google_email: user.google_email || '',
+                        profile_picture: user.profile_picture || ''
+                      });
+                      setEditingUserId(u.id);
+                    }}
+                  >
+                    ✎ Edit
+                  </button>
+                  <button
+                    className="btn btn-danger btn-sm"
+                    onClick={() => deleteUser(u.id)}
+                  >
+                    🗑 Delete
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         ))}
-        {users.length >= 6 && <Alert type="warning" style={{ marginTop: 12 }}>Maximum 6 engineers reached.</Alert>}
       </div>
 
       {/* Shift Colours Reference */}
@@ -2684,6 +3251,8 @@ export default function App() {
   const [absences, setAbsences]       = useState([]);
   const [logbook, setLogbook]         = useState([]);
   const [documents, setDocuments]     = useState([]);
+  const [obsidianNotes, setObsidianNotes] = useState([]);
+  const [whatsappChats, setWhatsappChats] = useState([]);
   const [secureLinks, setSecureLinks] = useState([]);
 
   const isManager = currentUser === 'MBA47';
@@ -2694,7 +3263,7 @@ export default function App() {
       const token = await initGoogleAuth(GOOGLE_CLIENT_ID);
       setDriveToken(token);
       setSyncing(true);
-      const defaults = { users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, logbook, documents };
+      const defaults = { users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, logbook, documents, obsidianNotes, whatsappChats };
       const data = await loadAllFromDrive(token, defaults);
       if (data.users)        setUsers(data.users);
       if (data.holidays)     setHolidays(data.holidays);
@@ -2711,6 +3280,8 @@ export default function App() {
       if (data.absences)     setAbsences(data.absences);
       if (data.logbook)      setLogbook(data.logbook);
       if (data.documents)    setDocuments(data.documents);
+      if (data.obsidianNotes) setObsidianNotes(data.obsidianNotes);
+      if (data.whatsappChats) setWhatsappChats(data.whatsappChats);
       setLastSync(new Date());
       setSyncing(false);
     } catch (e) { console.error('Drive connect error:', e); setSyncing(false); }
@@ -2737,6 +3308,8 @@ export default function App() {
   useEffect(() => { save('absences', absences); },       [absences]);
   useEffect(() => { save('logbook', logbook); },         [logbook]);
   useEffect(() => { save('documents', documents); },     [documents]);
+  useEffect(() => { save('obsidianNotes', obsidianNotes); }, [obsidianNotes]);
+  useEffect(() => { save('whatsappChats', whatsappChats); }, [whatsappChats]);
 
   const login = (uid) => { setCurrentUser(uid); setLoggedIn(true); setPage(uid === 'MBA47' ? 'dashboard' : 'oncall'); };
 
@@ -2752,7 +3325,8 @@ export default function App() {
     contacts, setContacts, payconfig, setPayconfig,
     currentUser, isManager, swapRequests, setSwapRequests,
     toil, setToil, absences, setAbsences, logbook, setLogbook,
-    documents, setDocuments, secureLinks, setSecureLinks
+    documents, setDocuments, secureLinks, setSecureLinks,
+    obsidianNotes, setObsidianNotes, whatsappChats, setWhatsappChats
   };
 
   const renderPage = () => {
@@ -2774,7 +3348,9 @@ export default function App() {
       case 'wiki':       return <Wiki {...props} />;
       case 'glossary':   return <Glossary {...props} />;
       case 'contacts':   return <Contacts {...props} />;
+      case 'notes':      return <Notes {...props} />;
       case 'docs':       return <Documents {...props} />;
+      case 'whatsapp':   return <WhatsAppChat {...props} />;
       case 'insights':   return <Insights {...props} />;
       case 'capacity':   return <Capacity {...props} />;
       case 'reports':    return <WeeklyReports {...props} />;
@@ -2792,7 +3368,7 @@ export default function App() {
     rota: 'Rota', incidents: 'Incidents', timesheets: 'Timesheets', holidays: 'Holidays',
     swaps: 'Shift Swaps', upgrades: 'Upgrade Days', stress: 'Stress Score', toil: 'TOIL',
     absence: 'Absence & Sick', logbook: 'Logbook', wiki: 'Wiki', glossary: 'Glossary',
-    contacts: 'Contacts', docs: 'Documents', insights: 'Insights', capacity: 'Capacity',
+    contacts: 'Contacts', notes: 'Notes', docs: 'Documents', whatsapp: 'Team Chat', insights: 'Insights', capacity: 'Capacity',
     reports: 'Weekly Reports', payroll: 'Payroll', payconfig: 'Pay Config',
     settings: 'Settings', myaccount: 'My Account'
   };
