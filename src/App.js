@@ -243,14 +243,34 @@ function RichEditor({ value, onChange, placeholder = 'Start typing…', rows = 8
       html += '</table>';
       if (ref.current) { ref.current.innerHTML = html; onChange && onChange(html); }
     } else if (ext === 'docx' || ext === 'pptx' || ext === 'xlsx') {
-      // Attempt to use mammoth for docx, fallback message
+      // Use JSZip via CDN — no npm install required
+      const loadJSZip = () => new Promise((resolve, reject) => {
+        if (window.JSZip) { resolve(window.JSZip); return; }
+        const s = document.createElement('script');
+        s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+        s.onload = () => resolve(window.JSZip);
+        s.onerror = reject;
+        document.head.appendChild(s);
+      });
       try {
-        const { default: mammoth } = await import('mammoth');
-        const arrayBuffer = await file.arrayBuffer();
-        const result = await mammoth.convertToHtml({ arrayBuffer });
-        if (ref.current) { ref.current.innerHTML = result.value; onChange && onChange(result.value); }
+        const JSZip = await loadJSZip();
+        const ab = await file.arrayBuffer();
+        const zip = await JSZip.loadAsync(ab);
+        let text = '';
+        // .docx: word/document.xml  |  .pptx: ppt/slides/*.xml  |  .xlsx: xl/sharedStrings.xml
+        const targets = ext === 'docx' ? ['word/document.xml']
+          : ext === 'pptx' ? Object.keys(zip.files).filter(n => n.startsWith('ppt/slides/slide') && n.endsWith('.xml'))
+          : ['xl/sharedStrings.xml'];
+        for (const t of targets) {
+          const f = zip.file(t);
+          if (f) { const xml = await f.async('text'); text += xml.replace(/<[^>]+>/g, ' ') + '\n'; }
+        }
+        text = text.replace(/\s+/g, ' ').trim().slice(0, 20000);
+        const lines = text.split(/(?<=[.!?])\s+/).filter(Boolean);
+        const html = '<p>' + lines.join('</p><p>') + '</p>';
+        if (ref.current) { ref.current.innerHTML = html || `<p><em>📎 ${file.name} imported (no readable text found)</em></p>`; onChange && onChange(ref.current.innerHTML); }
       } catch {
-        const msg = `<p><em>📎 Imported: <strong>${file.name}</strong></em></p><p style="color:#fca5a5">For .docx/.pptx/.xlsx, install <code>mammoth</code> (npm i mammoth) for full conversion. File name recorded.</p>`;
+        const msg = `<p><em>📎 Imported: <strong>${file.name}</strong></em></p><p style="color:#fcd34d">⚠ Could not extract text from this file. Try saving as .txt or .md first.</p>`;
         if (ref.current) { ref.current.innerHTML = msg; onChange && onChange(msg); }
       }
     } else {
@@ -565,14 +585,13 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDri
           <div className="login-sub">Cloud Run Operations Team</div>
         </div>
         {driveToken ? (
-          <div className="gd-status" style={{ marginBottom: 16 }}><div className="dot-live" /> Connected to Google Drive — loading team data…</div>
+          <div className="gd-status" style={{ marginBottom: 16 }}><div className="dot-live" /> Connected to Google Drive — team data loaded</div>
         ) : (
-          <div style={{ marginBottom: 16, padding: '12px 14px', border: '1px solid var(--border)', borderRadius: 8, background: 'rgba(59,130,246,0.08)' }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--accent)', marginBottom: 6 }}>📁 Connect Google Drive first</div>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10 }}>All team data including your login credentials are stored on the manager's shared Google Drive. You must connect to sign in.</div>
-            <button className="btn btn-primary" style={{ width: '100%' }} onClick={onConnectDrive} disabled={connectingDrive}>
-              {connectingDrive ? '⏳ Connecting…' : '🔗 Connect Google Drive'}
-            </button>
+          <div style={{ marginBottom: 16, padding: '12px 14px', border: '1px solid var(--border)', borderRadius: 8, background: 'rgba(59,130,246,0.06)' }}>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>
+              📁 <strong style={{ color: 'var(--text-secondary)' }}>Google Drive:</strong> Manager (MBA47) connects automatically on login. Engineers can sign in directly.
+            </div>
+            {connectingDrive && <div style={{ fontSize:12, color:'var(--accent)' }}>⏳ Connecting to Google Drive (dsmeetul@3ds.com)…</div>}
           </div>
         )}
         <Alert type="info" style={{ marginBottom: 12 }}>
@@ -587,7 +606,7 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDri
             <FormGroup label="Password">
               <input className="input" type="password" placeholder="Password" value={pw} onChange={e => setPw(e.target.value)} onKeyDown={e => e.key === 'Enter' && handle()} />
             </FormGroup>
-            <button className="btn btn-primary" style={{ width: '100%', padding: 11 }} onClick={handle} disabled={!driveToken}>Sign In</button>
+            <button className="btn btn-primary" style={{ width: '100%', padding: 11 }} onClick={handle}>Sign In</button>
             <button className="btn btn-secondary btn-sm" style={{ width: '100%', marginTop: 8 }} onClick={() => setShowForgot(true)}>🔑 Forgot Password?</button>
           </>
         ) : (
@@ -653,23 +672,69 @@ const NAV = [
 ];
 
 // ── Dashboard ──────────────────────────────────────────────────────────────
-function Dashboard({ users, rota, holidays, incidents, timesheets, swapRequests }) {
+function Dashboard({ users, rota, holidays, incidents, timesheets, swapRequests, absences, toil }) {
   const today    = new Date().toISOString().slice(0, 10);
   const onCallToday = users.filter(u => rota[u.id]?.[today] && rota[u.id][today] !== 'off');
   const openInc  = incidents.filter(i => i.status === 'Investigating');
   const totalOC  = Object.values(timesheets).flatMap(t => t).reduce((a, b) => a + (b.weekday_oncall || 0) + (b.weekend_oncall || 0), 0);
   const pendingSwaps = (swapRequests || []).filter(s => s.status === 'pending');
+  const resolved = incidents.filter(i => i.status === 'Resolved').length;
+
+  // Severity breakdown for pie chart
+  const sevCounts = { P1: 0, P2: 0, P3: 0, P4: 0 };
+  incidents.forEach(i => { if (sevCounts[i.severity] !== undefined) sevCounts[i.severity]++; });
+  const sevColors = { P1: '#ef4444', P2: '#f59e0b', P3: '#3b82f6', P4: '#10b981' };
+  const sevTotal = incidents.length || 1;
+
+  // SVG Pie chart
+  const PieChart = ({ data, colors, size = 100 }) => {
+    let cumAngle = -90;
+    const cx = size/2, cy = size/2, r = size/2 - 8;
+    const slices = Object.entries(data).filter(([,v]) => v > 0).map(([k, v]) => {
+      const pct = v / sevTotal;
+      const startAngle = cumAngle;
+      cumAngle += pct * 360;
+      const start = { x: cx + r*Math.cos(startAngle*Math.PI/180), y: cy + r*Math.sin(startAngle*Math.PI/180) };
+      const end   = { x: cx + r*Math.cos(cumAngle*Math.PI/180),   y: cy + r*Math.sin(cumAngle*Math.PI/180) };
+      const large = pct > 0.5 ? 1 : 0;
+      return { key: k, d: `M${cx},${cy} L${start.x},${start.y} A${r},${r},0,${large},1,${end.x},${end.y}Z`, color: colors[k], pct, v };
+    });
+    return (
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+        {slices.map(s => <path key={s.key} d={s.d} fill={s.color} opacity={0.85} />)}
+      </svg>
+    );
+  };
+
+  // Bar chart for on-call hours per engineer
+  const ocByUser = users.map(u => {
+    const sheets = timesheets[u.id] || [];
+    const wd = sheets.reduce((a,b) => a+(b.weekday_oncall||0), 0);
+    const we = sheets.reduce((a,b) => a+(b.weekend_oncall||0), 0);
+    return { name: u.name.split(' ')[0], wd, we, total: wd+we };
+  });
+  const maxOC = Math.max(...ocByUser.map(u => u.total), 1);
+
+  // Recent incidents (last 5)
+  const recentInc = [...incidents].sort((a,b) => new Date(b.date)-new Date(a.date)).slice(0,5);
+
+  // Upcoming holidays
+  const upcomingHols = (holidays || []).filter(h => h.start >= today).sort((a,b) => a.start.localeCompare(b.start)).slice(0,4);
 
   return (
     <div>
       <PageHeader title="Manager Dashboard" sub="Cloud Run Operations · Full team visibility" />
+
+      {/* Top KPIs */}
       <div className="grid-4 mb-16">
         <StatCard label="Team Size"        value={users.length}            sub="engineers + manager"   accent="#3b82f6" icon="👥" />
-        <StatCard label="Open Incidents"   value={openInc.length}          sub="Active investigations" accent="#ef4444" icon="🚨" />
-        <StatCard label="OC Hours"         value={totalOC + 'h'}           sub="All engineers"         accent="#10b981" icon="⏱" />
+        <StatCard label="Open Incidents"   value={openInc.length}          sub={`${resolved} resolved`} accent="#ef4444" icon="🚨" />
+        <StatCard label="OC Hours"         value={totalOC + 'h'}           sub="All engineers total"   accent="#10b981" icon="⏱" />
         <StatCard label="Pending Swaps"    value={pendingSwaps.length}     sub="Awaiting approval"     accent="#818cf8" icon="🔁" />
       </div>
-      <div className="grid-2">
+
+      <div className="grid-2 mb-16">
+        {/* On Call Today */}
         <div className="card">
           <div className="card-title">👥 Team On-Call Today</div>
           {onCallToday.length === 0 && <p className="muted-sm">No shifts today</p>}
@@ -688,57 +753,170 @@ function Dashboard({ users, rota, holidays, incidents, timesheets, swapRequests 
             );
           })}
         </div>
+
+        {/* Incident severity pie */}
         <div className="card">
-          <div className="card-title">🚨 Active Incidents</div>
-          {openInc.map(i => (
-            <div key={i.id} className="row-item">
-              <div className={`inc-dot sev-${(i.severity||'').toLowerCase()}`} />
-              <div>
-                <div className="name-sm">{i.alert_name || i.title}</div>
-                <div className="muted-xs">{i.severity} · {i.date} · {i.assigned_to}</div>
+          <div className="card-title">🎯 Incident Severity Breakdown</div>
+          {incidents.length === 0 ? <p className="muted-sm">No incidents logged 🎉</p> : (
+            <div style={{ display: 'flex', gap: 20, alignItems: 'center' }}>
+              <PieChart data={sevCounts} colors={sevColors} size={120} />
+              <div style={{ flex: 1 }}>
+                {Object.entries(sevCounts).map(([k,v]) => (
+                  <div key={k} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8 }}>
+                    <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+                      <div style={{ width:10, height:10, borderRadius:'50%', background:sevColors[k] }} />
+                      <span style={{ fontSize:12 }}>{k}</span>
+                    </div>
+                    <div style={{ fontFamily:'DM Mono', fontSize:12, color:sevColors[k] }}>{v} ({((v/sevTotal)*100).toFixed(0)}%)</div>
+                  </div>
+                ))}
+                <div style={{ borderTop:'1px solid var(--border)', paddingTop:6, marginTop:4, fontSize:11, color:'var(--text-muted)' }}>
+                  Total: {incidents.length} · Open: {openInc.length} · Resolved: {resolved}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="grid-2 mb-16">
+        {/* On-Call hours bar chart */}
+        <div className="card">
+          <div className="card-title">📊 On-Call Hours per Engineer</div>
+          {ocByUser.map(u => (
+            <div key={u.name} style={{ marginBottom:10 }}>
+              <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
+                <span style={{ fontSize:12 }}>{u.name}</span>
+                <span style={{ fontSize:11, fontFamily:'DM Mono', color:'var(--text-muted)' }}>{u.wd}h WD + {u.we}h WE = <strong style={{ color:'#6ee7b7' }}>{u.total}h</strong></span>
+              </div>
+              <div style={{ height:10, background:'var(--bg-card2)', borderRadius:5, overflow:'hidden', display:'flex' }}>
+                <div style={{ width:`${(u.wd/maxOC)*100}%`, background:'#166534', transition:'width 0.4s' }} />
+                <div style={{ width:`${(u.we/maxOC)*100}%`, background:'#854d0e', transition:'width 0.4s' }} />
               </div>
             </div>
           ))}
+          <div style={{ display:'flex', gap:12, marginTop:8, fontSize:11, color:'var(--text-muted)' }}>
+            <span><span style={{ background:'#166534', display:'inline-block', width:10, height:10, borderRadius:2, marginRight:4 }} />Weekday</span>
+            <span><span style={{ background:'#854d0e', display:'inline-block', width:10, height:10, borderRadius:2, marginRight:4 }} />Weekend</span>
+          </div>
+        </div>
+
+        {/* Active Incidents */}
+        <div className="card">
+          <div className="card-title">🚨 Active Incidents</div>
+          {openInc.map(i => {
+            const sev = { P1:'#ef4444', P2:'#f59e0b', P3:'#3b82f6', P4:'#10b981' }[i.severity] || '#3b82f6';
+            return (
+              <div key={i.id} className="row-item">
+                <div style={{ width:8, height:8, borderRadius:'50%', background:sev, flexShrink:0, marginTop:4 }} />
+                <div style={{ flex:1 }}>
+                  <div className="name-sm">{i.alert_name || i.title}</div>
+                  <div className="muted-xs">{i.severity} · {i.date} · {users.find(u=>u.id===i.assigned_to)?.name || i.assigned_to}{i.duration_hours ? ` · ${i.duration_hours}h` : ''}</div>
+                </div>
+                <Tag label={i.severity} type={i.severity==='P1'?'red':i.severity==='P2'?'amber':'blue'} />
+              </div>
+            );
+          })}
           {openInc.length === 0 && <p className="muted-sm">No active incidents 🎉</p>}
         </div>
+      </div>
+
+      <div className="grid-2 mb-16">
+        {/* Recent Incidents Timeline */}
         <div className="card">
-          <div className="card-title">🔁 Pending Swap Requests</div>
-          {pendingSwaps.length === 0 && <p className="muted-sm">No pending swaps</p>}
-          {pendingSwaps.slice(0, 5).map(s => {
-            const req = users.find(u => u.id === s.requesterId);
-            const tgt = users.find(u => u.id === s.targetId);
-            return (
-              <div key={s.id} className="row-item">
-                <div style={{ flex: 1 }}>
-                  <div className="name-sm">{req?.name} ↔ {tgt?.name}</div>
-                  <div className="muted-xs">{s.reqDate} ↔ {s.tgtDate}</div>
-                </div>
-                <Tag label="Pending" type="amber" />
-              </div>
-            );
-          })}
+          <div className="card-title">🕐 Recent Incidents (Last 5)</div>
+          <table style={{ fontSize:12 }}>
+            <thead><tr><th>ID</th><th>Alert</th><th>Severity</th><th>Status</th><th>Duration</th></tr></thead>
+            <tbody>
+              {recentInc.map(i => {
+                const sev = { P1:'#ef4444', P2:'#f59e0b', P3:'#3b82f6', P4:'#10b981' }[i.severity] || '#3b82f6';
+                return (
+                  <tr key={i.id}>
+                    <td style={{ fontFamily:'DM Mono', fontSize:11, color:'var(--accent)' }}>{i.id}</td>
+                    <td style={{ maxWidth:140, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{i.alert_name}</td>
+                    <td><span style={{ background:sev+'25', color:sev, padding:'2px 6px', borderRadius:4, fontSize:10, fontWeight:600 }}>{i.severity}</span></td>
+                    <td><Tag label={i.status} type={i.status==='Resolved'?'green':'red'} /></td>
+                    <td style={{ fontFamily:'DM Mono', color:'#fcd34d' }}>{i.duration_hours ? `${i.duration_hours}h` : '—'}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
-        <div className="card">
-          <div className="card-title">📊 On-Call Hours This Period</div>
-          {users.map(u => {
-            const sheets = timesheets[u.id] || [];
-            const wkday = sheets.reduce((a, b) => a + (b.weekday_oncall || 0), 0);
-            const wkend = sheets.reduce((a, b) => a + (b.weekend_oncall || 0), 0);
-            const total = wkday + wkend;
-            const pct = Math.min(100, (total / 40) * 100);
-            return (
-              <div key={u.id} style={{ marginBottom: 12 }}>
-                <div className="flex-between" style={{ marginBottom: 4 }}>
-                  <span className="muted-xs">{u.name}</span>
-                  <span style={{ fontSize: 12, fontFamily: 'DM Mono', color: total > 30 ? '#fcd34d' : '#6ee7b7' }}>{total}h</span>
+
+        {/* Upcoming Holidays + Pending Swaps */}
+        <div>
+          <div className="card mb-12">
+            <div className="card-title">🌴 Upcoming Holidays</div>
+            {upcomingHols.length === 0 && <p className="muted-sm">No upcoming holidays</p>}
+            {upcomingHols.map(h => {
+              const u = users.find(x => x.id === h.userId);
+              const days = Math.ceil((new Date(h.end)-new Date(h.start))/86400000)+1;
+              return (
+                <div key={h.id} className="flex-between row-item">
+                  <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+                    <Avatar user={u || {avatar:'?',color:'#475569'}} size={22} />
+                    <div>
+                      <div className="name-sm">{u?.name}</div>
+                      <div className="muted-xs">{h.start} → {h.end} ({days}d)</div>
+                    </div>
+                  </div>
+                  <Tag label={h.type||'Annual Leave'} type="amber" />
                 </div>
-                <div className="progress-bar">
-                  <div className="progress-fill" style={{ width: pct + '%', background: total > 30 ? '#f59e0b' : '#10b981' }} />
+              );
+            })}
+          </div>
+          <div className="card">
+            <div className="card-title">🔁 Pending Swap Requests</div>
+            {pendingSwaps.length === 0 && <p className="muted-sm">No pending swaps</p>}
+            {pendingSwaps.slice(0,3).map(s => {
+              const req = users.find(u => u.id === s.requesterId);
+              const tgt = users.find(u => u.id === s.targetId);
+              return (
+                <div key={s.id} className="row-item">
+                  <div style={{ flex:1 }}>
+                    <div className="name-sm">{req?.name} ↔ {tgt?.name}</div>
+                    <div className="muted-xs">{s.reqDate} ↔ {s.tgtDate}</div>
+                  </div>
+                  <Tag label="Pending" type="amber" />
                 </div>
-              </div>
-            );
-          })}
+              );
+            })}
+          </div>
         </div>
+      </div>
+
+      {/* Engineer table */}
+      <div className="card mb-16">
+        <div className="card-title">👥 Engineer Overview</div>
+        <table style={{ overflowX:'auto', display:'block' }}>
+          <thead>
+            <tr><th>Engineer</th><th>Role</th><th>Today's Shift</th><th>OC Hours</th><th>Open Incidents</th><th>Resolved</th><th>Holidays Used</th></tr>
+          </thead>
+          <tbody>
+            {users.map(u => {
+              const sheets = timesheets[u.id] || [];
+              const oc = sheets.reduce((a,b)=>a+(b.weekday_oncall||0)+(b.weekend_oncall||0),0);
+              const userInc = incidents.filter(i=>i.assigned_to===u.id);
+              const openUserInc = userInc.filter(i=>i.status==='Investigating').length;
+              const resolvedUserInc = userInc.filter(i=>i.status==='Resolved').length;
+              const holDays = (holidays||[]).filter(h=>h.userId===u.id&&h.type==='Annual Leave').reduce((a,h)=>a+Math.ceil((new Date(h.end)-new Date(h.start))/86400000)+1,0);
+              const todayShift = rota[u.id]?.[today];
+              const col = todayShift ? (SHIFT_COLORS[todayShift]||{}) : null;
+              return (
+                <tr key={u.id}>
+                  <td><div style={{ display:'flex', gap:8, alignItems:'center' }}><Avatar user={u} size={24} /><div><div style={{ fontSize:12, fontWeight:500 }}>{u.name}</div><div style={{ fontSize:10, color:'var(--text-muted)', fontFamily:'DM Mono' }}>{u.id}</div></div></div></td>
+                  <td><Tag label={u.role||'Engineer'} type={u.role==='Manager'?'amber':'blue'} /></td>
+                  <td>{col ? <span style={{ background:col.bg+'33', color:col.text, padding:'2px 8px', borderRadius:4, fontSize:11, fontWeight:600 }}>{col.label}</span> : <span style={{ fontSize:11, color:'var(--text-muted)' }}>Off</span>}</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#6ee7b7' }}>{oc}h</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12, color: openUserInc>0?'#ef4444':'var(--text-muted)' }}>{openUserInc}</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#10b981' }}>{resolvedUserInc}</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12 }}>{holDays}/25d</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
     </div>
   );
@@ -747,10 +925,10 @@ function Dashboard({ users, rota, holidays, incidents, timesheets, swapRequests 
 // ── Who's On Call ──────────────────────────────────────────────────────────
 function OnCall({ users, rota }) {
   const today = new Date();
-  const base  = new Date(today);
-  base.setDate(base.getDate() - ((base.getDay() + 6) % 7));
-  const week  = Array.from({ length: 7 }, (_, i) => { const d = new Date(base); d.setDate(base.getDate() + i); return d; });
-  const DAYS  = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+  const [viewMode, setViewMode] = useState('week'); // 'week' | 'month' | 'year'
+  const [viewOffset, setViewOffset] = useState(0); // weeks or months offset
+  const DAYS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+  const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
   const exportIcal = (user) => {
     const content = generateICalFeed(rota[user.id] || {}, user.name);
@@ -763,57 +941,175 @@ function OnCall({ users, rota }) {
     return { background: c.bg + '55', color: c.text, border: `1px solid ${c.bg}88` };
   };
 
-  return (
-    <div>
-      <PageHeader title="Who's On Call" sub="Current week schedule" />
-      <ShiftLegend />
-      <div className="card" style={{ overflowX: 'auto', marginBottom: 16 }}>
-        <table style={{ minWidth: 620 }}>
-          <thead>
-            <tr>
-              <th>Engineer</th>
-              {week.map((d, i) => {
-                const ds = d.toISOString().slice(0, 10);
-                const bh = UK_BANK_HOLIDAYS.find(b => b.date === ds);
+  // Build weeks array based on viewMode
+  const getWeeks = () => {
+    if (viewMode === 'week') {
+      const base = new Date(today);
+      base.setDate(base.getDate() - ((base.getDay() + 6) % 7) + viewOffset * 7);
+      return [Array.from({ length: 7 }, (_, i) => { const d = new Date(base); d.setDate(base.getDate() + i); return d; })];
+    }
+    if (viewMode === 'month') {
+      const base = new Date(today.getFullYear(), today.getMonth() + viewOffset, 1);
+      const firstDow = (base.getDay() + 6) % 7;
+      const daysInMonth = new Date(base.getFullYear(), base.getMonth() + 1, 0).getDate();
+      const weeksArr = [];
+      let weekDays = [];
+      for (let pre = 0; pre < firstDow; pre++) {
+        const d = new Date(base); d.setDate(1 - firstDow + pre); weekDays.push(d);
+      }
+      for (let day = 1; day <= daysInMonth; day++) {
+        const d = new Date(base.getFullYear(), base.getMonth(), day);
+        weekDays.push(d);
+        if (weekDays.length === 7) { weeksArr.push(weekDays); weekDays = []; }
+      }
+      if (weekDays.length > 0) {
+        while (weekDays.length < 7) { const last = weekDays[weekDays.length-1]; const d = new Date(last); d.setDate(last.getDate()+1); weekDays.push(d); }
+        weeksArr.push(weekDays);
+      }
+      return weeksArr;
+    }
+    // year: show all remaining months from today
+    const yearWeeks = [];
+    const yearStart = new Date(today.getFullYear(), 0, 1);
+    for (let m = 0; m < 12; m++) {
+      const mStart = new Date(today.getFullYear() + viewOffset, m, 1);
+      const firstDow = (mStart.getDay() + 6) % 7;
+      const daysInMonth = new Date(mStart.getFullYear(), m + 1, 0).getDate();
+      const monthWeeks = [];
+      let wDays = [];
+      for (let pre = 0; pre < firstDow; pre++) { const d = new Date(mStart); d.setDate(1-firstDow+pre); wDays.push(d); }
+      for (let day = 1; day <= daysInMonth; day++) {
+        const d = new Date(mStart.getFullYear(), m, day); wDays.push(d);
+        if (wDays.length === 7) { monthWeeks.push(wDays); wDays = []; }
+      }
+      if (wDays.length > 0) { while (wDays.length < 7) { const last = wDays[wDays.length-1]; const d = new Date(last); d.setDate(last.getDate()+1); wDays.push(d); } monthWeeks.push(wDays); }
+      yearWeeks.push({ month: m, year: mStart.getFullYear(), weeks: monthWeeks });
+    }
+    return yearWeeks;
+  };
+
+  const viewLabel = () => {
+    if (viewMode === 'week') {
+      const base = new Date(today); base.setDate(base.getDate() - ((base.getDay()+6)%7) + viewOffset*7);
+      const end = new Date(base); end.setDate(base.getDate()+6);
+      return `${base.toLocaleDateString('en-GB',{day:'numeric',month:'short'})} – ${end.toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})}`;
+    }
+    if (viewMode === 'month') {
+      const d = new Date(today.getFullYear(), today.getMonth() + viewOffset, 1);
+      return d.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
+    }
+    return `${today.getFullYear() + viewOffset}`;
+  };
+
+  const renderWeekTable = (week, key) => (
+    <div key={key} className="card" style={{ overflowX: 'auto', marginBottom: 12 }}>
+      <table style={{ minWidth: 620 }}>
+        <thead>
+          <tr>
+            <th>Engineer</th>
+            {week.map((d, i) => {
+              const ds = d.toISOString().slice(0,10);
+              const bh = UK_BANK_HOLIDAYS.find(b => b.date === ds);
+              const isToday = ds === today.toISOString().slice(0,10);
+              return (
+                <th key={i} style={{ textAlign:'center', fontSize:11, color: bh ? '#fca5a5' : isToday ? 'var(--accent)' : undefined }}>
+                  {DAYS[i]}<br />
+                  <span style={{ fontFamily:'DM Mono', fontSize:10 }}>{d.getDate()}{bh?'🔴':''}</span>
+                </th>
+              );
+            })}
+          </tr>
+        </thead>
+        <tbody>
+          {users.map(u => (
+            <tr key={u.id}>
+              <td>
+                <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                  <Avatar user={u} size={26} />
+                  <div>
+                    <div style={{ fontSize:12, fontWeight:500 }}>{u.name}</div>
+                    <div style={{ fontSize:10, color:'var(--text-muted)', fontFamily:'DM Mono' }}>{u.id}</div>
+                  </div>
+                </div>
+              </td>
+              {week.map(d => {
+                const ds = d.toISOString().slice(0,10);
+                const s  = rota[u.id]?.[ds] || 'off';
+                const c  = cellStyle(s);
+                const isToday = ds === today.toISOString().slice(0,10);
                 return (
-                  <th key={i} style={{ textAlign: 'center', fontSize: 11, color: bh ? '#fca5a5' : undefined }}>
-                    {DAYS[i]}<br />
-                    <span style={{ fontFamily: 'DM Mono', color: '#475569', fontSize: 10 }}>{d.getDate()}{bh ? '🔴' : ''}</span>
-                  </th>
+                  <td key={ds} style={{ textAlign:'center', background: isToday ? 'rgba(59,130,246,0.08)' : undefined }}>
+                    <div style={{ ...c, borderRadius:6, padding:'4px 6px', fontSize:10, fontWeight:600, minWidth:32, display:'inline-block' }}>
+                      {s === 'off' ? '—' : (SHIFT_COLORS[s]?.label?.slice(0,4) || s)}
+                    </div>
+                  </td>
                 );
               })}
             </tr>
-          </thead>
-          <tbody>
-            {users.map(u => (
-              <tr key={u.id}>
-                <td>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <Avatar user={u} size={26} />
-                    <div>
-                      <div style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-primary)' }}>{u.name}</div>
-                      <div style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'DM Mono' }}>{u.id}</div>
-                    </div>
-                  </div>
-                </td>
-                {week.map(d => {
-                  const ds = d.toISOString().slice(0, 10);
-                  const s  = rota[u.id]?.[ds] || 'off';
-                  const c  = cellStyle(s);
-                  return (
-                    <td key={ds} style={{ textAlign: 'center' }}>
-                      <div style={{ ...c, borderRadius: 6, padding: '4px 6px', fontSize: 10, fontWeight: 600, minWidth: 32, display: 'inline-block' }}>
-                        {s === 'off' ? '—' : (SHIFT_COLORS[s]?.label?.slice(0, 4) || s)}
-                      </div>
-                    </td>
-                  );
-                })}
-              </tr>
-            ))}
-          </tbody>
-        </table>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+
+  const data = getWeeks();
+
+  return (
+    <div>
+      <PageHeader title="Who's On Call" sub="Team schedule — week, month, or full year view" />
+      <ShiftLegend />
+
+      {/* View controls */}
+      <div style={{ display:'flex', gap:8, marginBottom:16, flexWrap:'wrap', alignItems:'center' }}>
+        <div style={{ display:'flex', gap:4 }}>
+          {['week','month','year'].map(m => (
+            <button key={m} className={`btn btn-sm ${viewMode===m?'btn-primary':'btn-secondary'}`}
+              onClick={() => { setViewMode(m); setViewOffset(0); }}>
+              {m === 'week' ? 'Week' : m === 'month' ? 'Month' : 'Full Year'}
+            </button>
+          ))}
+        </div>
+        {viewMode !== 'year' && (
+          <div style={{ display:'flex', gap:4, alignItems:'center' }}>
+            <button className="btn btn-secondary btn-sm" onClick={() => setViewOffset(o => o-1)}>← Prev</button>
+            <span style={{ fontSize:13, color:'var(--text-secondary)', minWidth:200, textAlign:'center' }}>{viewLabel()}</span>
+            <button className="btn btn-secondary btn-sm" onClick={() => setViewOffset(o => o+1)}>Next →</button>
+            <button className="btn btn-secondary btn-sm" onClick={() => setViewOffset(0)}>Today</button>
+          </div>
+        )}
+        {viewMode === 'year' && (
+          <div style={{ display:'flex', gap:4, alignItems:'center' }}>
+            <button className="btn btn-secondary btn-sm" onClick={() => setViewOffset(o => o-1)}>← {today.getFullYear()+viewOffset-1}</button>
+            <span style={{ fontSize:13, fontWeight:600, color:'var(--text-primary)', minWidth:80, textAlign:'center' }}>{today.getFullYear()+viewOffset}</span>
+            <button className="btn btn-secondary btn-sm" onClick={() => setViewOffset(o => o+1)}>{today.getFullYear()+viewOffset+1} →</button>
+          </div>
+        )}
       </div>
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+
+      {/* Render based on mode */}
+      {viewMode === 'week' && renderWeekTable(data[0], 'week')}
+      {viewMode === 'month' && (
+        <div>
+          <div className="card mb-8" style={{ padding:'8px 14px', fontSize:14, fontWeight:600, color:'var(--text-primary)' }}>
+            {viewLabel()}
+          </div>
+          {data.map((week, wi) => renderWeekTable(week, `week-${wi}`))}
+        </div>
+      )}
+      {viewMode === 'year' && (
+        <div>
+          {data.map(({ month, year, weeks }) => (
+            <div key={month} style={{ marginBottom: 24 }}>
+              <div style={{ fontSize:14, fontWeight:600, color:'var(--accent)', marginBottom:8, padding:'4px 0', borderBottom:'1px solid var(--border)' }}>
+                📅 {MONTHS[month]} {year}
+              </div>
+              {weeks.map((week, wi) => renderWeekTable(week, `${month}-${wi}`))}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={{ display:'flex', gap:8, flexWrap:'wrap', marginTop:8 }}>
         {users.map(u => (
           <button key={u.id} className="ical-btn" onClick={() => exportIcal(u)}>
             📆 Export {u.name.split(' ')[0]}'s Rota (.ics)
@@ -989,26 +1285,26 @@ function RotaPage({ users, rota, setRota, holidays, upgrades, swapRequests, setS
   const generate = () => { if (!isManager) return; setRota(generateRota(users, startDate, weeks)); setGenerated(true); };
 
   const setCell = (userId, date, shift) => {
-    if (isManager) return; // Managers have read-only access
+    if (!isManager) return; // Only managers can edit
     setRota(prev => ({ ...prev, [userId]: { ...(prev[userId] || {}), [date]: shift } }));
     setEditCell(null);
   };
 
   const deleteCell = (userId, date) => {
-    if (isManager) return; // Managers have read-only access
+    if (!isManager) return; // Only managers can delete
     const next = JSON.parse(JSON.stringify(rota));
     if (next[userId]) delete next[userId][date];
     setRota(next);
   };
 
   const toggleBulk = (userId, date) => {
-    if (isManager) return; // Managers cannot bulk edit
+    if (!isManager) return; // Only managers can bulk edit
     const key = `${userId}::${date}`;
     setBulkSelected(prev => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n; });
   };
 
   const applyBulk = () => {
-    if (isManager) return; // Managers cannot bulk edit
+    if (!isManager) return; // Only managers can bulk edit
     const next = JSON.parse(JSON.stringify(rota));
     bulkSelected.forEach(key => {
       const [uid, date] = key.split('::');
@@ -1018,7 +1314,7 @@ function RotaPage({ users, rota, setRota, holidays, upgrades, swapRequests, setS
   };
 
   const deleteBulk = () => {
-    if (isManager) return; // Managers cannot bulk delete
+    if (!isManager) return; // Only managers can bulk delete
     const next = JSON.parse(JSON.stringify(rota));
     bulkSelected.forEach(key => {
       const [uid, date] = key.split('::');
@@ -1082,7 +1378,7 @@ function RotaPage({ users, rota, setRota, holidays, upgrades, swapRequests, setS
             </FormGroup>
             <FormGroup label="Weeks">
               <select className="select" value={weeks} onChange={e => setWeeks(+e.target.value)} style={{ width: 120 }}>
-                {[2,4,6,8,12].map(w => <option key={w}>{w}</option>)}
+                {[2,4,6,8,12,16,24,26,52].map(w => <option key={w} value={w}>{w} week{w>=52?' (1 year)':w>=26?' (6 months)':w>=12?' (3 months)':''}</option>)}
               </select>
             </FormGroup>
             <button className="btn btn-primary" onClick={generate}>🔄 Generate Rota</button>
@@ -1236,7 +1532,7 @@ const INC_SEVERITIES = [
   { value: 'P4', label: 'P4 — Low',        color: '#10b981' },
 ];
 
-function Incidents({ users, incidents, setIncidents, currentUser, isManager }) {
+function Incidents({ users, incidents, setIncidents, currentUser, isManager, timesheets, setTimesheets }) {
   const [showModal, setShowModal] = useState(false);
   const [viewInc, setViewInc]    = useState(null);
   const [editInc, setEditInc]    = useState(null);
@@ -1245,7 +1541,7 @@ function Incidents({ users, incidents, setIncidents, currentUser, isManager }) {
 
   const EMPTY_FORM = {
     alert_name: '', vm_service: '', severity: 'P3', assigned_to: currentUser,
-    kb_ref: '', ticket_ref: '', email_ref: '', desc: ''
+    kb_ref: '', ticket_ref: '', email_ref: '', desc: '', duration_hours: ''
   };
   const [form, setForm] = useState(EMPTY_FORM);
 
@@ -1259,6 +1555,31 @@ function Incidents({ users, incidents, setIncidents, currentUser, isManager }) {
     } else {
       const id = 'INC-' + String(incidents.length + 1).padStart(3, '0');
       setIncidents([{ id, ...form, status: 'Investigating', reporter: currentUser, date: new Date().toISOString().slice(0, 16).replace('T', ' '), updates: [] }, ...incidents]);
+      // Auto-populate timesheet if duration is set
+      if (form.duration_hours && form.assigned_to && setTimesheets) {
+        const incDate = new Date().toISOString().slice(0, 10);
+        const dow = new Date().getDay(); // 0=Sun, 6=Sat
+        const isWE = dow === 0 || dow === 6;
+        const hrs = +form.duration_hours;
+        const weekLabel = `INC ${id}`;
+        setTimesheets(prev => ({
+          ...prev,
+          [form.assigned_to]: [
+            {
+              week: weekLabel,
+              // Legacy fields (shown in Timesheets tab)
+              weekday_oncall: isWE ? 0 : hrs,
+              weekend_oncall: isWE ? hrs : 0,
+              // Payroll fields (read by calcOncallPay)
+              worked_wd: isWE ? 0 : hrs,
+              worked_we: isWE ? hrs : 0,
+              standby_wd: 0, standby_we: 0,
+              notes: `Auto-logged: ${form.alert_name} on ${incDate} (${hrs}h)`
+            },
+            ...(prev[form.assigned_to] || [])
+          ]
+        }));
+      }
     }
     setShowModal(false); setForm(EMPTY_FORM);
   };
@@ -1293,7 +1614,7 @@ function Incidents({ users, incidents, setIncidents, currentUser, isManager }) {
             <tr>
               <th style={{ width: 32 }}><input type="checkbox" checked={selected.size === incidents.length && incidents.length > 0} onChange={toggleAll} /></th>
               <th>ID</th><th>Alert Name</th><th>VM/Service</th><th>Severity</th><th>Status</th>
-              <th>Assigned To</th><th>KB Ref</th><th>Date</th><th>Actions</th>
+              <th>Assigned To</th><th>Duration</th><th>KB Ref</th><th>Date</th><th>Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -1315,6 +1636,7 @@ function Incidents({ users, incidents, setIncidents, currentUser, isManager }) {
                     {eng ? <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}><Avatar user={eng} size={20} /><span style={{ fontSize: 12 }}>{eng.name.split(' ')[0]}</span></div> : <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>—</span>}
                   </td>
                   <td style={{ fontSize: 11, fontFamily: 'DM Mono', color: 'var(--accent)' }}>{i.kb_ref || '—'}</td>
+                  <td style={{ fontSize: 11, fontFamily: 'DM Mono', color: i.duration_hours ? '#fcd34d' : 'var(--text-muted)' }}>{i.duration_hours ? `${i.duration_hours}h` : '—'}</td>
                   <td style={{ fontSize: 11, fontFamily: 'DM Mono', color: 'var(--text-muted)' }}>{i.date}</td>
                   <td onClick={e => e.stopPropagation()}>
                     <div style={{ display: 'flex', gap: 4 }}>
@@ -1357,6 +1679,12 @@ function Incidents({ users, incidents, setIncidents, currentUser, isManager }) {
             </FormGroup>
             <FormGroup label="Email Ref (optional)" hint="paste email subject or link">
               <input className="input" placeholder="e.g. Alert email subject" value={form.email_ref} onChange={e => setForm({ ...form, email_ref: e.target.value })} />
+            </FormGroup>
+            <FormGroup label="Duration (Hours)" hint="Time spent resolving — auto-added to timesheets">
+              <select className="select" value={form.duration_hours} onChange={e => setForm({ ...form, duration_hours: e.target.value })}>
+                <option value="">Select duration…</option>
+                {[1,2,3,4,5,6,7,8,9,10,11,12].map(h => <option key={h} value={h}>{h} hour{h > 1 ? 's' : ''}</option>)}
+              </select>
             </FormGroup>
           </div>
           <FormGroup label="Description / Actions Taken">
@@ -2873,11 +3201,16 @@ function Notes({ obsidianNotes, setObsidianNotes, users, currentUser, isManager 
 }
 
 // ── WhatsApp Team Chat ────────────────────────────────────────────────────
-function WhatsAppChat({ whatsappChats, setWhatsappChats, users, currentUser, isManager }) {
+function WhatsAppChat({ whatsappChats, setWhatsappChats, users, currentUser, isManager, driveToken }) {
   const [selectedChat, setSelectedChat] = useState(null);
   const [newMessage, setNewMessage] = useState('');
   const [showCreateChat, setShowCreateChat] = useState(false);
   const [chatForm, setChatForm] = useState({ name: '', members: [] });
+  const [saveStatus, setSaveStatus] = useState('');
+  const messagesEndRef = useRef(null);
+
+  // Scroll to bottom when messages change
+  useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior:'smooth' }); }, [selectedChat, whatsappChats]);
 
   const createChat = () => {
     if (!chatForm.name || chatForm.members.length === 0) return;
@@ -2889,7 +3222,7 @@ function WhatsAppChat({ whatsappChats, setWhatsappChats, users, currentUser, isM
       created: new Date().toISOString().slice(0, 10),
       messages: []
     };
-    setWhatsappChats([...whatsappChats, chat]);
+    setWhatsappChats(prev => [...prev, chat]);
     setShowCreateChat(false);
     setChatForm({ name: '', members: [] });
     setSelectedChat(chat.id);
@@ -2897,37 +3230,64 @@ function WhatsAppChat({ whatsappChats, setWhatsappChats, users, currentUser, isM
 
   const sendMessage = () => {
     if (!newMessage.trim() || !selectedChat) return;
-    const chat = whatsappChats.find(c => c.id === selectedChat);
-    if (!chat) return;
-
     const message = {
       id: 'msg-' + Date.now(),
       sender: currentUser,
-      content: newMessage,
+      content: newMessage.trim(),
       timestamp: new Date().toISOString()
     };
-
-    setWhatsappChats(whatsappChats.map(c =>
+    setWhatsappChats(prev => prev.map(c =>
       c.id === selectedChat
         ? { ...c, messages: [...(c.messages || []), message] }
         : c
     ));
     setNewMessage('');
+    setSaveStatus('Saved ✓');
+    setTimeout(() => setSaveStatus(''), 2000);
   };
 
   const deleteChat = (chatId) => {
     if (window.confirm('Delete this chat?')) {
-      setWhatsappChats(whatsappChats.filter(c => c.id !== chatId));
+      setWhatsappChats(prev => prev.filter(c => c.id !== chatId));
       setSelectedChat(null);
     }
+  };
+
+  // Export all chats to a Google Doc (opens a pre-filled doc)
+  const exportToGoogleDoc = () => {
+    const allText = whatsappChats.map(chat => {
+      const header = `=== ${chat.name} (${chat.members.length} members) ===\n`;
+      const msgs = (chat.messages || []).map(m => {
+        const sender = users.find(u => u.id === m.sender)?.name || m.sender;
+        const time = new Date(m.timestamp).toLocaleString('en-GB');
+        return `[${time}] ${sender}: ${m.content}`;
+      }).join('\n');
+      return header + (msgs || '(no messages)');
+    }).join('\n\n');
+
+    // Create a data URI for the doc content and copy to clipboard
+    const blob = new Blob([allText], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url;
+    a.download = `CloudOps-TeamChat-${new Date().toISOString().slice(0,10)}.txt`;
+    a.click();
+    // Also offer to open Google Docs new doc
+    setTimeout(() => {
+      if (window.confirm('Chat history downloaded! Open Google Docs to paste it?\n\n(Copy the downloaded file content and paste into a new doc)')) {
+        window.open('https://docs.google.com/document/create', '_blank');
+      }
+    }, 500);
   };
 
   const currentChat = whatsappChats.find(c => c.id === selectedChat);
 
   return (
     <div>
-      <PageHeader title="💬 WhatsApp Team Chat" sub="Team collaboration & messaging"
-        actions={isManager && <button className="btn btn-primary" onClick={() => setShowCreateChat(true)}>+ New Group</button>} />
+      <PageHeader title="💬 Team Chat" sub="Team collaboration & messaging"
+        actions={<>
+          {isManager && <button className="btn btn-secondary btn-sm" onClick={exportToGoogleDoc}>📄 Export to Google Doc</button>}
+          {isManager && <button className="btn btn-primary" onClick={() => setShowCreateChat(true)}>+ New Group</button>}
+        </>} />
 
       <div style={{ display: 'grid', gridTemplateColumns: '280px 1fr', gap: 16, height: '70vh' }}>
         {/* Chat List */}
@@ -2936,29 +3296,24 @@ function WhatsAppChat({ whatsappChats, setWhatsappChats, users, currentUser, isM
           <div style={{ overflowY: 'auto', flex: 1 }}>
             {whatsappChats.length === 0 ? (
               <div style={{ padding: 12, fontSize: 12, color: 'var(--text-muted)', textAlign: 'center' }}>
-                No chats yet. Create one to get started!
+                No chats yet. {isManager ? 'Create one above!' : 'Ask your manager to create a group.'}
               </div>
             ) : (
-              whatsappChats.map(chat => (
-                <div
-                  key={chat.id}
-                  onClick={() => setSelectedChat(chat.id)}
-                  style={{
-                    padding: '10px 12px',
-                    background: selectedChat === chat.id ? 'var(--accent)' : 'transparent',
-                    color: selectedChat === chat.id ? '#fff' : 'var(--text-primary)',
-                    borderRadius: 6,
-                    cursor: 'pointer',
-                    marginBottom: 6,
-                    fontSize: 13
-                  }}
-                >
-                  <div style={{ fontWeight: 500, marginBottom: 4 }}>💬 {chat.name}</div>
-                  <div style={{ fontSize: 11, opacity: 0.8 }}>
-                    {chat.members.length} members · {(chat.messages || []).length} messages
+              whatsappChats.map(chat => {
+                const lastMsg = (chat.messages||[]).slice(-1)[0];
+                const lastSender = lastMsg ? users.find(u=>u.id===lastMsg.sender)?.name?.split(' ')[0] || lastMsg.sender : null;
+                return (
+                  <div key={chat.id} onClick={() => setSelectedChat(chat.id)}
+                    style={{ padding:'10px 12px', background: selectedChat===chat.id?'var(--accent)':'transparent',
+                      color: selectedChat===chat.id?'#fff':'var(--text-primary)', borderRadius:6, cursor:'pointer', marginBottom:6, fontSize:13 }}>
+                    <div style={{ fontWeight:500, marginBottom:2 }}>💬 {chat.name}</div>
+                    <div style={{ fontSize:11, opacity:0.75 }}>{chat.members.length} members · {(chat.messages||[]).length} msgs</div>
+                    {lastMsg && <div style={{ fontSize:10, opacity:0.6, marginTop:2, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
+                      {lastSender}: {lastMsg.content.slice(0,30)}{lastMsg.content.length>30?'…':''}
+                    </div>}
                   </div>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
         </div>
@@ -2966,91 +3321,56 @@ function WhatsAppChat({ whatsappChats, setWhatsappChats, users, currentUser, isM
         {/* Chat View */}
         {currentChat ? (
           <div className="card" style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-            {/* Chat Header */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingBottom: 12, borderBottom: '1px solid var(--border)' }}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', paddingBottom:12, borderBottom:'1px solid var(--border)' }}>
               <div>
-                <h3 style={{ margin: '0 0 4px' }}>{currentChat.name}</h3>
-                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                  {currentChat.members.length} members
+                <h3 style={{ margin:'0 0 2px' }}>{currentChat.name}</h3>
+                <div style={{ fontSize:11, color:'var(--text-muted)' }}>
+                  {currentChat.members.map(id => users.find(u=>u.id===id)?.name?.split(' ')[0]).filter(Boolean).join(', ')}
                 </div>
               </div>
-              {isManager && (
-                <button
-                  className="btn btn-danger btn-sm"
-                  onClick={() => deleteChat(currentChat.id)}
-                >
-                  🗑 Delete
-                </button>
-              )}
+              <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+                {saveStatus && <span style={{ fontSize:11, color:'#6ee7b7' }}>{saveStatus}</span>}
+                {isManager && <button className="btn btn-danger btn-sm" onClick={() => deleteChat(currentChat.id)}>🗑 Delete</button>}
+              </div>
             </div>
 
-            {/* Messages */}
-            <div style={{ overflowY: 'auto', flex: 1, padding: '12px', display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {(currentChat.messages || []).length === 0 ? (
-                <div style={{ textAlign: 'center', color: 'var(--text-muted)', margin: 'auto' }}>
-                  No messages yet. Start the conversation!
-                </div>
+            <div ref={messagesEndRef} style={{ overflowY:'auto', flex:1, padding:'12px', display:'flex', flexDirection:'column', gap:8 }}>
+              {(currentChat.messages||[]).length === 0 ? (
+                <div style={{ textAlign:'center', color:'var(--text-muted)', margin:'auto' }}>No messages yet. Start the conversation!</div>
               ) : (
-                (currentChat.messages || []).map(msg => {
+                (currentChat.messages||[]).map(msg => {
                   const sender = users.find(u => u.id === msg.sender);
                   const isOwn = msg.sender === currentUser;
                   return (
-                    <div
-                      key={msg.id}
-                      style={{
-                        display: 'flex',
-                        justifyContent: isOwn ? 'flex-end' : 'flex-start'
-                      }}
-                    >
-                      <div
-                        style={{
-                          maxWidth: '70%',
-                          padding: '8px 12px',
-                          borderRadius: 12,
-                          background: isOwn ? 'var(--accent)' : 'rgba(255,255,255,0.05)',
-                          color: isOwn ? '#fff' : 'var(--text-primary)',
-                          fontSize: 13,
-                          wordWrap: 'break-word'
-                        }}
-                      >
-                        {!isOwn && <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 4 }}>{sender?.name}</div>}
-                        <div>{msg.content}</div>
-                        <div style={{ fontSize: 10, opacity: 0.7, marginTop: 4, textAlign: 'right' }}>
-                          {new Date(msg.timestamp).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
+                    <div key={msg.id} style={{ display:'flex', justifyContent:isOwn?'flex-end':'flex-start' }}>
+                      {!isOwn && <Avatar user={sender||{avatar:'?',color:'#475569'}} size={28} style={{ marginRight:6, flexShrink:0 }} />}
+                      <div style={{ maxWidth:'70%', padding:'8px 12px', borderRadius:12,
+                        background: isOwn ? 'var(--accent)' : 'rgba(255,255,255,0.05)',
+                        color: isOwn ? '#fff' : 'var(--text-primary)', fontSize:13 }}>
+                        {!isOwn && <div style={{ fontSize:11, fontWeight:600, opacity:0.8, marginBottom:2 }}>{sender?.name}</div>}
+                        <div style={{ wordBreak:'break-word' }}>{msg.content}</div>
+                        <div style={{ fontSize:9, opacity:0.6, marginTop:4, textAlign:'right' }}>
+                          {new Date(msg.timestamp).toLocaleTimeString('en-GB', { hour:'2-digit', minute:'2-digit' })}
                         </div>
                       </div>
                     </div>
                   );
                 })
               )}
+              <div ref={messagesEndRef} />
             </div>
 
-            {/* Message Input */}
-            <div style={{ padding: '12px', borderTop: '1px solid var(--border)', display: 'flex', gap: 8 }}>
-              <input
-                type="text"
-                className="input"
-                placeholder="Type a message…"
-                value={newMessage}
-                onChange={e => setNewMessage(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && sendMessage()}
-                style={{ flex: 1, margin: 0 }}
-              />
-              <button
-                className="btn btn-primary btn-sm"
-                onClick={sendMessage}
-                disabled={!newMessage.trim()}
-              >
-                Send
-              </button>
+            <div style={{ padding:'12px', borderTop:'1px solid var(--border)', display:'flex', gap:8 }}>
+              <input type="text" className="input" placeholder="Type a message… (Enter to send)"
+                value={newMessage} onChange={e => setNewMessage(e.target.value)}
+                onKeyDown={e => e.key==='Enter' && !e.shiftKey && sendMessage()}
+                style={{ flex:1, margin:0 }} />
+              <button className="btn btn-primary btn-sm" onClick={sendMessage} disabled={!newMessage.trim()}>Send</button>
             </div>
           </div>
         ) : (
-          <div className="card" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', textAlign: 'center' }}>
-            <div>
-              <div style={{ fontSize: 24, marginBottom: 8 }}>💬</div>
-              <div>Select a chat or create a new group to start messaging</div>
-            </div>
+          <div className="card" style={{ display:'flex', alignItems:'center', justifyContent:'center', color:'var(--text-muted)', textAlign:'center' }}>
+            <div><div style={{ fontSize:32, marginBottom:8 }}>💬</div><div>Select a chat or create a new group</div></div>
           </div>
         )}
       </div>
@@ -3058,43 +3378,27 @@ function WhatsAppChat({ whatsappChats, setWhatsappChats, users, currentUser, isM
       {showCreateChat && (
         <Modal title="Create Group Chat" onClose={() => setShowCreateChat(false)}>
           <FormGroup label="Group Name">
-            <input
-              className="input"
-              placeholder="e.g. Cloud Ops Team"
-              value={chatForm.name}
-              onChange={e => setChatForm({ ...chatForm, name: e.target.value })}
-            />
+            <input className="input" placeholder="e.g. Cloud Ops Team" value={chatForm.name}
+              onChange={e => setChatForm({ ...chatForm, name: e.target.value })} />
           </FormGroup>
           <FormGroup label="Add Members">
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
               {users.filter(u => u.id !== currentUser).map(u => (
-                <label key={u.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px', cursor: 'pointer' }}>
-                  <input
-                    type="checkbox"
-                    checked={chatForm.members.includes(u.id)}
+                <label key={u.id} style={{ display:'flex', alignItems:'center', gap:8, padding:'6px', cursor:'pointer' }}>
+                  <input type="checkbox" checked={chatForm.members.includes(u.id)}
                     onChange={e => {
-                      if (e.target.checked) {
-                        setChatForm({ ...chatForm, members: [...chatForm.members, u.id] });
-                      } else {
-                        setChatForm({ ...chatForm, members: chatForm.members.filter(id => id !== u.id) });
-                      }
-                    }}
-                  />
+                      if (e.target.checked) setChatForm({ ...chatForm, members:[...chatForm.members, u.id] });
+                      else setChatForm({ ...chatForm, members:chatForm.members.filter(id=>id!==u.id) });
+                    }} />
                   <Avatar user={u} size={24} />
-                  <span style={{ fontSize: 13 }}>{u.name} ({u.id})</span>
+                  <span style={{ fontSize:13 }}>{u.name} ({u.id})</span>
                 </label>
               ))}
             </div>
           </FormGroup>
-          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
+          <div style={{ display:'flex', gap:8, justifyContent:'flex-end', marginTop:12 }}>
             <button className="btn btn-secondary" onClick={() => setShowCreateChat(false)}>Cancel</button>
-            <button
-              className="btn btn-primary"
-              onClick={createChat}
-              disabled={!chatForm.name || chatForm.members.length === 0}
-            >
-              Create Group
-            </button>
+            <button className="btn btn-primary" onClick={createChat} disabled={!chatForm.name||chatForm.members.length===0}>Create Group</button>
           </div>
         </Modal>
       )}
@@ -3166,37 +3470,153 @@ function Insights({ users, incidents, timesheets, holidays, absences, isManager 
 }
 
 // ── Capacity (Manager only) ────────────────────────────────────────────────
-function Capacity({ users, rota, holidays, timesheets, isManager }) {
+function Capacity({ users, rota, holidays, timesheets, incidents, isManager }) {
   if (!isManager) return <Alert type="warning">⚠ Capacity is restricted to managers.</Alert>;
   const today = new Date();
-  const weeks = Array.from({ length: 8 }, (_, w) => {
-    const start = new Date(today); start.setDate(today.getDate() + w * 7 - today.getDay() + 1);
-    const days  = Array.from({ length: 5 }, (_, d) => { const dt = new Date(start); dt.setDate(start.getDate()+d); return dt.toISOString().slice(0,10); });
-    const available = users.filter(u => !days.some(d => holidays.find(h => h.userId===u.id && d>=h.start && d<=h.end))).length;
-    return { label: `W${w+1}`, start: start.toISOString().slice(0,10), available, total: users.length };
+  const [planWeeks, setPlanWeeks] = useState(12);
+
+  const weeks = Array.from({ length: planWeeks }, (_, w) => {
+    const start = new Date(today);
+    start.setDate(today.getDate() + w * 7 - today.getDay() + 1);
+    const days = Array.from({ length: 5 }, (_, d) => { const dt = new Date(start); dt.setDate(start.getDate()+d); return dt.toISOString().slice(0,10); });
+    const onLeave = users.filter(u => days.some(d => (holidays||[]).find(h => h.userId===u.id && d>=h.start && d<=h.end)));
+    const available = users.length - onLeave.length;
+    const openIncs = (incidents||[]).filter(i => { const id = i.date?.slice(0,10); return id >= days[0] && id <= days[4] && i.status==='Investigating'; }).length;
+    return { label: `W${w+1}`, startDate: start.toISOString().slice(0,10), available, total: users.length, onLeave: onLeave.map(u=>u.name.split(' ')[0]), openIncs };
+  });
+
+  const maxAvail = users.length;
+
+  // Per-engineer capacity breakdown
+  const engineerCapacity = users.map(u => {
+    const leaveWeeks = weeks.filter(w => {
+      const wStart = w.startDate;
+      const wEnd = new Date(wStart); wEnd.setDate(new Date(wStart).getDate()+4);
+      return (holidays||[]).some(h => h.userId===u.id && h.start<=wEnd.toISOString().slice(0,10) && h.end>=wStart);
+    }).length;
+    const sheets = timesheets[u.id] || [];
+    const totalOC = sheets.reduce((a,b)=>a+(b.weekday_oncall||0)+(b.weekend_oncall||0),0);
+    const ocIncs = (incidents||[]).filter(i=>i.assigned_to===u.id).length;
+    const availPct = Math.round(((planWeeks-leaveWeeks)/planWeeks)*100);
+    return { ...u, leaveWeeks, totalOC, ocIncs, availPct };
   });
 
   return (
     <div>
-      <PageHeader title="Capacity Planning" sub="8-week forward view of team availability" />
+      <PageHeader title="Capacity Planning" sub="Forward view of team availability and workload" />
+
+      <div style={{ display:'flex', gap:8, marginBottom:16, alignItems:'center', flexWrap:'wrap' }}>
+        <span style={{ fontSize:13, color:'var(--text-muted)' }}>Planning horizon:</span>
+        {[4,8,12,16,26,52].map(w => (
+          <button key={w} className={`btn btn-sm ${planWeeks===w?'btn-primary':'btn-secondary'}`} onClick={() => setPlanWeeks(w)}>
+            {w}w{w===52?' (1yr)':w===26?' (6mo)':''}
+          </button>
+        ))}
+      </div>
+
+      {/* Summary KPIs */}
+      <div className="grid-4 mb-16">
+        <StatCard label="Planning Weeks" value={planWeeks} sub="Forward view" accent="#3b82f6" />
+        <StatCard label="Avg Available" value={Math.round(weeks.reduce((a,w)=>a+w.available,0)/weeks.length)+'/'+maxAvail} sub="Engineers per week" accent="#10b981" />
+        <StatCard label="Min Available" value={Math.min(...weeks.map(w=>w.available))+'/'+maxAvail} sub="Lowest capacity week" accent="#ef4444" />
+        <StatCard label="Leave Records" value={(holidays||[]).length} sub="Total approved" accent="#f59e0b" />
+      </div>
+
+      {/* Availability bar chart */}
       <div className="card mb-16">
-        <div className="card-title">Team Availability (Next 8 Weeks)</div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
-          {weeks.map(w => {
-            const pct = (w.available / w.total) * 100;
-            return (
-              <div key={w.label} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, flex: 1, minWidth: 60 }}>
-                <div style={{ fontSize: 11, fontFamily: 'DM Mono', color: 'var(--text-muted)' }}>{w.available}/{w.total}</div>
-                <div style={{ width: '100%', height: 80, background: 'var(--bg-card2)', borderRadius: 6, display: 'flex', alignItems: 'flex-end', overflow: 'hidden' }}>
-                  <div style={{ width: '100%', height: pct + '%', background: pct > 80 ? '#10b981' : pct > 50 ? '#f59e0b' : '#ef4444', transition: 'height 0.3s' }} />
+        <div className="card-title">📊 Team Availability — {planWeeks}-Week Forward View</div>
+        <div style={{ overflowX:'auto' }}>
+          <div style={{ display:'flex', gap:4, alignItems:'flex-end', minWidth: planWeeks * 44, paddingBottom:8 }}>
+            {weeks.map(w => {
+              const pct = (w.available / maxAvail) * 100;
+              const color = pct > 80 ? '#10b981' : pct > 50 ? '#f59e0b' : '#ef4444';
+              return (
+                <div key={w.label} style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', gap:4, minWidth:40 }} title={`${w.label}: ${w.available}/${maxAvail} available${w.onLeave.length?'\nOn leave: '+w.onLeave.join(', '):''}${w.openIncs?'\nOpen incidents: '+w.openIncs:''}`}>
+                  <div style={{ fontSize:9, fontFamily:'DM Mono', color:'var(--text-muted)', textAlign:'center' }}>{w.available}/{maxAvail}</div>
+                  {w.openIncs > 0 && <div style={{ fontSize:9, color:'#ef4444' }}>🚨{w.openIncs}</div>}
+                  <div style={{ width:'100%', height:80, background:'var(--bg-card2)', borderRadius:4, display:'flex', alignItems:'flex-end', overflow:'hidden' }}>
+                    <div style={{ width:'100%', height:`${pct}%`, background:color, transition:'height 0.3s' }} />
+                  </div>
+                  <div style={{ fontSize:9, color:'var(--text-muted)', textAlign:'center' }}>{w.label}</div>
+                  <div style={{ fontSize:8, color:'var(--text-muted)', textAlign:'center' }}>{w.startDate.slice(5)}</div>
                 </div>
-                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{w.label}</div>
-              </div>
-            );
-          })}
+              );
+            })}
+          </div>
+        </div>
+        <div style={{ display:'flex', gap:16, marginTop:8, fontSize:11, color:'var(--text-muted)' }}>
+          <span><span style={{ background:'#10b981', display:'inline-block', width:10, height:10, borderRadius:2, marginRight:4 }}/>{'>'} 80% (Green)</span>
+          <span><span style={{ background:'#f59e0b', display:'inline-block', width:10, height:10, borderRadius:2, marginRight:4 }}/>50–80% (Amber)</span>
+          <span><span style={{ background:'#ef4444', display:'inline-block', width:10, height:10, borderRadius:2, marginRight:4 }}/>&lt; 50% (Red)</span>
+          <span>🚨 = Open incidents that week</span>
         </div>
       </div>
-      <Alert>📈 Red = &lt;50% capacity, Amber = 50–80%, Green = &gt;80%.</Alert>
+
+      {/* Weekly detail table */}
+      <div className="card mb-16" style={{ overflowX:'auto' }}>
+        <div className="card-title">📋 Weekly Detail Table</div>
+        <table style={{ minWidth: 500 }}>
+          <thead>
+            <tr><th>Week</th><th>Start Date</th><th>Available</th><th>Capacity %</th><th>On Leave</th><th>Open Incidents</th><th>Status</th></tr>
+          </thead>
+          <tbody>
+            {weeks.map(w => {
+              const pct = Math.round((w.available/maxAvail)*100);
+              const status = pct > 80 ? 'green' : pct > 50 ? 'amber' : 'red';
+              const statusLabel = pct > 80 ? 'Healthy' : pct > 50 ? 'Reduced' : 'Critical';
+              return (
+                <tr key={w.label}>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:'var(--accent)' }}>{w.label}</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12 }}>{w.startDate}</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12, fontWeight:600 }}>{w.available}/{maxAvail}</td>
+                  <td>
+                    <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+                      <div style={{ flex:1, height:6, background:'var(--bg-card2)', borderRadius:3, overflow:'hidden', minWidth:60 }}>
+                        <div style={{ width:`${pct}%`, height:'100%', background:pct>80?'#10b981':pct>50?'#f59e0b':'#ef4444' }} />
+                      </div>
+                      <span style={{ fontSize:11, fontFamily:'DM Mono' }}>{pct}%</span>
+                    </div>
+                  </td>
+                  <td style={{ fontSize:11, color:'var(--text-muted)' }}>{w.onLeave.join(', ') || '—'}</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:w.openIncs>0?'#ef4444':'var(--text-muted)' }}>{w.openIncs}</td>
+                  <td><Tag label={statusLabel} type={status} /></td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Per-engineer capacity */}
+      <div className="card mb-16">
+        <div className="card-title">👥 Per-Engineer Capacity Overview ({planWeeks}w)</div>
+        <table>
+          <thead>
+            <tr><th>Engineer</th><th>Leave Weeks</th><th>Availability</th><th>Total OC Hours</th><th>Incidents</th><th>Avail %</th></tr>
+          </thead>
+          <tbody>
+            {engineerCapacity.map(u => (
+              <tr key={u.id}>
+                <td><div style={{ display:'flex', gap:8, alignItems:'center' }}><Avatar user={u} size={24} /><span style={{ fontSize:12 }}>{u.name}</span></div></td>
+                <td style={{ fontFamily:'DM Mono', fontSize:12, color: u.leaveWeeks>0?'#f59e0b':'var(--text-muted)' }}>{u.leaveWeeks}w</td>
+                <td>
+                  <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+                    <div style={{ width:80, height:6, background:'var(--bg-card2)', borderRadius:3, overflow:'hidden' }}>
+                      <div style={{ width:`${u.availPct}%`, height:'100%', background:u.availPct>80?'#10b981':u.availPct>50?'#f59e0b':'#ef4444' }} />
+                    </div>
+                    <span style={{ fontSize:11 }}>{planWeeks-u.leaveWeeks}/{planWeeks}w</span>
+                  </div>
+                </td>
+                <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#6ee7b7' }}>{u.totalOC}h</td>
+                <td style={{ fontFamily:'DM Mono', fontSize:12, color:u.ocIncs>0?'#fcd34d':'var(--text-muted)' }}>{u.ocIncs}</td>
+                <td><span style={{ fontFamily:'DM Mono', fontSize:12, fontWeight:600, color:u.availPct>80?'#10b981':u.availPct>50?'#f59e0b':'#ef4444' }}>{u.availPct}%</span></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <Alert>📈 Red = &lt;50% capacity, Amber = 50–80%, Green = &gt;80%. Hover over bars for detail.</Alert>
     </div>
   );
 }
@@ -3245,18 +3665,20 @@ function WeeklyReports({ users, incidents, timesheets, holidays, isManager }) {
 }
 
 // ── Payroll (Manager only) ─────────────────────────────────────────────────
-// ── Payroll (Manager only) ─────────────────────────────────────────────────
-function Payroll({ users, timesheets, payconfig, toil, isManager }) {
+function Payroll({ users, timesheets, payconfig, toil, incidents, isManager }) {
   if (!isManager) return <Alert type="warning">⚠ Payroll is restricted to managers.</Alert>;
 
   const exportCSV = () => {
-    const rows = [['Trigram', 'Full Name', 'Standby Hours', 'On-Call Worked Hours', 'TOIL Balance (hrs)', 'TOIL Capped (hrs)']];
+    const rows = [['Trigram','Full Name','Annual Salary','Monthly Net (base)','Standby Hrs','Worked OC Hrs','Incident Hrs','Total OC Pay (£)','TOIL Balance (hrs)']];
     users.forEach(u => {
-      const p   = payconfig[u.id] || { rate: 40, base: 2500 };
-      const hourly = (p.base * 12) / 2080;
-      const oc  = calcOncallPay(timesheets[u.id], hourly);
-      const tb  = calcTOILBalance(timesheets[u.id], toil, u.id);
-      rows.push([u.id, u.name, oc.totalStandbyHours, oc.totalWorkedHours, tb.balance, tb.cappedAt]);
+      const p      = payconfig[u.id] || { rate: 40, base: 2500 };
+      const annual = p.annual || p.base * 12;
+      const hourly = annual / 2080;
+      const oc     = calcOncallPay(timesheets[u.id], hourly);
+      const tb     = calcTOILBalance(timesheets[u.id], toil, u.id);
+      const tx     = calcUKTax(annual, { pensionPct: p.pensionPct||0, studentLoan: p.studentLoan||false });
+      const incHrs = (timesheets[u.id]||[]).filter(e=>e.week&&e.week.startsWith('INC')).reduce((a,e)=>a+(e.weekday_oncall||0)+(e.weekend_oncall||0),0);
+      rows.push([u.id, u.name, `£${annual.toLocaleString()}`, `£${tx.monthly.net.toFixed(0)}`, oc.totalStandbyHours, oc.totalWorkedHours, incHrs, oc.total.toFixed(2), tb.balance]);
     });
     const csv = rows.map(r => r.map(v => `"${v}"`).join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
@@ -3264,21 +3686,44 @@ function Payroll({ users, timesheets, payconfig, toil, isManager }) {
     a.download = `cloudops-payroll-${new Date().toISOString().slice(0,10)}.csv`; a.click();
   };
 
+  // Summary stats
+  const totalPayroll = users.reduce((sum, u) => {
+    const p = payconfig[u.id] || { base: 2500 };
+    return sum + (p.annual || p.base * 12);
+  }, 0);
+  const totalOCPay = users.reduce((sum, u) => {
+    const p = payconfig[u.id] || { base: 2500 };
+    const hourly = (p.annual || p.base*12) / 2080;
+    return sum + calcOncallPay(timesheets[u.id], hourly).total;
+  }, 0);
+  const totalIncidentHrs = Object.values(timesheets).flatMap(t=>t||[]).filter(e=>e.week&&e.week.startsWith('INC')).reduce((a,e)=>a+(e.weekday_oncall||0)+(e.weekend_oncall||0),0);
+
   return (
     <div>
-      <PageHeader title="Payroll" sub="On-call pay, TOIL and tax summary — manager only"
+      <PageHeader title="Payroll" sub="On-call pay, TOIL, tax and take-home — manager only"
         actions={<button className="btn btn-primary" onClick={exportCSV}>📥 Export CSV</button>} />
 
+      {/* Summary KPIs */}
+      <div className="grid-4 mb-16">
+        <StatCard label="Total Payroll" value={`£${Math.round(totalPayroll/1000)}k/yr`} sub="Base salaries combined" accent="#3b82f6" icon="💷" />
+        <StatCard label="Total OC Pay" value={`£${Math.round(totalOCPay)}`} sub="All engineers" accent="#10b981" icon="🌙" />
+        <StatCard label="Incident Hours" value={`${totalIncidentHrs}h`} sub="Auto-logged from incidents" accent="#f59e0b" icon="🚨" />
+        <StatCard label="Engineers" value={users.length} sub="On payroll" accent="#818cf8" icon="👥" />
+      </div>
+
+      {/* On-call pay table */}
       <div className="card mb-16" style={{ overflowX: 'auto' }}>
-        <div className="card-title">On-Call Pay Summary (includes standby + worked)</div>
-        <table style={{ minWidth: 820 }}>
+        <div className="card-title">On-Call Pay Summary (standby + worked + incident hours)</div>
+        <table style={{ minWidth: 900 }}>
           <thead>
             <tr>
               <th>Engineer</th>
+              <th>Annual Salary</th>
               <th>Standby WD (h)</th><th>Worked WD (h)</th>
               <th>Standby WE (h)</th><th>Worked WE (h)</th>
-              <th>Standby Pay (£5/h)</th>
-              <th>Worked Pay (1.5x)</th>
+              <th style={{ color: '#f59e0b' }}>Incident Hrs</th>
+              <th style={{ color: '#93c5fd' }}>Standby Pay</th>
+              <th style={{ color: '#fcd34d' }}>Worked Pay</th>
               <th style={{ color: '#6ee7b7' }}>Total OC Pay</th>
               <th>TOIL Balance</th>
             </tr>
@@ -3286,55 +3731,91 @@ function Payroll({ users, timesheets, payconfig, toil, isManager }) {
           <tbody>
             {users.map(u => {
               const p      = payconfig[u.id] || { rate: 40, base: 2500 };
-              const hourly = (p.base * 12) / 2080;
+              const annual = p.annual || p.base * 12;
+              const hourly = annual / 2080;
               const oc     = calcOncallPay(timesheets[u.id], hourly);
               const tb     = calcTOILBalance(timesheets[u.id], toil, u.id);
+              const incHrs = (timesheets[u.id]||[]).filter(e=>e.week&&e.week.startsWith('INC')).reduce((a,e)=>a+(e.weekday_oncall||0)+(e.weekend_oncall||0),0);
               return (
                 <tr key={u.id}>
-                  <td><div style={{ display: 'flex', gap: 8, alignItems: 'center' }}><Avatar user={u} size={24} /><div><div style={{ fontSize: 12 }}>{u.name}</div><div style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'DM Mono' }}>{u.id} · £{hourly.toFixed(2)}/hr</div></div></div></td>
-                  <td style={{ fontFamily: 'DM Mono', fontSize: 12 }}>{oc.standbyWD}h</td>
-                  <td style={{ fontFamily: 'DM Mono', fontSize: 12 }}>{oc.workedWD}h</td>
-                  <td style={{ fontFamily: 'DM Mono', fontSize: 12 }}>{oc.standbyWE}h</td>
-                  <td style={{ fontFamily: 'DM Mono', fontSize: 12 }}>{oc.workedWE}h</td>
-                  <td style={{ fontFamily: 'DM Mono', fontSize: 12, color: '#93c5fd' }}>£{oc.standbyPay.toFixed(2)}</td>
-                  <td style={{ fontFamily: 'DM Mono', fontSize: 12, color: '#fcd34d' }}>£{oc.workedPay.toFixed(2)}</td>
-                  <td style={{ fontFamily: 'DM Mono', fontSize: 12, fontWeight: 700, color: '#6ee7b7' }}>£{oc.total.toFixed(2)}</td>
-                  <td style={{ fontFamily: 'DM Mono', fontSize: 12, color: tb.balance > 0 ? '#6ee7b7' : '#fca5a5' }}>{tb.balance}h</td>
+                  <td><div style={{ display:'flex', gap:8, alignItems:'center' }}><Avatar user={u} size={24} /><div><div style={{ fontSize:12 }}>{u.name}</div><div style={{ fontSize:10, color:'var(--text-muted)', fontFamily:'DM Mono' }}>{u.id} · £{hourly.toFixed(2)}/hr</div></div></div></td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:'var(--text-secondary)' }}>£{annual.toLocaleString()}</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12 }}>{oc.standbyWD}h</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12 }}>{oc.workedWD}h</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12 }}>{oc.standbyWE}h</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12 }}>{oc.workedWE}h</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12, color: incHrs>0?'#f59e0b':'var(--text-muted)' }}>{incHrs>0?`${incHrs}h`:'—'}</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#93c5fd' }}>£{oc.standbyPay.toFixed(2)}</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#fcd34d' }}>£{oc.workedPay.toFixed(2)}</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12, fontWeight:700, color:'#6ee7b7' }}>£{oc.total.toFixed(2)}</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:tb.balance>0?'#6ee7b7':'#fca5a5' }}>{tb.balance}h</td>
                 </tr>
               );
             })}
           </tbody>
         </table>
-        <div style={{ marginTop: 10, fontSize: 11, color: 'var(--text-muted)' }}>
-          Standby rate: £{ONCALL_STANDBY_RATE}/hr flat · Worked rate: {ONCALL_WORKED_MULTIPLIER}x hourly · TOIL: UK WTR 1:1 on worked hours · max {TOIL_MAX_CARRYOVER_HOURS}h carryover
+        <div style={{ marginTop:10, fontSize:11, color:'var(--text-muted)' }}>
+          Standby: £{ONCALL_STANDBY_RATE}/hr flat · Worked: {ONCALL_WORKED_MULTIPLIER}x hourly · TOIL: UK WTR 1:1 · max {TOIL_MAX_CARRYOVER_HOURS}h · 🚨 Incident hours auto-logged from Incidents page
         </div>
       </div>
 
-      {/* Per-engineer take-home breakdown */}
-      <div className="card-title" style={{ marginBottom: 12 }}>Take-Home Breakdown (base + on-call, after UK tax)</div>
+      {/* Full take-home breakdown per engineer */}
+      <div className="card-title" style={{ marginBottom:12 }}>💷 Take-Home Breakdown (base + OC, after UK tax 2025-26)</div>
       <div className="grid-2 mb-16">
         {users.map(u => {
-          const p      = payconfig[u.id] || { rate: 40, base: 2500 };
-          const hourly = (p.base * 12) / 2080;
+          const p      = payconfig[u.id] || { base: 2500 };
+          const annual = p.annual || p.base * 12;
+          const hourly = annual / 2080;
           const oc     = calcOncallPay(timesheets[u.id], hourly);
-          const annualBase = p.base * 12;
-          const annualOC   = oc.total * 12; // annualise for tax calc
-          const tx = calcUKTax(annualBase + annualOC, { pensionPct: p.pensionPct || 0, studentLoan: p.studentLoan || false });
+          const annualOC   = oc.total * 12;
+          const tx = calcUKTax(annual + annualOC, { pensionPct:p.pensionPct||0, studentLoan:p.studentLoan||false });
+          const incHrs = (timesheets[u.id]||[]).filter(e=>e.week&&e.week.startsWith('INC')).reduce((a,e)=>a+(e.weekday_oncall||0)+(e.weekend_oncall||0),0);
           return (
             <div key={u.id} className="card">
-              <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 10 }}>
+              <div style={{ display:'flex', gap:10, alignItems:'center', marginBottom:10 }}>
                 <Avatar user={u} size={28} />
-                <div>
-                  <div style={{ fontSize: 13, fontWeight: 600 }}>{u.name}</div>
-                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Gross incl. OC: £{(tx.annualGross/12).toLocaleString('en-GB',{maximumFractionDigits:0})}/mo · Eff. rate: {(tx.effectiveRate*100).toFixed(1)}%</div>
+                <div style={{ flex:1 }}>
+                  <div style={{ fontSize:13, fontWeight:600 }}>{u.name}</div>
+                  <div style={{ fontSize:11, color:'var(--text-muted)' }}>
+                    £{annual.toLocaleString()}/yr base · Eff. rate: {(tx.effectiveRate*100).toFixed(1)}%
+                    {incHrs>0 && <span style={{ color:'#f59e0b', marginLeft:6 }}>· 🚨 {incHrs}h incident hrs</span>}
+                  </div>
                 </div>
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 6, fontSize: 11 }}>
+              {/* Tax breakdown summary */}
+              <div style={{ background:'rgba(30,64,175,0.1)', borderRadius:8, padding:'8px 12px', marginBottom:10, fontSize:11 }}>
+                <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
+                  <span style={{ color:'var(--text-muted)' }}>Annual gross (inc. OC)</span>
+                  <span style={{ fontFamily:'DM Mono' }}>£{Math.round(tx.annualGross).toLocaleString()}</span>
+                </div>
+                <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
+                  <span style={{ color:'#fca5a5' }}>Income Tax</span>
+                  <span style={{ fontFamily:'DM Mono', color:'#fca5a5' }}>-£{Math.round(tx.incomeTax).toLocaleString()}</span>
+                </div>
+                <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
+                  <span style={{ color:'#fcd34d' }}>National Insurance</span>
+                  <span style={{ fontFamily:'DM Mono', color:'#fcd34d' }}>-£{Math.round(tx.ni).toLocaleString()}</span>
+                </div>
+                {(p.pensionPct||0) > 0 && <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
+                  <span style={{ color:'#93c5fd' }}>Pension ({p.pensionPct}%)</span>
+                  <span style={{ fontFamily:'DM Mono', color:'#93c5fd' }}>-£{Math.round(tx.pension).toLocaleString()}</span>
+                </div>}
+                {p.studentLoan && <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
+                  <span style={{ color:'#c4b5fd' }}>Student Loan Plan 2</span>
+                  <span style={{ fontFamily:'DM Mono', color:'#c4b5fd' }}>-£{Math.round(tx.slRepay).toLocaleString()}</span>
+                </div>}
+                <div style={{ display:'flex', justifyContent:'space-between', borderTop:'1px solid var(--border)', paddingTop:4, marginTop:4 }}>
+                  <span style={{ fontWeight:600 }}>Annual take-home</span>
+                  <span style={{ fontFamily:'DM Mono', fontWeight:700, color:'#6ee7b7' }}>£{Math.round(tx.annualNet).toLocaleString()}</span>
+                </div>
+              </div>
+              {/* Period grid */}
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:6, fontSize:11 }}>
                 {[['Monthly','monthly'],['Weekly','weekly'],['Daily','daily'],['Hourly','hourly']].map(([label,key]) => (
-                  <div key={key} style={{ background: 'rgba(30,64,175,0.15)', borderRadius: 6, padding: '6px 8px' }}>
-                    <div style={{ color: 'var(--text-muted)', marginBottom: 2 }}>{label}</div>
-                    <div style={{ fontWeight: 700, color: '#6ee7b7', fontFamily: 'DM Mono' }}>£{tx[key].net.toFixed(key==='hourly'?2:0)}</div>
-                    <div style={{ color: 'var(--text-muted)', fontSize: 10 }}>gross £{tx[key].gross.toFixed(key==='hourly'?2:0)}</div>
+                  <div key={key} style={{ background:'rgba(30,64,175,0.15)', borderRadius:6, padding:'6px 8px', textAlign:'center' }}>
+                    <div style={{ color:'var(--text-muted)', marginBottom:2, fontSize:10 }}>{label}</div>
+                    <div style={{ fontWeight:700, color:'#6ee7b7', fontFamily:'DM Mono', fontSize:12 }}>£{tx[key].net.toFixed(key==='hourly'?2:0)}</div>
+                    <div style={{ color:'var(--text-muted)', fontSize:9 }}>gross £{tx[key].gross.toFixed(key==='hourly'?2:0)}</div>
                   </div>
                 ))}
               </div>
@@ -3363,16 +3844,29 @@ function PayConfig({ users, payconfig, setPayconfig, isManager }) {
   };
 
   const u   = users.find(x => x.id === selectedUid);
-  const p   = payconfig[selectedUid] || { base: 2500, rate: 40, pensionPct: 0, studentLoan: false };
+  const p   = payconfig[selectedUid] || { annual: 30000, base: 2500, rate: 40, pensionPct: 0, studentLoan: false };
   const set = (updates) => setPayconfig({ ...payconfig, [selectedUid]: { ...p, ...updates } });
 
-  const annual  = p.base * 12;
+  // Salary entry mode: 'annual' (default) or 'monthly'
+  const [salaryMode, setSalaryMode] = useState('annual');
+
+  const annual  = salaryMode === 'annual' ? (p.annual || p.base * 12) : p.base * 12;
+  const monthly = annual / 12;
   const hourly  = annual / 2080;
   const tx      = calcUKTax(annual, { pensionPct: p.pensionPct || 0, studentLoan: p.studentLoan || false });
   const standbyRate = ONCALL_STANDBY_RATE;
   const workedRate  = hourly * ONCALL_WORKED_MULTIPLIER;
 
   const fmt = (n, dp=2) => `£${n.toLocaleString('en-GB', { minimumFractionDigits: dp, maximumFractionDigits: dp })}`;
+
+  const handleSalaryChange = (val) => {
+    const num = +val;
+    if (salaryMode === 'annual') {
+      set({ annual: num, base: Math.round(num / 12) });
+    } else {
+      set({ base: num, annual: num * 12 });
+    }
+  };
 
   return (
     <div>
@@ -3414,9 +3908,23 @@ function PayConfig({ users, payconfig, setPayconfig, isManager }) {
           {/* Left: inputs */}
           <div className="card">
             <div className="card-title">💷 Pay Settings — {u.name}</div>
-            <FormGroup label="Monthly Gross Base (£)">
-              <input className="input" type="number" value={p.base} onChange={e => set({ base: +e.target.value })} />
-            </FormGroup>
+            {/* Salary mode toggle */}
+            <div style={{ display: 'flex', gap: 8, marginBottom: 12, alignItems: 'center' }}>
+              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Salary entry:</span>
+              <button className={`btn btn-sm ${salaryMode === 'annual' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setSalaryMode('annual')}>Yearly (default)</button>
+              <button className={`btn btn-sm ${salaryMode === 'monthly' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setSalaryMode('monthly')}>Monthly</button>
+            </div>
+            {salaryMode === 'annual' ? (
+              <FormGroup label="Annual Gross Salary (£)" hint="Default — enter yearly salary">
+                <input className="input" type="number" step="1000" value={p.annual || p.base * 12} onChange={e => handleSalaryChange(e.target.value)} />
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>= {fmt(monthly, 0)}/month · {fmt(hourly)}/hr</div>
+              </FormGroup>
+            ) : (
+              <FormGroup label="Monthly Gross Base (£)">
+                <input className="input" type="number" value={p.base} onChange={e => handleSalaryChange(e.target.value)} />
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>= {fmt(annual, 0)}/year · {fmt(hourly)}/hr</div>
+              </FormGroup>
+            )}
             <FormGroup label="Pension Contribution (%)" hint="employee">
               <input className="input" type="number" min="0" max="100" step="0.5" value={p.pensionPct||0} onChange={e => set({ pensionPct: +e.target.value })} />
             </FormGroup>
@@ -3510,7 +4018,7 @@ function PayConfig({ users, payconfig, setPayconfig, isManager }) {
 
 
 // ── Settings (Manager only, all settings here) ─────────────────────────────
-function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks, driveToken, profilePics, setProfilePicsState }) {
+function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks, driveToken, profilePics, setProfilePicsState, rota, setRota }) {
   const BLANK_FORM = { name: '', role: 'Engineer', mobile_number: '', google_email: '', profile_picture: '', avatar: '', color: '' };
   const [showAdd, setShowAdd]         = useState(false);
   const [showLink, setShowLink]       = useState(false);
@@ -3554,6 +4062,16 @@ function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks, dri
       profile_picture: form.profile_picture || '' };
     const updatedUsers = [...users, newUser];
     setUsers(updatedUsers);
+    // Auto-extend rota for the new engineer — inherit existing date range from rota
+    const existingDates = Object.values(rota).flatMap(r => Object.keys(r));
+    if (existingDates.length > 0) {
+      const sorted = existingDates.sort();
+      const newRota = generateRota(updatedUsers, sorted[0], Math.ceil(existingDates.length / 7));
+      // Merge: keep existing entries, add new engineer's generated entries
+      const merged = { ...newRota };
+      Object.keys(rota).forEach(uid => { merged[uid] = { ...newRota[uid], ...rota[uid] }; });
+      setRota(merged);
+    }
     // Initialise password in registry
     const reg = updatePasswordInRegistry(id, id.toLowerCase());
     if (driveToken) await syncRegistryToDrive(driveToken, reg, updatedUsers);
@@ -3924,7 +4442,12 @@ export default function App() {
       setLastSync(new Date());
       setSyncing(false);
       setConnectingDrive(false);
-    } catch (e) { console.error('Drive connect error:', e); setSyncing(false); setConnectingDrive(false); }
+    } catch (e) { console.error('Drive connect error:', e); setSyncing(false); setConnectingDrive(false);
+      // Show friendly message if Drive is inaccessible
+      if (currentUser === 'MBA47') {
+        alert('⚠️ Google Drive is not accessible.\n\nThe folder (dsmeetul@3ds.com) may not be shared with this application, or OAuth permissions are pending.\n\nPlease speak to Meetul to ensure the Drive folder is shared with the app.\n\nAll data is still saved locally in your browser session.');
+      }
+    }
   };
 
   const save = useCallback(async (key, data) => {
@@ -3954,7 +4477,12 @@ export default function App() {
   useEffect(() => { save('obsidianNotes', obsidianNotes); }, [obsidianNotes]);
   useEffect(() => { save('whatsappChats', whatsappChats); }, [whatsappChats]);
 
-  const login = (uid) => { setCurrentUser(uid); setLoggedIn(true); setPage(uid === 'MBA47' ? 'dashboard' : 'oncall'); };
+  const login = (uid) => { setCurrentUser(uid); setLoggedIn(true); setPage(uid === 'MBA47' ? 'dashboard' : 'oncall');
+    // Auto-connect Google Drive for manager (MBA47)
+    if (uid === 'MBA47' && !driveToken) {
+      setTimeout(() => connectDrive().catch(() => {}), 300);
+    }
+  };
 
   if (!loggedIn) return <LoginScreen onLogin={login} driveToken={driveToken} onConnectDrive={connectDrive} users={users} connectingDrive={connectingDrive} />;
 
@@ -3980,7 +4508,7 @@ export default function App() {
       case 'myshift':    return <MyShift {...props} />;
       case 'calendar':   return <CalendarView {...props} />;
       case 'rota':       return <RotaPage {...props} />;
-      case 'incidents':  return <Incidents {...props} />;
+      case 'incidents':  return <Incidents {...props} timesheets={timesheets} setTimesheets={setTimesheets} />;
       case 'timesheets': return <Timesheets {...props} />;
       case 'holidays':   return <Holidays {...props} />;
       case 'swaps':      return <ShiftSwaps {...props} />;
@@ -3996,9 +4524,9 @@ export default function App() {
       case 'docs':       return <Documents {...props} />;
       case 'whatsapp':   return <WhatsAppChat {...props} />;
       case 'insights':   return <Insights {...props} />;
-      case 'capacity':   return <Capacity {...props} />;
+      case 'capacity':   return <Capacity {...props} incidents={incidents} />;
       case 'reports':    return <WeeklyReports {...props} />;
-      case 'payroll':    return <Payroll {...props} />;
+      case 'payroll':    return <Payroll {...props} incidents={incidents} />;
       case 'payconfig':  return <PayConfig {...props} />;
       case 'settings':   return <Settings {...props} />;
       case 'myaccount':  return <MyAccount currentUser={currentUser} users={users} setUsers={setUsers} driveToken={driveToken} profilePics={profilePics} setProfilePicsState={setProfilePicsState} />;
