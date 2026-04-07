@@ -1855,12 +1855,105 @@ function StressScore({ users, timesheets, incidents, isManager }) {
 }
 
 // ── TOIL (Auto-calculated from timesheets) ─────────────────────────────────
-function TOIL({ users, timesheets, toil, setToil, currentUser, isManager }) {
-  // Auto-accrue TOIL from weekend OC hours
-  const autoAccrued = (userId) => {
-    const sheets = timesheets[userId] || [];
-    return sheets.reduce((a, b) => a + (b.weekend_oncall || 0), 0);
+// ── UK TAX ENGINE (2025-26) ───────────────────────────────────────────────
+const UK_TAX = {
+  year: '2025-26',
+  personalAllowance: 12570,
+  basicRateLimit: 50270,   // personal allowance + basic rate band
+  higherRateLimit: 125140,
+  basicRate: 0.20,
+  higherRate: 0.40,
+  additionalRate: 0.45,
+  niPrimaryThreshold: 12570,
+  niUpperEarningsLimit: 50270,
+  niRate1: 0.08,  // 8% between PT and UEL
+  niRate2: 0.02,  // 2% above UEL
+  studentLoanPlan2Threshold: 27295,
+  studentLoanPlan2Rate: 0.09,
+};
+
+function calcUKTax(annualGross, { studentLoan = false, pensionPct = 0, taxCode = '1257L' } = {}) {
+  const pension    = annualGross * (pensionPct / 100);
+  const taxable    = Math.max(0, annualGross - pension);
+  const t          = UK_TAX;
+  const pa         = taxCode === '1257L' ? t.personalAllowance : t.personalAllowance; // extensible
+  // Taper personal allowance above £100k
+  const effectivePA = taxable > 100000 ? Math.max(0, pa - (taxable - 100000) / 2) : pa;
+
+  let incomeTax = 0;
+  const abovePA = Math.max(0, taxable - effectivePA);
+  if (abovePA > 0) {
+    const basic   = Math.min(abovePA, t.basicRateLimit - effectivePA);
+    const higher  = Math.min(Math.max(0, abovePA - (t.basicRateLimit - effectivePA)), t.higherRateLimit - t.basicRateLimit);
+    const addl    = Math.max(0, abovePA - (t.higherRateLimit - effectivePA));
+    incomeTax = basic * t.basicRate + higher * t.higherRate + addl * t.additionalRate;
+  }
+
+  // NI (Class 1 employee)
+  let ni = 0;
+  if (annualGross > t.niPrimaryThreshold) {
+    const band1 = Math.min(annualGross, t.niUpperEarningsLimit) - t.niPrimaryThreshold;
+    const band2 = Math.max(0, annualGross - t.niUpperEarningsLimit);
+    ni = band1 * t.niRate1 + band2 * t.niRate2;
+  }
+
+  const slRepay = studentLoan && annualGross > t.studentLoanPlan2Threshold
+    ? (annualGross - t.studentLoanPlan2Threshold) * t.studentLoanPlan2Rate : 0;
+
+  const totalDeductions = incomeTax + ni + slRepay + pension;
+  const annualNet       = annualGross - totalDeductions;
+  const eff             = annualGross > 0 ? totalDeductions / annualGross : 0;
+
+  return {
+    annualGross, annualNet, incomeTax, ni, pension, slRepay, totalDeductions,
+    effectiveRate: eff,
+    monthly: { gross: annualGross/12, net: annualNet/12, tax: incomeTax/12, ni: ni/12, pension: pension/12, sl: slRepay/12 },
+    weekly:  { gross: annualGross/52, net: annualNet/52, tax: incomeTax/52, ni: ni/52, pension: pension/52, sl: slRepay/52 },
+    daily:   { gross: annualGross/260, net: annualNet/260, tax: incomeTax/260, ni: ni/260, pension: pension/260, sl: slRepay/260 },
+    hourly:  { gross: annualGross/2080, net: annualNet/2080, tax: incomeTax/2080, ni: ni/2080, pension: pension/2080, sl: slRepay/2080 },
   };
+}
+
+// ── ON-CALL PAY RULES ─────────────────────────────────────────────────────
+// Weekday evening: Mon–Thu 19:00–07:00 = £5/hr standby + 1.5x hourly for worked
+// Weekend:         Fri–Mon 19:00–07:00 = £5/hr standby + 1.5x hourly for worked
+// TOIL: UK Working Time Regulations 1998 — overtime beyond contracted 48hr week
+// accrues 1:1 TOIL. Bank holidays count as rest. Max carryover = 5 days (40h).
+const ONCALL_STANDBY_RATE = 5;    // £/hr flat
+const ONCALL_WORKED_MULTIPLIER = 1.5;
+const TOIL_MAX_CARRYOVER_HOURS = 40; // 5 days per UK WTR
+const TOIL_ACCRUAL_RATE = 1.0;       // 1:1 per UK WTR
+
+function calcOncallPay(timesheetEntries, hourlyRate) {
+  // Each entry may have: standby_wd, worked_wd, standby_we, worked_we (hours)
+  let standbyWD = 0, workedWD = 0, standbyWE = 0, workedWE = 0;
+  (timesheetEntries || []).forEach(e => {
+    standbyWD += e.standby_wd || 0;
+    workedWD  += e.worked_wd  || 0;
+    standbyWE += e.standby_we || 0;
+    workedWE  += e.worked_we  || 0;
+  });
+  const standbyPay = (standbyWD + standbyWE) * ONCALL_STANDBY_RATE;
+  const workedPay  = (workedWD + workedWE) * hourlyRate * ONCALL_WORKED_MULTIPLIER;
+  const totalOncallHours = standbyWD + workedWD + standbyWE + workedWE;
+  return { standbyWD, workedWD, standbyWE, workedWE, standbyPay, workedPay,
+    total: standbyPay + workedPay, totalOncallHours,
+    totalStandbyHours: standbyWD + standbyWE, totalWorkedHours: workedWD + workedWE };
+}
+
+function calcTOILBalance(timesheetEntries, toilEntries, userId) {
+  // Accrual: worked on-call hours beyond contracted hours → TOIL at 1:1 (UK WTR)
+  const workedOC = (timesheetEntries || []).reduce((a, e) => a + (e.worked_wd||0) + (e.worked_we||0), 0);
+  const autoToil = workedOC * TOIL_ACCRUAL_RATE;
+  const manualAccrued = (toilEntries || []).filter(t => t.userId === userId && t.type === 'Accrued').reduce((a,t) => a + t.hours, 0);
+  const used  = (toilEntries || []).filter(t => t.userId === userId && t.type === 'Used').reduce((a,t) => a + t.hours, 0);
+  const total = autoToil + manualAccrued;
+  const balance = Math.min(total - used, TOIL_MAX_CARRYOVER_HOURS); // cap at WTR max carryover
+  return { autoToil, manualAccrued, total, used, balance, workedOC, cappedAt: TOIL_MAX_CARRYOVER_HOURS };
+}
+
+// ── TOIL ──────────────────────────────────────────────────────────────────
+function TOIL({ users, timesheets, toil, setToil, currentUser, isManager }) {
   const manualToil = isManager ? toil : toil.filter(t => t.userId === currentUser);
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState({ userId: currentUser, hours: '', reason: '', date: '', type: 'Used' });
@@ -1871,33 +1964,33 @@ function TOIL({ users, timesheets, toil, setToil, currentUser, isManager }) {
     setShowModal(false);
   };
 
-  const byUser = (uid) => {
-    const auto   = autoAccrued(uid);
-    const manual = toil.filter(t => t.userId === uid && t.type === 'Accrued').reduce((a,b) => a + b.hours, 0);
-    const used   = toil.filter(t => t.userId === uid && t.type === 'Used').reduce((a,b) => a + b.hours, 0);
-    return { auto, manual, total: auto + manual, used, balance: auto + manual - used };
-  };
+  const visibleUsers = isManager ? users : users.filter(u => u.id === currentUser);
 
   return (
     <div>
-      <PageHeader title="TOIL — Time Off In Lieu" sub="Auto-calculated from weekend on-call hours + manual adjustments"
+      <PageHeader title="TOIL — Time Off In Lieu"
+        sub="UK Working Time Regulations 1998 — 1:1 accrual on worked on-call hours · max 40h carryover"
         actions={isManager && <button className="btn btn-primary" onClick={() => setShowModal(true)}>+ Manual Entry</button>} />
-      <Alert type="info">🔄 TOIL is automatically accrued from weekend on-call hours logged in Timesheets. Managers can add manual adjustments below.</Alert>
+      <Alert type="info">🇬🇧 UK WTR: TOIL accrues at <strong>1:1</strong> for hours <em>worked</em> during on-call (standby hours do not accrue TOIL). Maximum carryover is <strong>40 hours (5 days)</strong> per the Working Time Regulations 1998.</Alert>
       <div className="grid-2 mb-16">
-        {users.map(u => {
-          const b = byUser(u.id);
+        {visibleUsers.map(u => {
+          const b = calcTOILBalance(timesheets[u.id], toil, u.id);
           return (
             <div key={u.id} className="card">
               <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 12 }}>
                 <Avatar user={u} size={32} />
-                <div className="name-sm">{u.name}</div>
+                <div>
+                  <div className="name-sm">{u.name}</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Worked OC: {b.workedOC}h → auto TOIL: {b.autoToil}h</div>
+                </div>
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
-                <div><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Auto (WE-OC)</div><div style={{ fontSize: 16, fontWeight: 600, color: '#6ee7b7' }}>{b.auto}h</div></div>
-                <div><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Manual</div><div style={{ fontSize: 16, fontWeight: 600, color: '#93c5fd' }}>{b.manual}h</div></div>
-                <div><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Used</div><div style={{ fontSize: 16, fontWeight: 600, color: '#fcd34d' }}>{b.used}h</div></div>
-                <div><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Balance</div><div style={{ fontSize: 16, fontWeight: 600, color: b.balance >= 0 ? '#6ee7b7' : '#fca5a5' }}>{b.balance}h</div></div>
+                <div><div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Auto (1:1 worked)</div><div style={{ fontSize: 16, fontWeight: 600, color: '#6ee7b7' }}>{b.autoToil}h</div></div>
+                <div><div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Manual</div><div style={{ fontSize: 16, fontWeight: 600, color: '#93c5fd' }}>{b.manualAccrued}h</div></div>
+                <div><div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Used</div><div style={{ fontSize: 16, fontWeight: 600, color: '#fcd34d' }}>{b.used}h</div></div>
+                <div><div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Balance (max {b.cappedAt}h)</div><div style={{ fontSize: 16, fontWeight: 600, color: b.balance >= 0 ? '#6ee7b7' : '#fca5a5' }}>{b.balance}h</div></div>
               </div>
+              {b.balance >= TOIL_MAX_CARRYOVER_HOURS && <div style={{ marginTop: 8, fontSize: 11, color: '#fcd34d' }}>⚠ At WTR carryover cap — use before year end</div>}
             </div>
           );
         })}
@@ -1948,6 +2041,8 @@ function TOIL({ users, timesheets, toil, setToil, currentUser, isManager }) {
     </div>
   );
 }
+
+// ── Absence / Sickness ─────────────────────────────────────────────────────
 
 // ── Absence / Sickness ─────────────────────────────────────────────────────
 function Absence({ users, absences, setAbsences, currentUser, isManager }) {
@@ -3150,71 +3245,269 @@ function WeeklyReports({ users, incidents, timesheets, holidays, isManager }) {
 }
 
 // ── Payroll (Manager only) ─────────────────────────────────────────────────
-function Payroll({ users, timesheets, payconfig, isManager }) {
+// ── Payroll (Manager only) ─────────────────────────────────────────────────
+function Payroll({ users, timesheets, payconfig, toil, isManager }) {
   if (!isManager) return <Alert type="warning">⚠ Payroll is restricted to managers.</Alert>;
+
+  const exportCSV = () => {
+    const rows = [['Trigram', 'Full Name', 'Standby Hours', 'On-Call Worked Hours', 'TOIL Balance (hrs)', 'TOIL Capped (hrs)']];
+    users.forEach(u => {
+      const p   = payconfig[u.id] || { rate: 40, base: 2500 };
+      const hourly = (p.base * 12) / 2080;
+      const oc  = calcOncallPay(timesheets[u.id], hourly);
+      const tb  = calcTOILBalance(timesheets[u.id], toil, u.id);
+      rows.push([u.id, u.name, oc.totalStandbyHours, oc.totalWorkedHours, tb.balance, tb.cappedAt]);
+    });
+    const csv = rows.map(r => r.map(v => `"${v}"`).join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+    a.download = `cloudops-payroll-${new Date().toISOString().slice(0,10)}.csv`; a.click();
+  };
+
   return (
     <div>
-      <PageHeader title="Payroll" sub="Pay calculation and submission" />
-      <div className="card" style={{ overflowX: 'auto' }}>
-        <table>
-          <thead><tr><th>Engineer</th><th>Base/mo</th><th>WD-OC Hrs</th><th>WE-OC Hrs</th><th>WD-OC Pay</th><th>WE-OC Pay</th><th>Est. OC Total</th></tr></thead>
+      <PageHeader title="Payroll" sub="On-call pay, TOIL and tax summary — manager only"
+        actions={<button className="btn btn-primary" onClick={exportCSV}>📥 Export CSV</button>} />
+
+      <div className="card mb-16" style={{ overflowX: 'auto' }}>
+        <div className="card-title">On-Call Pay Summary (includes standby + worked)</div>
+        <table style={{ minWidth: 820 }}>
+          <thead>
+            <tr>
+              <th>Engineer</th>
+              <th>Standby WD (h)</th><th>Worked WD (h)</th>
+              <th>Standby WE (h)</th><th>Worked WE (h)</th>
+              <th>Standby Pay (£5/h)</th>
+              <th>Worked Pay (1.5x)</th>
+              <th style={{ color: '#6ee7b7' }}>Total OC Pay</th>
+              <th>TOIL Balance</th>
+            </tr>
+          </thead>
           <tbody>
             {users.map(u => {
-              const p   = payconfig[u.id] || { rate: 40, base: 2500 };
-              const sheets = timesheets[u.id] || [];
-              const wd  = sheets.reduce((a,b) => a+(b.weekday_oncall||0),0);
-              const we  = sheets.reduce((a,b) => a+(b.weekend_oncall||0),0);
-              const wdp = wd * p.rate * 0.5;
-              const wep = we * p.rate * 0.75;
+              const p      = payconfig[u.id] || { rate: 40, base: 2500 };
+              const hourly = (p.base * 12) / 2080;
+              const oc     = calcOncallPay(timesheets[u.id], hourly);
+              const tb     = calcTOILBalance(timesheets[u.id], toil, u.id);
               return (
                 <tr key={u.id}>
-                  <td><div style={{ display: 'flex', gap: 8, alignItems: 'center' }}><Avatar user={u} size={24} /><span style={{ fontSize: 12 }}>{u.name}</span></div></td>
-                  <td style={{ fontFamily: 'DM Mono', fontSize: 12 }}>£{(p.base||0).toLocaleString()}</td>
-                  <td style={{ fontFamily: 'DM Mono', fontSize: 12 }}>{wd}h</td>
-                  <td style={{ fontFamily: 'DM Mono', fontSize: 12 }}>{we}h</td>
-                  <td style={{ fontFamily: 'DM Mono', fontSize: 12, color: '#6ee7b7' }}>£{wdp.toFixed(2)}</td>
-                  <td style={{ fontFamily: 'DM Mono', fontSize: 12, color: '#fcd34d' }}>£{wep.toFixed(2)}</td>
-                  <td style={{ fontFamily: 'DM Mono', fontSize: 12, fontWeight: 600 }}>£{(wdp + wep).toFixed(2)}</td>
+                  <td><div style={{ display: 'flex', gap: 8, alignItems: 'center' }}><Avatar user={u} size={24} /><div><div style={{ fontSize: 12 }}>{u.name}</div><div style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'DM Mono' }}>{u.id} · £{hourly.toFixed(2)}/hr</div></div></div></td>
+                  <td style={{ fontFamily: 'DM Mono', fontSize: 12 }}>{oc.standbyWD}h</td>
+                  <td style={{ fontFamily: 'DM Mono', fontSize: 12 }}>{oc.workedWD}h</td>
+                  <td style={{ fontFamily: 'DM Mono', fontSize: 12 }}>{oc.standbyWE}h</td>
+                  <td style={{ fontFamily: 'DM Mono', fontSize: 12 }}>{oc.workedWE}h</td>
+                  <td style={{ fontFamily: 'DM Mono', fontSize: 12, color: '#93c5fd' }}>£{oc.standbyPay.toFixed(2)}</td>
+                  <td style={{ fontFamily: 'DM Mono', fontSize: 12, color: '#fcd34d' }}>£{oc.workedPay.toFixed(2)}</td>
+                  <td style={{ fontFamily: 'DM Mono', fontSize: 12, fontWeight: 700, color: '#6ee7b7' }}>£{oc.total.toFixed(2)}</td>
+                  <td style={{ fontFamily: 'DM Mono', fontSize: 12, color: tb.balance > 0 ? '#6ee7b7' : '#fca5a5' }}>{tb.balance}h</td>
                 </tr>
               );
             })}
           </tbody>
         </table>
-        <div style={{ marginTop: 16 }}>
-          <button className="btn btn-primary" onClick={() => window.print()}>📤 Submit / Print</button>
+        <div style={{ marginTop: 10, fontSize: 11, color: 'var(--text-muted)' }}>
+          Standby rate: £{ONCALL_STANDBY_RATE}/hr flat · Worked rate: {ONCALL_WORKED_MULTIPLIER}x hourly · TOIL: UK WTR 1:1 on worked hours · max {TOIL_MAX_CARRYOVER_HOURS}h carryover
         </div>
+      </div>
+
+      {/* Per-engineer take-home breakdown */}
+      <div className="card-title" style={{ marginBottom: 12 }}>Take-Home Breakdown (base + on-call, after UK tax)</div>
+      <div className="grid-2 mb-16">
+        {users.map(u => {
+          const p      = payconfig[u.id] || { rate: 40, base: 2500 };
+          const hourly = (p.base * 12) / 2080;
+          const oc     = calcOncallPay(timesheets[u.id], hourly);
+          const annualBase = p.base * 12;
+          const annualOC   = oc.total * 12; // annualise for tax calc
+          const tx = calcUKTax(annualBase + annualOC, { pensionPct: p.pensionPct || 0, studentLoan: p.studentLoan || false });
+          return (
+            <div key={u.id} className="card">
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 10 }}>
+                <Avatar user={u} size={28} />
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>{u.name}</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Gross incl. OC: £{(tx.annualGross/12).toLocaleString('en-GB',{maximumFractionDigits:0})}/mo · Eff. rate: {(tx.effectiveRate*100).toFixed(1)}%</div>
+                </div>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 6, fontSize: 11 }}>
+                {[['Monthly','monthly'],['Weekly','weekly'],['Daily','daily'],['Hourly','hourly']].map(([label,key]) => (
+                  <div key={key} style={{ background: 'rgba(30,64,175,0.15)', borderRadius: 6, padding: '6px 8px' }}>
+                    <div style={{ color: 'var(--text-muted)', marginBottom: 2 }}>{label}</div>
+                    <div style={{ fontWeight: 700, color: '#6ee7b7', fontFamily: 'DM Mono' }}>£{tx[key].net.toFixed(key==='hourly'?2:0)}</div>
+                    <div style={{ color: 'var(--text-muted)', fontSize: 10 }}>gross £{tx[key].gross.toFixed(key==='hourly'?2:0)}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
 }
 
 // ── Pay Config (Manager only) ──────────────────────────────────────────────
-function PayConfig({ payconfig, setPayconfig, isManager }) {
+function PayConfig({ users, payconfig, setPayconfig, isManager }) {
   if (!isManager) return <Alert type="warning">⚠ Pay configuration is restricted to managers.</Alert>;
+
+  const [taxMsg, setTaxMsg]     = useState('');
+  const [taxYear, setTaxYear]   = useState(UK_TAX.year);
+  const [selectedUid, setSelectedUid] = useState(users[0]?.id || '');
+
+  // Pull latest tax info (HMRC website hint — user must verify)
+  const fetchLatestTax = async () => {
+    setTaxMsg('⏳ Opening HMRC tax rates page — verify and update constants manually if rates have changed…');
+    window.open('https://www.gov.uk/income-tax-rates', '_blank');
+    window.open('https://www.gov.uk/national-insurance-rates-letters', '_blank');
+    setTimeout(() => setTaxMsg(`ℹ Tax constants last updated for ${UK_TAX.year}. Update UK_TAX in App.js if HMRC rates have changed.`), 1500);
+  };
+
+  const u   = users.find(x => x.id === selectedUid);
+  const p   = payconfig[selectedUid] || { base: 2500, rate: 40, pensionPct: 0, studentLoan: false };
+  const set = (updates) => setPayconfig({ ...payconfig, [selectedUid]: { ...p, ...updates } });
+
+  const annual  = p.base * 12;
+  const hourly  = annual / 2080;
+  const tx      = calcUKTax(annual, { pensionPct: p.pensionPct || 0, studentLoan: p.studentLoan || false });
+  const standbyRate = ONCALL_STANDBY_RATE;
+  const workedRate  = hourly * ONCALL_WORKED_MULTIPLIER;
+
+  const fmt = (n, dp=2) => `£${n.toLocaleString('en-GB', { minimumFractionDigits: dp, maximumFractionDigits: dp })}`;
+
   return (
     <div>
-      <PageHeader title="Pay Config" sub="Configure rates and pay rules" />
+      <PageHeader title="Pay Config" sub="UK tax, on-call rates and take-home calculator — manager only" />
+
+      {/* Tax info banner */}
+      <div className="card mb-16">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+          <div>
+            <div className="card-title" style={{ marginBottom: 2 }}>🇬🇧 UK Tax Year {taxYear}</div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+              Personal Allowance: £{UK_TAX.personalAllowance.toLocaleString()} · Basic 20% to £{UK_TAX.basicRateLimit.toLocaleString()} · Higher 40% to £{UK_TAX.higherRateLimit.toLocaleString()} · Additional 45% above
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+              NI: 8% (£{UK_TAX.niPrimaryThreshold.toLocaleString()}–£{UK_TAX.niUpperEarningsLimit.toLocaleString()}) · 2% above · Student Loan Plan 2: 9% above £{UK_TAX.studentLoanPlan2Threshold.toLocaleString()}
+            </div>
+          </div>
+          <button className="btn btn-secondary btn-sm" onClick={fetchLatestTax}>🔄 Check Latest HMRC Rates</button>
+        </div>
+        {taxMsg && <Alert type="info" style={{ marginTop: 10 }}>{taxMsg}</Alert>}
+      </div>
+
+      {/* Engineer selector */}
+      <div className="card mb-16">
+        <div className="card-title">Select Engineer</div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {users.map(uu => (
+            <button key={uu.id}
+              className={`btn btn-sm ${selectedUid === uu.id ? 'btn-primary' : 'btn-secondary'}`}
+              onClick={() => setSelectedUid(uu.id)}>
+              {uu.id} — {uu.name.split(' ')[0]}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {u && (
+        <div className="grid-2 mb-16">
+          {/* Left: inputs */}
+          <div className="card">
+            <div className="card-title">💷 Pay Settings — {u.name}</div>
+            <FormGroup label="Monthly Gross Base (£)">
+              <input className="input" type="number" value={p.base} onChange={e => set({ base: +e.target.value })} />
+            </FormGroup>
+            <FormGroup label="Pension Contribution (%)" hint="employee">
+              <input className="input" type="number" min="0" max="100" step="0.5" value={p.pensionPct||0} onChange={e => set({ pensionPct: +e.target.value })} />
+            </FormGroup>
+            <FormGroup label="Student Loan Plan 2">
+              <label style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: 'pointer' }}>
+                <input type="checkbox" checked={!!p.studentLoan} onChange={e => set({ studentLoan: e.target.checked })} />
+                <span style={{ fontSize: 13 }}>Repaying student loan (Plan 2)</span>
+              </label>
+            </FormGroup>
+
+            <hr style={{ border: 'none', borderTop: '1px solid var(--border)', margin: '14px 0' }} />
+            <div className="card-title" style={{ marginBottom: 8 }}>🌙 On-Call Rates</div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>Standby flat rate: <strong style={{ color: 'var(--text-primary)' }}>£{standbyRate}/hr</strong> (Mon–Thu &amp; Fri–Mon 19:00–07:00)</div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>Worked on-call: <strong style={{ color: 'var(--text-primary)' }}>{ONCALL_WORKED_MULTIPLIER}x hourly = {fmt(workedRate)}/hr</strong></div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>TOIL accrual: <strong style={{ color: 'var(--text-primary)' }}>1:1 worked hours</strong> (UK WTR 1998) · max {TOIL_MAX_CARRYOVER_HOURS}h</div>
+          </div>
+
+          {/* Right: take-home breakdown */}
+          <div className="card">
+            <div className="card-title">📊 Take-Home Calculator</div>
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>Annual gross: <strong>{fmt(annual, 0)}</strong> · Hourly: <strong>{fmt(hourly)}</strong></div>
+              {/* Period breakdown table */}
+              <table style={{ width: '100%', fontSize: 12 }}>
+                <thead>
+                  <tr>
+                    <th style={{ textAlign: 'left', padding: '4px 0' }}>Period</th>
+                    <th style={{ textAlign: 'right', padding: '4px 6px' }}>Gross</th>
+                    <th style={{ textAlign: 'right', padding: '4px 6px', color: '#fca5a5' }}>Tax</th>
+                    <th style={{ textAlign: 'right', padding: '4px 6px', color: '#fcd34d' }}>NI</th>
+                    {p.pensionPct > 0 && <th style={{ textAlign: 'right', padding: '4px 6px', color: '#93c5fd' }}>Pension</th>}
+                    {p.studentLoan && <th style={{ textAlign: 'right', padding: '4px 6px', color: '#c4b5fd' }}>SL</th>}
+                    <th style={{ textAlign: 'right', padding: '4px 6px', color: '#6ee7b7', fontWeight: 700 }}>Take Home</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {[['Monthly','monthly'],['Weekly','weekly'],['Daily','daily'],['Hourly','hourly']].map(([label, key]) => (
+                    <tr key={key} style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                      <td style={{ padding: '5px 0', fontWeight: 500 }}>{label}</td>
+                      <td style={{ textAlign: 'right', padding: '5px 6px', fontFamily: 'DM Mono' }}>{fmt(tx[key].gross, key==='hourly'?2:2)}</td>
+                      <td style={{ textAlign: 'right', padding: '5px 6px', fontFamily: 'DM Mono', color: '#fca5a5' }}>-{fmt(tx[key].tax, key==='hourly'?2:2)}</td>
+                      <td style={{ textAlign: 'right', padding: '5px 6px', fontFamily: 'DM Mono', color: '#fcd34d' }}>-{fmt(tx[key].ni, key==='hourly'?2:2)}</td>
+                      {p.pensionPct > 0 && <td style={{ textAlign: 'right', padding: '5px 6px', fontFamily: 'DM Mono', color: '#93c5fd' }}>-{fmt(tx[key].pension, key==='hourly'?2:2)}</td>}
+                      {p.studentLoan && <td style={{ textAlign: 'right', padding: '5px 6px', fontFamily: 'DM Mono', color: '#c4b5fd' }}>-{fmt(tx[key].sl, key==='hourly'?2:2)}</td>}
+                      <td style={{ textAlign: 'right', padding: '5px 6px', fontFamily: 'DM Mono', fontWeight: 700, color: '#6ee7b7' }}>{fmt(tx[key].net, key==='hourly'?2:2)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div style={{ background: 'rgba(30,64,175,0.15)', borderRadius: 8, padding: '10px 12px', fontSize: 12 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}><span style={{ color: 'var(--text-muted)' }}>Income Tax (annual)</span><span style={{ fontFamily: 'DM Mono', color: '#fca5a5' }}>-{fmt(tx.incomeTax, 0)}</span></div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}><span style={{ color: 'var(--text-muted)' }}>National Insurance</span><span style={{ fontFamily: 'DM Mono', color: '#fcd34d' }}>-{fmt(tx.ni, 0)}</span></div>
+              {p.pensionPct > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}><span style={{ color: 'var(--text-muted)' }}>Pension ({p.pensionPct}%)</span><span style={{ fontFamily: 'DM Mono', color: '#93c5fd' }}>-{fmt(tx.pension, 0)}</span></div>}
+              {p.studentLoan && <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}><span style={{ color: 'var(--text-muted)' }}>Student Loan Plan 2</span><span style={{ fontFamily: 'DM Mono', color: '#c4b5fd' }}>-{fmt(tx.slRepay, 0)}</span></div>}
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}><span style={{ color: 'var(--text-muted)' }}>Effective tax rate</span><span style={{ fontFamily: 'DM Mono' }}>{(tx.effectiveRate*100).toFixed(1)}%</span></div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid var(--border)', paddingTop: 6, marginTop: 4 }}><span style={{ fontWeight: 600 }}>Annual take-home</span><span style={{ fontFamily: 'DM Mono', fontWeight: 700, color: '#6ee7b7', fontSize: 14 }}>{fmt(tx.annualNet, 0)}</span></div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* All engineers rate table */}
       <div className="card">
-        <div className="card-title">Engineer Pay Rates</div>
-        <table>
-          <thead><tr><th>Engineer ID</th><th>Base (£/mo)</th><th>Rate (£/hr)</th><th>WD-OC Rate</th><th>WE-OC Rate</th></tr></thead>
+        <div className="card-title">All Engineers — Pay Rates Overview</div>
+        <table style={{ overflowX: 'auto', display: 'block' }}>
+          <thead><tr><th>Engineer</th><th>Monthly Base</th><th>Hourly</th><th>Standby/hr</th><th>Worked OC/hr</th><th>Monthly Net*</th></tr></thead>
           <tbody>
-            {Object.entries(payconfig).map(([id, p]) => (
-              <tr key={id}>
-                <td style={{ fontFamily: 'DM Mono', fontSize: 12, color: 'var(--accent)' }}>{id}</td>
-                <td><div style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ fontSize: 12, color: 'var(--text-muted)' }}>£</span><input className="input" type="number" value={p.base||2500} onChange={e => setPayconfig({ ...payconfig, [id]: { ...p, base: +e.target.value } })} style={{ width: 100 }} /></div></td>
-                <td><div style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ fontSize: 12, color: 'var(--text-muted)' }}>£</span><input className="input" type="number" value={p.rate} onChange={e => setPayconfig({ ...payconfig, [id]: { ...p, rate: +e.target.value } })} style={{ width: 80 }} /><span style={{ fontSize: 11, color: 'var(--text-muted)' }}>/hr</span></div></td>
-                <td style={{ fontSize: 12, color: '#6ee7b7', fontFamily: 'DM Mono' }}>£{((p.rate||40)*0.5).toFixed(2)}/hr (+50%)</td>
-                <td style={{ fontSize: 12, color: '#fcd34d', fontFamily: 'DM Mono' }}>£{((p.rate||40)*0.75).toFixed(2)}/hr (+75%)</td>
-              </tr>
-            ))}
+            {users.map(uu => {
+              const pp = payconfig[uu.id] || { base: 2500, pensionPct: 0, studentLoan: false };
+              const hr = (pp.base * 12) / 2080;
+              const ttx = calcUKTax(pp.base * 12, { pensionPct: pp.pensionPct||0, studentLoan: pp.studentLoan||false });
+              return (
+                <tr key={uu.id}>
+                  <td><div style={{ display: 'flex', gap: 8, alignItems: 'center' }}><Avatar user={uu} size={22} /><span style={{ fontSize: 12 }}>{uu.name}</span></div></td>
+                  <td style={{ fontFamily: 'DM Mono', fontSize: 12 }}>£{(pp.base||0).toLocaleString()}</td>
+                  <td style={{ fontFamily: 'DM Mono', fontSize: 12 }}>£{hr.toFixed(2)}</td>
+                  <td style={{ fontFamily: 'DM Mono', fontSize: 12, color: '#93c5fd' }}>£{ONCALL_STANDBY_RATE}/hr</td>
+                  <td style={{ fontFamily: 'DM Mono', fontSize: 12, color: '#fcd34d' }}>£{(hr * ONCALL_WORKED_MULTIPLIER).toFixed(2)}/hr</td>
+                  <td style={{ fontFamily: 'DM Mono', fontSize: 12, color: '#6ee7b7' }}>£{ttx.monthly.net.toFixed(0)}</td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
-        <Alert style={{ marginTop: 12 }}>Weekday OC: +50% uplift · Weekend OC: +75% uplift applied automatically.</Alert>
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8 }}>* Base salary only, before on-call. Pension/SL settings per engineer in selector above.</div>
       </div>
     </div>
   );
 }
+
 
 // ── Settings (Manager only, all settings here) ─────────────────────────────
 function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks, driveToken, profilePics, setProfilePicsState }) {
