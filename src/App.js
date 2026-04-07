@@ -17,39 +17,179 @@ import {
 
 const GOOGLE_CLIENT_ID = process.env.REACT_APP_GOOGLE_CLIENT_ID || 'YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com';
 
-// ── AUTH HELPERS ───────────────────────────────────────────────────────────
-// Passwords are stored (hashed via btoa) in localStorage under 'auth_passwords'.
-// On first run, every user gets a default password equal to their lowercase ID.
-// Managers (MBA47) can reset any user's password via Settings > User Management.
-// Replace this section with your SSO/Auth0/Firebase provider for production.
+// ── AUTH & DRIVE HELPERS ────────────────────────────────────────────────────
+// Architecture:
+//  • Manager (MBA47) connects Google Drive once. All app data lives in Drive.
+//  • Non-manager users also connect Drive (read-only scope) so the app can
+//    load the shared registry (users list, hashed passwords, profile pics).
+//  • Passwords: stored hashed (btoa) in Drive's "auth_registry.json"
+//    under { passwords: { UID: hash }, sheets_id: '' }.
+//  • Google Sheets: Manager's session creates/updates "CloudOps-UserRegistry"
+//    Sheet. Editing that sheet and pressing "Sync from Sheet" in Settings
+//    updates the live registry.
+//  • Profile pictures: uploaded as base64 data-URIs, stored in Drive's
+//    "profile_pictures.json" keyed by user ID.
 
 const hashPw = (pw) => btoa(unescape(encodeURIComponent(pw)));
 
-function loadPasswords(users) {
+// In-memory registry cache (loaded from Drive on login)
+let _registry = null;
+let _profilePics = {};
+
+function getRegistry() { return _registry || { passwords: {}, sheets_id: '' }; }
+function setRegistry(r) { _registry = r; }
+function getProfilePics() { return _profilePics; }
+function setProfilePics(p) { _profilePics = p || {}; }
+
+function checkPassword(uid, pw) {
+  const reg = getRegistry();
+  if (!reg.passwords || !reg.passwords[uid]) return hashPw(uid.toLowerCase()) === hashPw(pw);
+  return reg.passwords[uid] === hashPw(pw);
+}
+
+function updatePasswordInRegistry(uid, newPw) {
+  const reg = getRegistry();
+  if (!reg.passwords) reg.passwords = {};
+  reg.passwords[uid] = hashPw(newPw);
+  setRegistry({ ...reg });
+  return { ...reg };
+}
+
+// ── Drive API helpers ──────────────────────────────────────────────────────
+async function driveFindFile(token, name) {
+  const resp = await fetch(
+    `https://www.googleapis.com/drive/v3/files?q=name%3D'${encodeURIComponent(name)}'+and+trashed%3Dfalse&spaces=drive&fields=files(id,name)`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  ).then(r => r.json());
+  return resp.files && resp.files.length > 0 ? resp.files[0] : null;
+}
+
+async function driveReadJson(token, fileId) {
+  return fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  ).then(r => r.json());
+}
+
+async function driveWriteJson(token, name, data) {
+  const body = JSON.stringify(data);
+  const existing = await driveFindFile(token, name);
+  if (existing) {
+    return fetch(`https://www.googleapis.com/upload/drive/v3/files/${existing.id}?uploadType=media`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body
+    }).then(r => r.json());
+  }
+  const meta = await fetch('https://www.googleapis.com/drive/v3/files', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, mimeType: 'application/json' })
+  }).then(r => r.json());
+  return fetch(`https://www.googleapis.com/upload/drive/v3/files/${meta.id}?uploadType=media`, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body
+  }).then(r => r.json());
+}
+
+// ── Profile pictures ───────────────────────────────────────────────────────
+async function uploadProfilePicture(driveToken, userId, file) {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const dataUri = e.target.result;
+      try {
+        const pics = { ...getProfilePics(), [userId]: dataUri };
+        setProfilePics(pics);
+        await driveWriteJson(driveToken, 'profile_pictures.json', pics);
+        resolve(dataUri);
+      } catch (_) { resolve(dataUri); }
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+async function loadProfilePictures(driveToken) {
   try {
-    const stored = localStorage.getItem('auth_passwords');
-    if (stored) return JSON.parse(stored);
+    const f = await driveFindFile(driveToken, 'profile_pictures.json');
+    if (f) { const p = await driveReadJson(driveToken, f.id); setProfilePics(p); return p; }
   } catch (_) {}
-  // First run: default password = lowercase user ID (e.g. "mba47")
-  const defaults = {};
-  users.forEach(u => { defaults[u.id] = hashPw(u.id.toLowerCase()); });
-  localStorage.setItem('auth_passwords', JSON.stringify(defaults));
-  return defaults;
+  return {};
 }
 
-function savePasswords(map) {
-  localStorage.setItem('auth_passwords', JSON.stringify(map));
+// ── Registry sync (auth_registry.json + Google Sheet) ─────────────────────
+async function syncRegistryToDrive(driveToken, registry, users) {
+  if (!driveToken) return;
+  try {
+    await driveWriteJson(driveToken, 'auth_registry.json', registry);
+    const sheetId = await syncUsersToSheet(driveToken, registry, users);
+    if (sheetId && sheetId !== registry.sheets_id) {
+      const updated = { ...registry, sheets_id: sheetId };
+      setRegistry(updated);
+      await driveWriteJson(driveToken, 'auth_registry.json', updated);
+    }
+  } catch (e) { console.error('Registry sync error:', e); }
 }
 
-function checkPassword(users, uid, pw) {
-  const map = loadPasswords(users);
-  return map[uid] && map[uid] === hashPw(pw);
+async function syncUsersToSheet(driveToken, registry, users) {
+  try {
+    let sheetId = registry.sheets_id;
+    if (!sheetId) {
+      const createResp = await fetch('https://sheets.googleapis.com/v4/spreadsheets', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${driveToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          properties: { title: 'CloudOps-UserRegistry' },
+          sheets: [{ properties: { title: 'Users', sheetId: 0 } }]
+        })
+      }).then(r => r.json());
+      sheetId = createResp.spreadsheetId;
+    }
+    const header = ['Username (ID)', 'Full Name', 'Role', 'Google Email', 'Mobile Number', 'Password (reset to this to unlock)', 'Avatar Initials', 'Colour'];
+    const rows = [header, ...users.map(u => [
+      u.id, u.name, u.role || 'Engineer',
+      u.google_email || '', u.mobile_number || '',
+      u.id.toLowerCase(), // default/reset password shown in plain text for manager reference
+      u.avatar || '', u.color || ''
+    ])];
+    await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/Users!A1:H${rows.length}?valueInputOption=RAW`,
+      { method: 'PUT', headers: { Authorization: `Bearer ${driveToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ values: rows }) }
+    );
+    // Bold header row
+    await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}:batchUpdate`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${driveToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requests: [{ repeatCell: { range: { sheetId: 0, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 0, endColumnIndex: 8 }, cell: { userEnteredFormat: { textFormat: { bold: true, foregroundColor: { red:1,green:1,blue:1 } }, backgroundColor: { red: 0.07, green: 0.21, blue: 0.37 } } }, fields: 'userEnteredFormat(textFormat,backgroundColor)' } }] })
+    });
+    return sheetId;
+  } catch (e) { console.error('Sheet sync error:', e); return registry.sheets_id || null; }
 }
 
-function setPassword(users, uid, newPw) {
-  const map = loadPasswords(users);
-  map[uid] = hashPw(newPw);
-  savePasswords(map);
+// Read rows back from the Sheet and apply any changes (name, email, mobile, role)
+async function syncUsersFromSheet(driveToken, registry, users, setUsers) {
+  if (!registry.sheets_id) return;
+  try {
+    const resp = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${registry.sheets_id}/values/Users!A2:H200`,
+      { headers: { Authorization: `Bearer ${driveToken}` } }
+    ).then(r => r.json());
+    const rows = resp.values || [];
+    const updated = users.map(u => {
+      const row = rows.find(r => r[0] === u.id);
+      if (!row) return u;
+      return { ...u, name: row[1] || u.name, role: row[2] || u.role, google_email: row[3] || u.google_email, mobile_number: row[4] || u.mobile_number, avatar: row[6] || u.avatar, color: row[7] || u.color };
+    });
+    setUsers(updated);
+  } catch (e) { console.error('Sync from sheet error:', e); }
+}
+
+async function loadRegistryFromDrive(driveToken) {
+  try {
+    const f = await driveFindFile(driveToken, 'auth_registry.json');
+    if (f) { const reg = await driveReadJson(driveToken, f.id); setRegistry(reg); return reg; }
+  } catch (e) { console.error('Registry load error:', e); }
+  return null;
 }
 
 // ── Shift colours per spec ─────────────────────────────────────────────────
@@ -354,7 +494,7 @@ function useBulkSelect(items) {
 }
 
 // ── Login Screen ───────────────────────────────────────────────────────────
-function LoginScreen({ onLogin, driveToken, onConnectDrive, users }) {
+function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDrive }) {
   const [uid, setUid]           = useState('');
   const [pw, setPw]             = useState('');
   const [err, setErr]           = useState('');
@@ -370,7 +510,7 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users }) {
     if (!id) { setErr('Please enter your username.'); return; }
     const userExists = users.find(u => u.id === id);
     if (!userExists) { setErr('Username not found. Check your tri-gram ID.'); return; }
-    if (checkPassword(users, id, pw)) {
+    if (checkPassword(id, pw)) {
       setErr('');
       if (id === 'MBA47') { setPending2FA(id); setShow2FA(true); }
       else onLogin(id);
@@ -389,10 +529,10 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users }) {
   const handleForgot = () => {
     const id = forgotUid.trim().toUpperCase();
     const userExists = users.find(u => u.id === id);
-    if (!userExists) { setForgotMsg('Username not found.'); return; }
-    // Reset to default (lowercase ID). In production, send a reset email instead.
-    setPassword(users, id, id.toLowerCase());
-    setForgotMsg(`Password for ${id} has been reset to "${id.toLowerCase()}". Please sign in and change it immediately via My Account.`);
+    if (!userExists) { setForgotMsg('Username not found. Only a manager can reset passwords.'); return; }
+    const reg = updatePasswordInRegistry(id, id.toLowerCase());
+    if (driveToken) syncRegistryToDrive(driveToken, reg, users).catch(() => {});
+    setForgotMsg(`Password for ${id} has been reset to "${id.toLowerCase()}". Sign in and update it via My Account.`);
   };
 
   if (showForgot) return (
@@ -424,9 +564,19 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users }) {
           <div className="login-title">CloudOps Rota</div>
           <div className="login-sub">Cloud Run Operations Team</div>
         </div>
-        {driveToken && <div className="gd-status" style={{ marginBottom: 16 }}><div className="dot-live" /> Auto-syncing to Google Drive</div>}
+        {driveToken ? (
+          <div className="gd-status" style={{ marginBottom: 16 }}><div className="dot-live" /> Connected to Google Drive — loading team data…</div>
+        ) : (
+          <div style={{ marginBottom: 16, padding: '12px 14px', border: '1px solid var(--border)', borderRadius: 8, background: 'rgba(59,130,246,0.08)' }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--accent)', marginBottom: 6 }}>📁 Connect Google Drive first</div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10 }}>All team data including your login credentials are stored on the manager's shared Google Drive. You must connect to sign in.</div>
+            <button className="btn btn-primary" style={{ width: '100%' }} onClick={onConnectDrive} disabled={connectingDrive}>
+              {connectingDrive ? '⏳ Connecting…' : '🔗 Connect Google Drive'}
+            </button>
+          </div>
+        )}
         <Alert type="info" style={{ marginBottom: 12 }}>
-          💡 First time? Your default password is your username in lowercase — e.g. <strong>mba47</strong> for MBA47.
+          💡 First time? Your default password is your username in lowercase — e.g. <strong>mba47</strong>
         </Alert>
         {err && <Alert type="warning">⚠ {err}</Alert>}
         {!show2FA ? (
@@ -437,7 +587,7 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users }) {
             <FormGroup label="Password">
               <input className="input" type="password" placeholder="Password" value={pw} onChange={e => setPw(e.target.value)} onKeyDown={e => e.key === 'Enter' && handle()} />
             </FormGroup>
-            <button className="btn btn-primary" style={{ width: '100%', padding: 11 }} onClick={handle}>Sign In</button>
+            <button className="btn btn-primary" style={{ width: '100%', padding: 11 }} onClick={handle} disabled={!driveToken}>Sign In</button>
             <button className="btn btn-secondary btn-sm" style={{ width: '100%', marginTop: 8 }} onClick={() => setShowForgot(true)}>🔑 Forgot Password?</button>
           </>
         ) : (
@@ -3067,34 +3217,85 @@ function PayConfig({ payconfig, setPayconfig, isManager }) {
 }
 
 // ── Settings (Manager only, all settings here) ─────────────────────────────
-function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks }) {
-  const [showAdd, setShowAdd]   = useState(false);
-  const [showLink, setShowLink] = useState(false);
+function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks, driveToken, profilePics, setProfilePicsState }) {
+  const BLANK_FORM = { name: '', role: 'Engineer', mobile_number: '', google_email: '', profile_picture: '', avatar: '', color: '' };
+  const [showAdd, setShowAdd]         = useState(false);
+  const [showLink, setShowLink]       = useState(false);
   const [editingUserId, setEditingUserId] = useState(null);
-  const [form, setForm]         = useState({ name: '', role: 'Engineer' });
-  const [linkForm, setLinkForm] = useState({ label: '', expiry: '', password: '' });
-  const [editForm, setEditForm] = useState({ mobile_number: '', google_email: '', profile_picture: '' });
+  const [form, setForm]               = useState(BLANK_FORM);
+  const [linkForm, setLinkForm]       = useState({ label: '', expiry: '', password: '' });
+  const [editForm, setEditForm]       = useState(BLANK_FORM);
+  const [picUploading, setPicUploading] = useState(false);
+  const [sheetSyncing, setSheetSyncing] = useState(false);
+  const [sheetMsg, setSheetMsg]       = useState('');
+  const [resetPwUid, setResetPwUid]   = useState('');
+  const picInputRef = useRef(null);
+  const addPicInputRef = useRef(null);
 
   if (!isManager) return <Alert type="warning">⚠ Settings are restricted to managers.</Alert>;
 
-  const add = () => {
-    if (!form.name) return;
-    const id    = generateTrigramId(form.name, users);
-    const color = TRICOLORS[users.length % TRICOLORS.length];
-    setUsers([...users, { id, name: form.name, role: form.role, tri: id.slice(0, 3), avatar: form.name.split(' ').map(x => x[0]).join('').slice(0, 2).toUpperCase(), color, mobile_number: '', google_email: '', profile_picture: '' }]);
-    setShowAdd(false); setForm({ name: '', role: 'Engineer' });
+  // ── Profile picture upload helper ────────────────────────────────────────
+  const handlePicUpload = async (file, uid, isEdit) => {
+    if (!file) return;
+    setPicUploading(true);
+    try {
+      const dataUri = driveToken
+        ? await uploadProfilePicture(driveToken, uid, file)
+        : await new Promise(res => { const r = new FileReader(); r.onload = e => res(e.target.result); r.readAsDataURL(file); });
+      if (isEdit) {
+        setEditForm(f => ({ ...f, profile_picture: dataUri }));
+      } else {
+        setForm(f => ({ ...f, profile_picture: dataUri }));
+      }
+    } finally { setPicUploading(false); }
   };
 
-  const updateUserProfile = (userId, updates) => {
-    setUsers(users.map(u => u.id === userId ? { ...u, ...updates } : u));
-    setEditingUserId(null);
-    setEditForm({ mobile_number: '', google_email: '', profile_picture: '' });
+  // ── Add engineer ─────────────────────────────────────────────────────────
+  const add = async () => {
+    if (!form.name) return;
+    const id    = generateTrigramId(form.name, users);
+    const color = form.color || TRICOLORS[users.length % TRICOLORS.length];
+    const avatar = form.avatar || form.name.split(' ').map(x => x[0]).join('').slice(0, 2).toUpperCase();
+    const newUser = { id, name: form.name, role: form.role, tri: id.slice(0,3), avatar, color,
+      mobile_number: form.mobile_number || '', google_email: form.google_email || '',
+      profile_picture: form.profile_picture || '' };
+    const updatedUsers = [...users, newUser];
+    setUsers(updatedUsers);
+    // Initialise password in registry
+    const reg = updatePasswordInRegistry(id, id.toLowerCase());
+    if (driveToken) await syncRegistryToDrive(driveToken, reg, updatedUsers);
+    setShowAdd(false); setForm(BLANK_FORM);
+  };
+
+  // ── Edit / save user ─────────────────────────────────────────────────────
+  const saveEdit = async (userId) => {
+    const updatedUsers = users.map(u => u.id === userId ? { ...u, ...editForm } : u);
+    setUsers(updatedUsers);
+    if (driveToken) {
+      await syncRegistryToDrive(driveToken, getRegistry(), updatedUsers);
+      // Save profile pic to Drive if changed
+      if (editForm.profile_picture && editForm.profile_picture.startsWith('data:')) {
+        const pics = { ...getProfilePics(), [userId]: editForm.profile_picture };
+        setProfilePics(pics); setProfilePicsState(pics);
+        await driveWriteJson(driveToken, 'profile_pictures.json', pics);
+      }
+    }
+    setEditingUserId(null); setEditForm(BLANK_FORM);
   };
 
   const deleteUser = (userId) => {
-    if (window.confirm('⚠️  Delete this engineer profile? This cannot be undone.')) {
-      setUsers(users.filter(u => u.id !== userId));
+    if (window.confirm('⚠️  Delete this engineer? Cannot be undone.')) {
+      const updatedUsers = users.filter(u => u.id !== userId);
+      setUsers(updatedUsers);
+      if (driveToken) syncRegistryToDrive(driveToken, getRegistry(), updatedUsers);
     }
+  };
+
+  const resetPassword = async (uid) => {
+    const reg = updatePasswordInRegistry(uid, uid.toLowerCase());
+    if (driveToken) await syncRegistryToDrive(driveToken, reg, users);
+    setResetPwUid(uid);
+    setTimeout(() => setResetPwUid(''), 3000);
   };
 
   const addLink = () => {
@@ -3104,97 +3305,115 @@ function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks }) {
     setShowLink(false); setLinkForm({ label: '', expiry: '', password: '' });
   };
 
+  const syncFromSheet = async () => {
+    if (!driveToken) { setSheetMsg('Connect Google Drive first.'); return; }
+    setSheetSyncing(true); setSheetMsg('');
+    try {
+      await syncUsersFromSheet(driveToken, getRegistry(), users, setUsers);
+      setSheetMsg('✅ Users synced from Google Sheet.');
+    } catch (e) { setSheetMsg('❌ Sync failed: ' + e.message); }
+    setSheetSyncing(false);
+    setTimeout(() => setSheetMsg(''), 4000);
+  };
+
+  const openSheet = () => {
+    const reg = getRegistry();
+    if (reg.sheets_id) window.open(`https://docs.google.com/spreadsheets/d/${reg.sheets_id}`, '_blank');
+    else alert('No sheet yet. Save a user change first to generate the sheet.');
+  };
+
+  // ── Shared field renderer ────────────────────────────────────────────────
+  const UserFields = ({ fv, setFv, uid, isEdit }) => (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {!isEdit && <input className="input" placeholder="Full Name *" value={fv.name||''} onChange={e => setFv(f => ({...f, name: e.target.value}))} />}
+      <select className="select" value={fv.role||'Engineer'} onChange={e => setFv(f => ({...f, role: e.target.value}))}>
+        <option>Engineer</option><option>Manager</option>
+      </select>
+      <input className="input" type="email" placeholder="Google Email" value={fv.google_email||''} onChange={e => setFv(f => ({...f, google_email: e.target.value}))} />
+      <input className="input" type="tel" placeholder="Mobile Number" value={fv.mobile_number||''} onChange={e => setFv(f => ({...f, mobile_number: e.target.value}))} />
+      <input className="input" placeholder="Avatar Initials (e.g. MB)" maxLength={3} value={fv.avatar||''} onChange={e => setFv(f => ({...f, avatar: e.target.value.toUpperCase()}))} />
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <label style={{ fontSize: 12, color: 'var(--text-muted)', minWidth: 80 }}>Colour</label>
+        <input type="color" value={fv.color||'#1d4ed8'} onChange={e => setFv(f => ({...f, color: e.target.value}))}
+          style={{ width: 36, height: 28, border: 'none', borderRadius: 4, cursor: 'pointer', background: 'none', padding: 0 }} />
+        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Avatar background colour</span>
+      </div>
+      {/* Profile picture upload */}
+      <div>
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>Profile Picture</div>
+        {fv.profile_picture && <img src={fv.profile_picture} alt="" style={{ width: 48, height: 48, borderRadius: 8, objectFit: 'cover', marginBottom: 6, display: 'block' }} />}
+        <label className="btn btn-secondary btn-sm" style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+          {picUploading ? '⏳ Uploading…' : '📷 Upload Photo'}
+          <input type="file" accept="image/*" style={{ display: 'none' }}
+            onChange={e => handlePicUpload(e.target.files[0], uid || 'new_' + Date.now(), isEdit)} />
+        </label>
+        {driveToken && <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 8 }}>Saved to Google Drive</span>}
+      </div>
+    </div>
+  );
+
   return (
     <div>
       <PageHeader title="Settings" sub="All system settings — manager only"
         actions={<div style={{ display: 'flex', gap: 8 }}>
           <button className="btn btn-secondary" onClick={() => setShowLink(true)}>🔗 Secure Share Link</button>
-          <button className="btn btn-primary" onClick={() => setShowAdd(true)}>+ Add Engineer</button>
+          <button className="btn btn-primary" onClick={() => { setForm(BLANK_FORM); setShowAdd(true); }}>+ Add Engineer</button>
         </div>} />
+
+      {/* Google Drive & Sheet Panel */}
+      <div className="card mb-16">
+        <div className="card-title">📁 Google Drive &amp; User Registry</div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', marginBottom: 10 }}>
+          <div className="gd-status"><div className={driveToken ? 'dot-live' : 'dot-live'} style={{ background: driveToken ? '#22c55e' : '#ef4444' }} /> {driveToken ? 'Drive connected — all data syncs automatically' : 'Drive not connected'}</div>
+        </div>
+        <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10 }}>All app data (users, rota, incidents, etc.) is stored in your Google Drive as JSON files. A <strong>Google Sheet "CloudOps-UserRegistry"</strong> is auto-created as the single source of truth for users. Edit the sheet and click "Sync from Sheet" to pull changes into the app.</p>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button className="btn btn-secondary btn-sm" onClick={openSheet}>📊 Open Google Sheet</button>
+          <button className="btn btn-secondary btn-sm" onClick={syncFromSheet} disabled={sheetSyncing}>{sheetSyncing ? '⏳ Syncing…' : '⬇ Sync from Sheet'}</button>
+          {driveToken && <button className="btn btn-secondary btn-sm" onClick={() => syncRegistryToDrive(driveToken, getRegistry(), users)}>⬆ Push to Sheet</button>}
+        </div>
+        {sheetMsg && <Alert type="info" style={{ marginTop: 8 }}>{sheetMsg}</Alert>}
+      </div>
 
       {/* Team Members */}
       <div className="card mb-16">
         <div className="card-title">Team Members ({users.length} total)</div>
-        {users.map(u => (
+        {users.map(u => {
+          const pic = profilePics?.[u.id] || u.profile_picture;
+          return (
           <div key={u.id}>
             {editingUserId === u.id ? (
-              <div style={{ padding: '12px 0', borderBottom: '1px solid rgba(30,58,95,.4)', display: 'flex', flexDirection: 'column', gap: 10 }}>
-                <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
-                  <Avatar user={u} size={48} />
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-primary)', marginBottom: 8 }}>{u.name} ({u.id})</div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                      <input
-                        type="tel" placeholder="Mobile Number" value={editForm.mobile_number}
-                        onChange={(e) => setEditForm({ ...editForm, mobile_number: e.target.value })}
-                        style={{ padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg-card2)', color: 'var(--text-primary)', width: '100%', fontSize: 12 }}
-                      />
-                      <input
-                        type="email" placeholder="Google Email" value={editForm.google_email}
-                        onChange={(e) => setEditForm({ ...editForm, google_email: e.target.value })}
-                        style={{ padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg-card2)', color: 'var(--text-primary)', width: '100%', fontSize: 12 }}
-                      />
-                      <input
-                        type="url" placeholder="Profile Picture URL" value={editForm.profile_picture}
-                        onChange={(e) => setEditForm({ ...editForm, profile_picture: e.target.value })}
-                        style={{ padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg-card2)', color: 'var(--text-primary)', width: '100%', fontSize: 12 }}
-                      />
-                      <div style={{ display: 'flex', gap: 8 }}>
-                        <button
-                          className="btn btn-primary btn-sm"
-                          onClick={() => updateUserProfile(u.id, editForm)}
-                          style={{ flex: 1 }}
-                        >
-                          ✓ Save
-                        </button>
-                        <button
-                          className="btn btn-secondary btn-sm"
-                          onClick={() => setEditingUserId(null)}
-                          style={{ flex: 1 }}
-                        >
-                          ✕ Cancel
-                        </button>
-                      </div>
-                    </div>
-                  </div>
+              <div style={{ padding: '14px 0', borderBottom: '1px solid rgba(30,58,95,.4)' }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 10 }}>Editing: {u.name} ({u.id})</div>
+                <UserFields fv={editForm} setFv={setEditForm} uid={u.id} isEdit />
+                <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                  <button className="btn btn-primary btn-sm" style={{ flex: 1 }} onClick={() => saveEdit(u.id)}>✓ Save</button>
+                  <button className="btn btn-secondary btn-sm" style={{ flex: 1 }} onClick={() => { setEditingUserId(null); setEditForm(BLANK_FORM); }}>✕ Cancel</button>
                 </div>
               </div>
             ) : (
               <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0', borderBottom: '1px solid rgba(30,58,95,.4)' }}>
-                <Avatar user={u} size={36} />
+                {pic ? (
+                  <img src={pic} alt={u.name} style={{ width: 36, height: 36, borderRadius: 8, objectFit: 'cover', flexShrink: 0 }} />
+                ) : <Avatar user={u} size={36} />}
                 <div style={{ flex: 1 }}>
                   <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-primary)' }}>{u.name}</div>
                   <div style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'DM Mono' }}>{u.id} · {u.role}</div>
                   {u.mobile_number && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>📱 {u.mobile_number}</div>}
                   {u.google_email && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>✉️ {u.google_email}</div>}
+                  {resetPwUid === u.id && <div style={{ fontSize: 11, color: '#6ee7b7' }}>✅ Password reset to "{u.id.toLowerCase()}"</div>}
                 </div>
                 <Tag label={u.role} type={u.role === 'Manager' ? 'amber' : 'blue'} />
-                <div style={{ display: 'flex', gap: 6 }}>
-                  <button
-                    className="btn btn-secondary btn-sm"
-                    onClick={() => {
-                      const user = users.find(uu => uu.id === u.id);
-                      setEditForm({
-                        mobile_number: user.mobile_number || '',
-                        google_email: user.google_email || '',
-                        profile_picture: user.profile_picture || ''
-                      });
-                      setEditingUserId(u.id);
-                    }}
-                  >
-                    ✎ Edit
-                  </button>
-                  <button
-                    className="btn btn-danger btn-sm"
-                    onClick={() => deleteUser(u.id)}
-                  >
-                    🗑 Delete
-                  </button>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  <button className="btn btn-secondary btn-sm" onClick={() => { setEditForm({ name: u.name, role: u.role||'Engineer', mobile_number: u.mobile_number||'', google_email: u.google_email||'', profile_picture: u.profile_picture||'', avatar: u.avatar||'', color: u.color||'' }); setEditingUserId(u.id); }}>✎ Edit</button>
+                  <button className="btn btn-secondary btn-sm" onClick={() => resetPassword(u.id)} title="Reset password to default (lowercase ID)">🔑 Reset PW</button>
+                  <button className="btn btn-danger btn-sm" onClick={() => deleteUser(u.id)}>🗑</button>
                 </div>
               </div>
             )}
           </div>
-        ))}
+          );
+        })}
       </div>
 
       {/* Shift Colours Reference */}
@@ -3229,25 +3448,13 @@ function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks }) {
         </div>
       )}
 
-      {/* Google Drive */}
-      <div className="card">
-        <div className="card-title">Google Drive Integration</div>
-        <div className="gd-status"><div className="dot-live" /> All data auto-synced to Google Drive → <code style={{ fontSize: 11, color: 'var(--accent)' }}>CloudOps-Rota/</code></div>
-        <p style={{ fontSize: 13, color: 'var(--text-secondary)', margin: '12px 0' }}>Data is saved as JSON files in your personal Google Drive. Only authorised users can access this app.</p>
-      </div>
-
       {showAdd && (
-        <Modal title="Add Engineer" onClose={() => setShowAdd(false)}>
-          <FormGroup label="Full Name"><input className="input" placeholder="e.g. Sarah Johnson" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} /></FormGroup>
-          <FormGroup label="Role">
-            <select className="select" value={form.role} onChange={e => setForm({ ...form, role: e.target.value })}>
-              <option>Engineer</option><option>Manager</option>
-            </select>
-          </FormGroup>
-          <Alert>Username auto-generated from name (e.g. SAJ04). Their default password will be their lowercase username — they can change it via My Account after first login.</Alert>
+        <Modal title="Add Engineer" onClose={() => setShowAdd(false)} wide>
+          <UserFields fv={form} setFv={setForm} uid={null} isEdit={false} />
+          <Alert style={{ marginTop: 12 }}>Username auto-generated from name (e.g. SAJ04). Default password = lowercase username. They can change it via My Account.</Alert>
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
             <button className="btn btn-secondary" onClick={() => setShowAdd(false)}>Cancel</button>
-            <button className="btn btn-primary" onClick={add}>Add Engineer</button>
+            <button className="btn btn-primary" onClick={add} disabled={!form.name}>Add Engineer</button>
           </div>
         </Modal>
       )}
@@ -3267,22 +3474,38 @@ function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks }) {
 }
 
 // ── My Account ─────────────────────────────────────────────────────────────
-function MyAccount({ currentUser, users }) {
+function MyAccount({ currentUser, users, setUsers, driveToken, profilePics, setProfilePicsState }) {
   const user = users.find(u => u.id === currentUser);
-  const [notif, setNotif]     = useState('Email + Push');
-  const [newPw, setNewPw]     = useState('');
+  const [notif, setNotif]         = useState('Email + Push');
+  const [newPw, setNewPw]         = useState('');
   const [confirmPw, setConfirmPw] = useState('');
-  const [pwMsg, setPwMsg]     = useState('');
-  const [saved, setSaved]     = useState(false);
+  const [pwMsg, setPwMsg]         = useState('');
+  const [saved, setSaved]         = useState(false);
+  const [picUploading, setPicUploading] = useState(false);
+  const pic = profilePics?.[currentUser] || user?.profile_picture;
 
-  const savePw = () => {
+  const savePw = async () => {
     if (!newPw) { setPwMsg('Enter a new password.'); return; }
     if (newPw !== confirmPw) { setPwMsg('Passwords do not match.'); return; }
     if (newPw.length < 6) { setPwMsg('Password must be at least 6 characters.'); return; }
-    setPassword(users, currentUser, newPw);
+    const reg = updatePasswordInRegistry(currentUser, newPw);
+    if (driveToken) await syncRegistryToDrive(driveToken, reg, users);
     setNewPw(''); setConfirmPw('');
-    setPwMsg('✅ Password updated successfully.');
+    setPwMsg('✅ Password updated and saved to Drive.');
     setTimeout(() => setPwMsg(''), 3000);
+  };
+
+  const handlePicUpload = async (file) => {
+    if (!file) return;
+    setPicUploading(true);
+    try {
+      const dataUri = driveToken
+        ? await uploadProfilePicture(driveToken, currentUser, file)
+        : await new Promise(res => { const r = new FileReader(); r.onload = e => res(e.target.result); r.readAsDataURL(file); });
+      setUsers(users.map(u => u.id === currentUser ? { ...u, profile_picture: dataUri } : u));
+      const pics = { ...getProfilePics(), [currentUser]: dataUri };
+      setProfilePics(pics); if (setProfilePicsState) setProfilePicsState(pics);
+    } finally { setPicUploading(false); }
   };
 
   const save = () => { setSaved(true); setTimeout(() => setSaved(false), 2000); };
@@ -3292,13 +3515,25 @@ function MyAccount({ currentUser, users }) {
       <PageHeader title="My Account" />
       <div className="card" style={{ maxWidth: 520 }}>
         <div style={{ display: 'flex', gap: 16, alignItems: 'center', marginBottom: 20 }}>
-          <Avatar user={user || { avatar: '?', color: '#475569' }} size={60} />
+          {pic
+            ? <img src={pic} alt={user?.name} style={{ width: 60, height: 60, borderRadius: 12, objectFit: 'cover', flexShrink: 0 }} />
+            : <Avatar user={user || { avatar: '?', color: '#475569' }} size={60} />}
           <div>
             <div style={{ fontSize: 18, fontWeight: 600, color: 'var(--text-primary)' }}>{user?.name}</div>
             <div style={{ fontSize: 13, color: 'var(--text-muted)', fontFamily: 'DM Mono' }}>{user?.id}</div>
             <Tag label={user?.role || 'Engineer'} type={user?.role === 'Manager' ? 'amber' : 'blue'} />
           </div>
         </div>
+
+        {/* Profile picture upload */}
+        <div style={{ marginBottom: 16 }}>
+          <label className="btn btn-secondary btn-sm" style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            {picUploading ? '⏳ Uploading…' : '📷 Change Profile Photo'}
+            <input type="file" accept="image/*" style={{ display: 'none' }} onChange={e => handlePicUpload(e.target.files[0])} />
+          </label>
+          {driveToken && <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 8 }}>Saved to Google Drive</span>}
+        </div>
+
         <hr style={{ border: 'none', borderTop: '1px solid var(--border)', margin: '16px 0' }} />
         <FormGroup label="Display Name"><input className="input" defaultValue={user?.name} /></FormGroup>
         <FormGroup label="Notifications">
@@ -3354,13 +3589,26 @@ export default function App() {
   const [secureLinks, setSecureLinks] = useState([]);
 
   const isManager = currentUser === 'MBA47';
+  const [connectingDrive, setConnectingDrive] = useState(false);
+  const [profilePics, setProfilePicsState] = useState({});
 
   const connectDrive = async () => {
     try {
+      setConnectingDrive(true);
       await gapiLoad();
       const token = await initGoogleAuth(GOOGLE_CLIENT_ID);
       setDriveToken(token);
       setSyncing(true);
+
+      // Always load the auth registry + profile pictures first (all users need this)
+      const [reg, pics] = await Promise.all([
+        loadRegistryFromDrive(token),
+        loadProfilePictures(token)
+      ]);
+      if (reg) setRegistry(reg);
+      if (pics) { setProfilePics(pics); setProfilePicsState(pics); }
+
+      // Load all app data from Drive
       const defaults = { users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, logbook, documents, obsidianNotes, whatsappChats };
       const data = await loadAllFromDrive(token, defaults);
       if (data.users)        setUsers(data.users);
@@ -3382,7 +3630,8 @@ export default function App() {
       if (data.whatsappChats) setWhatsappChats(data.whatsappChats);
       setLastSync(new Date());
       setSyncing(false);
-    } catch (e) { console.error('Drive connect error:', e); setSyncing(false); }
+      setConnectingDrive(false);
+    } catch (e) { console.error('Drive connect error:', e); setSyncing(false); setConnectingDrive(false); }
   };
 
   const save = useCallback(async (key, data) => {
@@ -3391,7 +3640,10 @@ export default function App() {
     setLastSync(new Date());
   }, [driveToken]);
 
-  useEffect(() => { save('users', users); },             [users]);
+  useEffect(() => {
+    save('users', users);
+    if (isManager && driveToken) syncRegistryToDrive(driveToken, getRegistry(), users).catch(() => {});
+  }, [users]);
   useEffect(() => { save('holidays', holidays); },       [holidays]);
   useEffect(() => { save('incidents', incidents); },     [incidents]);
   useEffect(() => { save('timesheets', timesheets); },   [timesheets]);
@@ -3411,20 +3663,21 @@ export default function App() {
 
   const login = (uid) => { setCurrentUser(uid); setLoggedIn(true); setPage(uid === 'MBA47' ? 'dashboard' : 'oncall'); };
 
-  if (!loggedIn) return <LoginScreen onLogin={login} driveToken={driveToken} onConnectDrive={connectDrive} users={users} />;
+  if (!loggedIn) return <LoginScreen onLogin={login} driveToken={driveToken} onConnectDrive={connectDrive} users={users} connectingDrive={connectingDrive} />;
 
   const openInc   = incidents.filter(i => i.status === 'Investigating').length;
   const pendingSwaps = swapRequests.filter(s => s.status === 'pending').length;
 
   const props = {
-    users, rota, setRota, holidays, setHolidays,
+    users, setUsers, rota, setRota, holidays, setHolidays,
     incidents, setIncidents, timesheets, setTimesheets,
     upgrades, setUpgrades, wiki, setWiki, glossary, setGlossary,
     contacts, setContacts, payconfig, setPayconfig,
     currentUser, isManager, swapRequests, setSwapRequests,
     toil, setToil, absences, setAbsences, logbook, setLogbook,
     documents, setDocuments, secureLinks, setSecureLinks,
-    obsidianNotes, setObsidianNotes, whatsappChats, setWhatsappChats
+    obsidianNotes, setObsidianNotes, whatsappChats, setWhatsappChats,
+    driveToken, profilePics, setProfilePicsState
   };
 
   const renderPage = () => {
@@ -3455,7 +3708,7 @@ export default function App() {
       case 'payroll':    return <Payroll {...props} />;
       case 'payconfig':  return <PayConfig {...props} />;
       case 'settings':   return <Settings {...props} />;
-      case 'myaccount':  return <MyAccount currentUser={currentUser} users={users} />;
+      case 'myaccount':  return <MyAccount currentUser={currentUser} users={users} setUsers={setUsers} driveToken={driveToken} profilePics={profilePics} setProfilePicsState={setProfilePicsState} />;
       default: return <p className="muted-sm">Page coming soon</p>;
     }
   };
