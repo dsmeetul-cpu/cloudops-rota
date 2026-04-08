@@ -243,14 +243,34 @@ function RichEditor({ value, onChange, placeholder = 'Start typing…', rows = 8
       html += '</table>';
       if (ref.current) { ref.current.innerHTML = html; onChange && onChange(html); }
     } else if (ext === 'docx' || ext === 'pptx' || ext === 'xlsx') {
-      // Attempt to use mammoth for docx, fallback message
+      // Use JSZip via CDN — no npm install required
+      const loadJSZip = () => new Promise((resolve, reject) => {
+        if (window.JSZip) { resolve(window.JSZip); return; }
+        const s = document.createElement('script');
+        s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+        s.onload = () => resolve(window.JSZip);
+        s.onerror = reject;
+        document.head.appendChild(s);
+      });
       try {
-        const { default: mammoth } = await import('mammoth');
-        const arrayBuffer = await file.arrayBuffer();
-        const result = await mammoth.convertToHtml({ arrayBuffer });
-        if (ref.current) { ref.current.innerHTML = result.value; onChange && onChange(result.value); }
+        const JSZip = await loadJSZip();
+        const ab = await file.arrayBuffer();
+        const zip = await JSZip.loadAsync(ab);
+        let text = '';
+        // .docx: word/document.xml  |  .pptx: ppt/slides/*.xml  |  .xlsx: xl/sharedStrings.xml
+        const targets = ext === 'docx' ? ['word/document.xml']
+          : ext === 'pptx' ? Object.keys(zip.files).filter(n => n.startsWith('ppt/slides/slide') && n.endsWith('.xml'))
+          : ['xl/sharedStrings.xml'];
+        for (const t of targets) {
+          const f = zip.file(t);
+          if (f) { const xml = await f.async('text'); text += xml.replace(/<[^>]+>/g, ' ') + '\n'; }
+        }
+        text = text.replace(/\s+/g, ' ').trim().slice(0, 20000);
+        const lines = text.split(/(?<=[.!?])\s+/).filter(Boolean);
+        const html = '<p>' + lines.join('</p><p>') + '</p>';
+        if (ref.current) { ref.current.innerHTML = html || `<p><em>📎 ${file.name} imported (no readable text found)</em></p>`; onChange && onChange(ref.current.innerHTML); }
       } catch {
-        const msg = `<p><em>📎 Imported: <strong>${file.name}</strong></em></p><p style="color:#fca5a5">For .docx/.pptx/.xlsx, install <code>mammoth</code> (npm i mammoth) for full conversion. File name recorded.</p>`;
+        const msg = `<p><em>📎 Imported: <strong>${file.name}</strong></em></p><p style="color:#fcd34d">⚠ Could not extract text from this file. Try saving as .txt or .md first.</p>`;
         if (ref.current) { ref.current.innerHTML = msg; onChange && onChange(msg); }
       }
     } else {
@@ -565,14 +585,13 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDri
           <div className="login-sub">Cloud Run Operations Team</div>
         </div>
         {driveToken ? (
-          <div className="gd-status" style={{ marginBottom: 16 }}><div className="dot-live" /> Connected to Google Drive — loading team data…</div>
+          <div className="gd-status" style={{ marginBottom: 16 }}><div className="dot-live" /> Connected to Google Drive — team data loaded</div>
         ) : (
-          <div style={{ marginBottom: 16, padding: '12px 14px', border: '1px solid var(--border)', borderRadius: 8, background: 'rgba(59,130,246,0.08)' }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--accent)', marginBottom: 6 }}>📁 Connect Google Drive first</div>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10 }}>All team data including your login credentials are stored on the manager's shared Google Drive. You must connect to sign in.</div>
-            <button className="btn btn-primary" style={{ width: '100%' }} onClick={onConnectDrive} disabled={connectingDrive}>
-              {connectingDrive ? '⏳ Connecting…' : '🔗 Connect Google Drive'}
-            </button>
+          <div style={{ marginBottom: 16, padding: '12px 14px', border: '1px solid var(--border)', borderRadius: 8, background: 'rgba(59,130,246,0.06)' }}>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>
+              📁 <strong style={{ color: 'var(--text-secondary)' }}>Google Drive:</strong> Manager (MBA47) connects automatically on login. Engineers can sign in directly.
+            </div>
+            {connectingDrive && <div style={{ fontSize:12, color:'var(--accent)' }}>⏳ Connecting to Google Drive (dsmeetul@3ds.com)…</div>}
           </div>
         )}
         <Alert type="info" style={{ marginBottom: 12 }}>
@@ -587,7 +606,7 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDri
             <FormGroup label="Password">
               <input className="input" type="password" placeholder="Password" value={pw} onChange={e => setPw(e.target.value)} onKeyDown={e => e.key === 'Enter' && handle()} />
             </FormGroup>
-            <button className="btn btn-primary" style={{ width: '100%', padding: 11 }} onClick={handle} disabled={!driveToken}>Sign In</button>
+            <button className="btn btn-primary" style={{ width: '100%', padding: 11 }} onClick={handle}>Sign In</button>
             <button className="btn btn-secondary btn-sm" style={{ width: '100%', marginTop: 8 }} onClick={() => setShowForgot(true)}>🔑 Forgot Password?</button>
           </>
         ) : (
@@ -653,23 +672,87 @@ const NAV = [
 ];
 
 // ── Dashboard ──────────────────────────────────────────────────────────────
-function Dashboard({ users, rota, holidays, incidents, timesheets, swapRequests }) {
+function Dashboard({ users, rota, holidays, incidents, timesheets, swapRequests, absences, toil }) {
   const today    = new Date().toISOString().slice(0, 10);
   const onCallToday = users.filter(u => rota[u.id]?.[today] && rota[u.id][today] !== 'off');
   const openInc  = incidents.filter(i => i.status === 'Investigating');
   const totalOC  = Object.values(timesheets).flatMap(t => t).reduce((a, b) => a + (b.weekday_oncall || 0) + (b.weekend_oncall || 0), 0);
   const pendingSwaps = (swapRequests || []).filter(s => s.status === 'pending');
+  const resolved = incidents.filter(i => i.status === 'Resolved').length;
+
+  const sevCounts = { Disaster: 0, High: 0 };
+  incidents.forEach(i => { if (sevCounts[i.severity] !== undefined) sevCounts[i.severity]++; });
+  const sevColors = { Disaster: '#ef4444', High: '#f59e0b' };
+  const sevTotal = incidents.length || 1;
+
+  const PieChart = ({ data, colors, size = 100 }) => {
+    let cumAngle = -90;
+    const cx = size/2, cy = size/2, r = size/2 - 8;
+    const entries = Object.entries(data).filter(([,v]) => v > 0);
+    const total = entries.reduce((s,[,v]) => s+v, 0) || 1;
+    const slices = entries.map(([k, v]) => {
+      const pct = v / total;
+      const startAngle = cumAngle;
+      cumAngle += pct * 360;
+      const start = { x: cx + r*Math.cos(startAngle*Math.PI/180), y: cy + r*Math.sin(startAngle*Math.PI/180) };
+      const end   = { x: cx + r*Math.cos(cumAngle*Math.PI/180),   y: cy + r*Math.sin(cumAngle*Math.PI/180) };
+      const large = pct > 0.5 ? 1 : 0;
+      return { key: k, d: `M${cx},${cy} L${start.x},${start.y} A${r},${r},0,${large},1,${end.x},${end.y}Z`, color: colors[k], pct, v };
+    });
+    if (slices.length === 0) return React.createElement('svg', {width:size,height:size}, React.createElement('circle',{cx,cy,r,fill:'rgba(255,255,255,0.05)'}));
+    return (
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+        {slices.map(s => <path key={s.key} d={s.d} fill={s.color} opacity={0.85} />)}
+      </svg>
+    );
+  };
+
+  const ocByUser = users.map(u => {
+    const sheets = timesheets[u.id] || [];
+    const wd = sheets.reduce((a,b) => a+(b.weekday_oncall||0), 0);
+    const we = sheets.reduce((a,b) => a+(b.weekend_oncall||0), 0);
+    return { name: u.name.split(' ')[0], wd, we, total: wd+we, user: u };
+  });
+  const maxOC = Math.max(...ocByUser.map(u => u.total), 1);
+
+  const now = new Date();
+  const weekTrend = Array.from({ length: 8 }, (_, i) => {
+    const wStart = new Date(now); wStart.setDate(now.getDate() - (7 - i) * 7);
+    const wEnd   = new Date(wStart); wEnd.setDate(wStart.getDate() + 6);
+    const ws = wStart.toISOString().slice(0,10);
+    const we = wEnd.toISOString().slice(0,10);
+    const count = incidents.filter(inc => inc.date?.slice(0,10) >= ws && inc.date?.slice(0,10) <= we).length;
+    return { label: `W-${7-i}`, count };
+  });
+  const maxTrend = Math.max(...weekTrend.map(w => w.count), 1);
+
+  const statusCounts = { Investigating: openInc.length, Resolved: resolved };
+  const statusColors = { Investigating: '#ef4444', Resolved: '#10b981' };
+  const recentInc = [...incidents].sort((a,b) => new Date(b.date)-new Date(a.date)).slice(0,5);
+  const upcomingHols = (holidays || []).filter(h => h.start >= today).sort((a,b) => a.start.localeCompare(b.start)).slice(0,4);
+  const thisMonth = today.slice(0,7);
+  const absencesThisMonth = (absences||[]).filter(a => a.start?.startsWith(thisMonth)).length;
+  const disasters = sevCounts.Disaster;
 
   return (
     <div>
       <PageHeader title="Manager Dashboard" sub="Cloud Run Operations · Full team visibility" />
+
       <div className="grid-4 mb-16">
-        <StatCard label="Team Size"        value={users.length}            sub="engineers + manager"   accent="#3b82f6" icon="👥" />
-        <StatCard label="Open Incidents"   value={openInc.length}          sub="Active investigations" accent="#ef4444" icon="🚨" />
-        <StatCard label="OC Hours"         value={totalOC + 'h'}           sub="All engineers"         accent="#10b981" icon="⏱" />
-        <StatCard label="Pending Swaps"    value={pendingSwaps.length}     sub="Awaiting approval"     accent="#818cf8" icon="🔁" />
+        <StatCard label="Team Size"       value={users.length}         sub="engineers + manager"    accent="#3b82f6" icon="👥" />
+        <StatCard label="Open Incidents"  value={openInc.length}       sub={`${resolved} resolved`} accent="#ef4444" icon="🚨" />
+        <StatCard label="OC Hours"        value={totalOC + 'h'}        sub="All engineers total"    accent="#10b981" icon="⏱" />
+        <StatCard label="Pending Swaps"   value={pendingSwaps.length}  sub="Awaiting approval"      accent="#818cf8" icon="🔁" />
       </div>
-      <div className="grid-2">
+
+      <div className="grid-4 mb-16">
+        <StatCard label="Disasters"       value={disasters}            sub="Critical severity"      accent="#ef4444" icon="🔴" />
+        <StatCard label="High Severity"   value={sevCounts.High}       sub="Needs attention"        accent="#f59e0b" icon="🟠" />
+        <StatCard label="Absences/Month"  value={absencesThisMonth}    sub={thisMonth}              accent="#f59e0b" icon="🏥" />
+        <StatCard label="Incidents Total" value={incidents.length}     sub={`${Math.round((resolved/Math.max(incidents.length,1))*100)}% resolved`} accent="#6ee7b7" icon="📋" />
+      </div>
+
+      <div className="grid-2 mb-16">
         <div className="card">
           <div className="card-title">👥 Team On-Call Today</div>
           {onCallToday.length === 0 && <p className="muted-sm">No shifts today</p>}
@@ -688,28 +771,155 @@ function Dashboard({ users, rota, holidays, incidents, timesheets, swapRequests 
             );
           })}
         </div>
+
         <div className="card">
-          <div className="card-title">🚨 Active Incidents</div>
-          {openInc.map(i => (
-            <div key={i.id} className="row-item">
-              <div className={`inc-dot sev-${(i.severity||'').toLowerCase()}`} />
-              <div>
-                <div className="name-sm">{i.alert_name || i.title}</div>
-                <div className="muted-xs">{i.severity} · {i.date} · {i.assigned_to}</div>
+          <div className="card-title">🎯 Incident Breakdown</div>
+          {incidents.length === 0 ? <p className="muted-sm">No incidents logged 🎉</p> : (
+            <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
+              <div style={{ textAlign: 'center' }}>
+                <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 4 }}>By Severity</div>
+                <PieChart data={sevCounts} colors={sevColors} size={90} />
+              </div>
+              <div style={{ flex: 1, minWidth: 120 }}>
+                {Object.entries(sevCounts).map(([k,v]) => (
+                  <div key={k} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8 }}>
+                    <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+                      <div style={{ width:10, height:10, borderRadius:'50%', background:sevColors[k] }} />
+                      <span style={{ fontSize:12 }}>{k}</span>
+                    </div>
+                    <div style={{ fontFamily:'DM Mono', fontSize:12, color:sevColors[k] }}>{v} ({((v/sevTotal)*100).toFixed(0)}%)</div>
+                  </div>
+                ))}
+                <div style={{ borderTop:'1px solid var(--border)', paddingTop:8, marginTop:6 }}>
+                  <div style={{ fontSize:10, color:'var(--text-muted)', marginBottom:4 }}>By Status</div>
+                  <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+                    <PieChart data={statusCounts} colors={statusColors} size={50} />
+                    <div>
+                      <div style={{ fontSize:11, color:'#ef4444' }}>🔴 {openInc.length} Open</div>
+                      <div style={{ fontSize:11, color:'#10b981' }}>✅ {resolved} Resolved</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="grid-2 mb-16">
+        <div className="card">
+          <div className="card-title">📊 On-Call Hours per Engineer</div>
+          {ocByUser.map(u => (
+            <div key={u.name} style={{ marginBottom:10 }}>
+              <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
+                <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+                  <Avatar user={u.user} size={18} />
+                  <span style={{ fontSize:12 }}>{u.name}</span>
+                </div>
+                <span style={{ fontSize:11, fontFamily:'DM Mono', color:'var(--text-muted)' }}>{u.wd}h WD + {u.we}h WE = <strong style={{ color:'#6ee7b7' }}>{u.total}h</strong></span>
+              </div>
+              <div style={{ height:10, background:'var(--bg-card2)', borderRadius:5, overflow:'hidden', display:'flex' }}>
+                <div style={{ width:`${(u.wd/maxOC)*100}%`, background:'#166534', transition:'width 0.4s' }} />
+                <div style={{ width:`${(u.we/maxOC)*100}%`, background:'#854d0e', transition:'width 0.4s' }} />
               </div>
             </div>
           ))}
+          <div style={{ display:'flex', gap:12, marginTop:8, fontSize:11, color:'var(--text-muted)' }}>
+            <span><span style={{ background:'#166534', display:'inline-block', width:10, height:10, borderRadius:2, marginRight:4 }} />Weekday</span>
+            <span><span style={{ background:'#854d0e', display:'inline-block', width:10, height:10, borderRadius:2, marginRight:4 }} />Weekend</span>
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="card-title">📈 Incident Trend — Last 8 Weeks</div>
+          <div style={{ display:'flex', gap:4, alignItems:'flex-end', height:100 }}>
+            {weekTrend.map(w => {
+              const pct = (w.count / maxTrend) * 100;
+              return (
+                <div key={w.label} style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', gap:3 }}>
+                  <div style={{ fontSize:9, fontFamily:'DM Mono', color: w.count > 0 ? '#fcd34d' : 'var(--text-muted)' }}>{w.count || ''}</div>
+                  <div style={{ width:'100%', height:70, background:'var(--bg-card2)', borderRadius:4, display:'flex', alignItems:'flex-end', overflow:'hidden' }}>
+                    <div style={{ width:'100%', height:`${pct}%`, background: w.count === 0 ? 'transparent' : w.count > 3 ? '#ef4444' : '#f59e0b', transition:'height 0.4s' }} />
+                  </div>
+                  <div style={{ fontSize:8, color:'var(--text-muted)', textAlign:'center' }}>{w.label}</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid-2 mb-16">
+        <div className="card">
+          <div className="card-title">🚨 Active Incidents</div>
+          {openInc.map(i => {
+            const sev = { Disaster:'#ef4444', High:'#f59e0b' }[i.severity] || '#f59e0b';
+            return (
+              <div key={i.id} className="row-item">
+                <div style={{ width:8, height:8, borderRadius:'50%', background:sev, flexShrink:0, marginTop:4 }} />
+                <div style={{ flex:1 }}>
+                  <div className="name-sm">{i.alert_name || i.title}</div>
+                  <div className="muted-xs">{i.severity} · {i.date} · {users.find(u=>u.id===i.assigned_to)?.name || i.assigned_to}{i.duration_hours ? ` · ${i.duration_hours}h` : ''}</div>
+                </div>
+                <Tag label={i.severity} type={i.severity==='Disaster'?'red':'amber'} />
+              </div>
+            );
+          })}
           {openInc.length === 0 && <p className="muted-sm">No active incidents 🎉</p>}
+        </div>
+
+        <div className="card">
+          <div className="card-title">🕐 Recent Incidents (Last 5)</div>
+          <table style={{ fontSize:12 }}>
+            <thead><tr><th>ID</th><th>Alert</th><th>Severity</th><th>Status</th><th>Duration</th></tr></thead>
+            <tbody>
+              {recentInc.map(i => {
+                const sev = { Disaster:'#ef4444', High:'#f59e0b' }[i.severity] || '#f59e0b';
+                return (
+                  <tr key={i.id}>
+                    <td style={{ fontFamily:'DM Mono', fontSize:11, color:'var(--accent)' }}>{i.id}</td>
+                    <td style={{ maxWidth:140, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{i.alert_name}</td>
+                    <td><span style={{ background:sev+'25', color:sev, padding:'2px 6px', borderRadius:4, fontSize:10, fontWeight:600 }}>{i.severity}</span></td>
+                    <td><Tag label={i.status} type={i.status==='Resolved'?'green':'red'} /></td>
+                    <td style={{ fontFamily:'DM Mono', color:'#fcd34d' }}>{i.duration_hours ? `${i.duration_hours}h` : '—'}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="grid-2 mb-16">
+        <div className="card">
+          <div className="card-title">🌴 Upcoming Holidays</div>
+          {upcomingHols.length === 0 && <p className="muted-sm">No upcoming holidays</p>}
+          {upcomingHols.map(h => {
+            const u = users.find(x => x.id === h.userId);
+            const days = Math.ceil((new Date(h.end)-new Date(h.start))/86400000)+1;
+            return (
+              <div key={h.id} className="flex-between row-item">
+                <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+                  <Avatar user={u || {avatar:'?',color:'#475569'}} size={22} />
+                  <div>
+                    <div className="name-sm">{u?.name}</div>
+                    <div className="muted-xs">{h.start} → {h.end} ({days}d)</div>
+                  </div>
+                </div>
+                <Tag label={h.type||'Annual Leave'} type="amber" />
+              </div>
+            );
+          })}
         </div>
         <div className="card">
           <div className="card-title">🔁 Pending Swap Requests</div>
           {pendingSwaps.length === 0 && <p className="muted-sm">No pending swaps</p>}
-          {pendingSwaps.slice(0, 5).map(s => {
+          {pendingSwaps.slice(0,4).map(s => {
             const req = users.find(u => u.id === s.requesterId);
             const tgt = users.find(u => u.id === s.targetId);
             return (
               <div key={s.id} className="row-item">
-                <div style={{ flex: 1 }}>
+                <div style={{ flex:1 }}>
                   <div className="name-sm">{req?.name} ↔ {tgt?.name}</div>
                   <div className="muted-xs">{s.reqDate} ↔ {s.tgtDate}</div>
                 </div>
@@ -718,26 +928,43 @@ function Dashboard({ users, rota, holidays, incidents, timesheets, swapRequests 
             );
           })}
         </div>
-        <div className="card">
-          <div className="card-title">📊 On-Call Hours This Period</div>
-          {users.map(u => {
-            const sheets = timesheets[u.id] || [];
-            const wkday = sheets.reduce((a, b) => a + (b.weekday_oncall || 0), 0);
-            const wkend = sheets.reduce((a, b) => a + (b.weekend_oncall || 0), 0);
-            const total = wkday + wkend;
-            const pct = Math.min(100, (total / 40) * 100);
-            return (
-              <div key={u.id} style={{ marginBottom: 12 }}>
-                <div className="flex-between" style={{ marginBottom: 4 }}>
-                  <span className="muted-xs">{u.name}</span>
-                  <span style={{ fontSize: 12, fontFamily: 'DM Mono', color: total > 30 ? '#fcd34d' : '#6ee7b7' }}>{total}h</span>
-                </div>
-                <div className="progress-bar">
-                  <div className="progress-fill" style={{ width: pct + '%', background: total > 30 ? '#f59e0b' : '#10b981' }} />
-                </div>
-              </div>
-            );
-          })}
+      </div>
+
+      <div className="card mb-16">
+        <div className="card-title">👥 Engineer Overview</div>
+        <div style={{ overflowX:'auto' }}>
+          <table style={{ minWidth: 920 }}>
+            <thead>
+              <tr><th>Engineer</th><th>Role</th><th>Today's Shift</th><th>OC Hours</th><th>Open Incidents</th><th>Resolved</th><th>Incident Hrs</th><th>Holidays Used</th><th>TOIL Bal</th></tr>
+            </thead>
+            <tbody>
+              {users.map(u => {
+                const sheets = timesheets[u.id] || [];
+                const oc = sheets.reduce((a,b)=>a+(b.weekday_oncall||0)+(b.weekend_oncall||0),0);
+                const incHrs = sheets.filter(e=>e.week&&e.week.startsWith('INC')).reduce((a,e)=>a+(e.weekday_oncall||0)+(e.weekend_oncall||0),0);
+                const userInc = incidents.filter(i=>i.assigned_to===u.id);
+                const openUserInc = userInc.filter(i=>i.status==='Investigating').length;
+                const resolvedUserInc = userInc.filter(i=>i.status==='Resolved').length;
+                const holDays = (holidays||[]).filter(h=>h.userId===u.id&&h.type==='Annual Leave').reduce((a,h)=>a+Math.ceil((new Date(h.end)-new Date(h.start))/86400000)+1,0);
+                const toilBal = calcTOILBalance(sheets, toil||[], u.id);
+                const todayShift = rota[u.id]?.[today];
+                const col = todayShift ? (SHIFT_COLORS[todayShift]||{}) : null;
+                return (
+                  <tr key={u.id}>
+                    <td><div style={{ display:'flex', gap:8, alignItems:'center' }}><Avatar user={u} size={24} /><div><div style={{ fontSize:12, fontWeight:500 }}>{u.name}</div><div style={{ fontSize:10, color:'var(--text-muted)', fontFamily:'DM Mono' }}>{u.id}</div></div></div></td>
+                    <td><Tag label={u.role||'Engineer'} type={u.role==='Manager'?'amber':'blue'} /></td>
+                    <td>{col ? <span style={{ background:col.bg+'33', color:col.text, padding:'2px 8px', borderRadius:4, fontSize:11, fontWeight:600 }}>{col.label}</span> : <span style={{ fontSize:11, color:'var(--text-muted)' }}>Off</span>}</td>
+                    <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#6ee7b7' }}>{oc}h</td>
+                    <td style={{ fontFamily:'DM Mono', fontSize:12, color: openUserInc>0?'#ef4444':'var(--text-muted)' }}>{openUserInc}</td>
+                    <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#10b981' }}>{resolvedUserInc}</td>
+                    <td style={{ fontFamily:'DM Mono', fontSize:12, color: incHrs>0?'#f59e0b':'var(--text-muted)' }}>{incHrs>0?`${incHrs}h`:'—'}</td>
+                    <td style={{ fontFamily:'DM Mono', fontSize:12 }}>{holDays}/25d</td>
+                    <td style={{ fontFamily:'DM Mono', fontSize:12, color: toilBal.balance>0?'#6ee7b7':'#fca5a5' }}>{toilBal.balance}h</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
       </div>
     </div>
@@ -747,10 +974,10 @@ function Dashboard({ users, rota, holidays, incidents, timesheets, swapRequests 
 // ── Who's On Call ──────────────────────────────────────────────────────────
 function OnCall({ users, rota }) {
   const today = new Date();
-  const base  = new Date(today);
-  base.setDate(base.getDate() - ((base.getDay() + 6) % 7));
-  const week  = Array.from({ length: 7 }, (_, i) => { const d = new Date(base); d.setDate(base.getDate() + i); return d; });
-  const DAYS  = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+  const [viewMode, setViewMode] = useState('week'); // 'week' | 'month' | 'year'
+  const [viewOffset, setViewOffset] = useState(0); // weeks or months offset
+  const DAYS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+  const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
   const exportIcal = (user) => {
     const content = generateICalFeed(rota[user.id] || {}, user.name);
@@ -763,57 +990,175 @@ function OnCall({ users, rota }) {
     return { background: c.bg + '55', color: c.text, border: `1px solid ${c.bg}88` };
   };
 
-  return (
-    <div>
-      <PageHeader title="Who's On Call" sub="Current week schedule" />
-      <ShiftLegend />
-      <div className="card" style={{ overflowX: 'auto', marginBottom: 16 }}>
-        <table style={{ minWidth: 620 }}>
-          <thead>
-            <tr>
-              <th>Engineer</th>
-              {week.map((d, i) => {
-                const ds = d.toISOString().slice(0, 10);
-                const bh = UK_BANK_HOLIDAYS.find(b => b.date === ds);
+  // Build weeks array based on viewMode
+  const getWeeks = () => {
+    if (viewMode === 'week') {
+      const base = new Date(today);
+      base.setDate(base.getDate() - ((base.getDay() + 6) % 7) + viewOffset * 7);
+      return [Array.from({ length: 7 }, (_, i) => { const d = new Date(base); d.setDate(base.getDate() + i); return d; })];
+    }
+    if (viewMode === 'month') {
+      const base = new Date(today.getFullYear(), today.getMonth() + viewOffset, 1);
+      const firstDow = (base.getDay() + 6) % 7;
+      const daysInMonth = new Date(base.getFullYear(), base.getMonth() + 1, 0).getDate();
+      const weeksArr = [];
+      let weekDays = [];
+      for (let pre = 0; pre < firstDow; pre++) {
+        const d = new Date(base); d.setDate(1 - firstDow + pre); weekDays.push(d);
+      }
+      for (let day = 1; day <= daysInMonth; day++) {
+        const d = new Date(base.getFullYear(), base.getMonth(), day);
+        weekDays.push(d);
+        if (weekDays.length === 7) { weeksArr.push(weekDays); weekDays = []; }
+      }
+      if (weekDays.length > 0) {
+        while (weekDays.length < 7) { const last = weekDays[weekDays.length-1]; const d = new Date(last); d.setDate(last.getDate()+1); weekDays.push(d); }
+        weeksArr.push(weekDays);
+      }
+      return weeksArr;
+    }
+    // year: show all remaining months from today
+    const yearWeeks = [];
+    const yearStart = new Date(today.getFullYear(), 0, 1);
+    for (let m = 0; m < 12; m++) {
+      const mStart = new Date(today.getFullYear() + viewOffset, m, 1);
+      const firstDow = (mStart.getDay() + 6) % 7;
+      const daysInMonth = new Date(mStart.getFullYear(), m + 1, 0).getDate();
+      const monthWeeks = [];
+      let wDays = [];
+      for (let pre = 0; pre < firstDow; pre++) { const d = new Date(mStart); d.setDate(1-firstDow+pre); wDays.push(d); }
+      for (let day = 1; day <= daysInMonth; day++) {
+        const d = new Date(mStart.getFullYear(), m, day); wDays.push(d);
+        if (wDays.length === 7) { monthWeeks.push(wDays); wDays = []; }
+      }
+      if (wDays.length > 0) { while (wDays.length < 7) { const last = wDays[wDays.length-1]; const d = new Date(last); d.setDate(last.getDate()+1); wDays.push(d); } monthWeeks.push(wDays); }
+      yearWeeks.push({ month: m, year: mStart.getFullYear(), weeks: monthWeeks });
+    }
+    return yearWeeks;
+  };
+
+  const viewLabel = () => {
+    if (viewMode === 'week') {
+      const base = new Date(today); base.setDate(base.getDate() - ((base.getDay()+6)%7) + viewOffset*7);
+      const end = new Date(base); end.setDate(base.getDate()+6);
+      return `${base.toLocaleDateString('en-GB',{day:'numeric',month:'short'})} – ${end.toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})}`;
+    }
+    if (viewMode === 'month') {
+      const d = new Date(today.getFullYear(), today.getMonth() + viewOffset, 1);
+      return d.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
+    }
+    return `${today.getFullYear() + viewOffset}`;
+  };
+
+  const renderWeekTable = (week, key) => (
+    <div key={key} className="card" style={{ overflowX: 'auto', marginBottom: 12 }}>
+      <table style={{ minWidth: 620 }}>
+        <thead>
+          <tr>
+            <th>Engineer</th>
+            {week.map((d, i) => {
+              const ds = d.toISOString().slice(0,10);
+              const bh = UK_BANK_HOLIDAYS.find(b => b.date === ds);
+              const isToday = ds === today.toISOString().slice(0,10);
+              return (
+                <th key={i} style={{ textAlign:'center', fontSize:11, color: bh ? '#fca5a5' : isToday ? 'var(--accent)' : undefined }}>
+                  {DAYS[i]}<br />
+                  <span style={{ fontFamily:'DM Mono', fontSize:10 }}>{d.getDate()}{bh?'🔴':''}</span>
+                </th>
+              );
+            })}
+          </tr>
+        </thead>
+        <tbody>
+          {users.map(u => (
+            <tr key={u.id}>
+              <td>
+                <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                  <Avatar user={u} size={26} />
+                  <div>
+                    <div style={{ fontSize:12, fontWeight:500 }}>{u.name}</div>
+                    <div style={{ fontSize:10, color:'var(--text-muted)', fontFamily:'DM Mono' }}>{u.id}</div>
+                  </div>
+                </div>
+              </td>
+              {week.map(d => {
+                const ds = d.toISOString().slice(0,10);
+                const s  = rota[u.id]?.[ds] || 'off';
+                const c  = cellStyle(s);
+                const isToday = ds === today.toISOString().slice(0,10);
                 return (
-                  <th key={i} style={{ textAlign: 'center', fontSize: 11, color: bh ? '#fca5a5' : undefined }}>
-                    {DAYS[i]}<br />
-                    <span style={{ fontFamily: 'DM Mono', color: '#475569', fontSize: 10 }}>{d.getDate()}{bh ? '🔴' : ''}</span>
-                  </th>
+                  <td key={ds} style={{ textAlign:'center', background: isToday ? 'rgba(59,130,246,0.08)' : undefined }}>
+                    <div style={{ ...c, borderRadius:6, padding:'4px 6px', fontSize:10, fontWeight:600, minWidth:32, display:'inline-block' }}>
+                      {s === 'off' ? '—' : (SHIFT_COLORS[s]?.label?.slice(0,4) || s)}
+                    </div>
+                  </td>
                 );
               })}
             </tr>
-          </thead>
-          <tbody>
-            {users.map(u => (
-              <tr key={u.id}>
-                <td>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <Avatar user={u} size={26} />
-                    <div>
-                      <div style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-primary)' }}>{u.name}</div>
-                      <div style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'DM Mono' }}>{u.id}</div>
-                    </div>
-                  </div>
-                </td>
-                {week.map(d => {
-                  const ds = d.toISOString().slice(0, 10);
-                  const s  = rota[u.id]?.[ds] || 'off';
-                  const c  = cellStyle(s);
-                  return (
-                    <td key={ds} style={{ textAlign: 'center' }}>
-                      <div style={{ ...c, borderRadius: 6, padding: '4px 6px', fontSize: 10, fontWeight: 600, minWidth: 32, display: 'inline-block' }}>
-                        {s === 'off' ? '—' : (SHIFT_COLORS[s]?.label?.slice(0, 4) || s)}
-                      </div>
-                    </td>
-                  );
-                })}
-              </tr>
-            ))}
-          </tbody>
-        </table>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+
+  const data = getWeeks();
+
+  return (
+    <div>
+      <PageHeader title="Who's On Call" sub="Team schedule — week, month, or full year view" />
+      <ShiftLegend />
+
+      {/* View controls */}
+      <div style={{ display:'flex', gap:8, marginBottom:16, flexWrap:'wrap', alignItems:'center' }}>
+        <div style={{ display:'flex', gap:4 }}>
+          {['week','month','year'].map(m => (
+            <button key={m} className={`btn btn-sm ${viewMode===m?'btn-primary':'btn-secondary'}`}
+              onClick={() => { setViewMode(m); setViewOffset(0); }}>
+              {m === 'week' ? 'Week' : m === 'month' ? 'Month' : 'Full Year'}
+            </button>
+          ))}
+        </div>
+        {viewMode !== 'year' && (
+          <div style={{ display:'flex', gap:4, alignItems:'center' }}>
+            <button className="btn btn-secondary btn-sm" onClick={() => setViewOffset(o => o-1)}>← Prev</button>
+            <span style={{ fontSize:13, color:'var(--text-secondary)', minWidth:200, textAlign:'center' }}>{viewLabel()}</span>
+            <button className="btn btn-secondary btn-sm" onClick={() => setViewOffset(o => o+1)}>Next →</button>
+            <button className="btn btn-secondary btn-sm" onClick={() => setViewOffset(0)}>Today</button>
+          </div>
+        )}
+        {viewMode === 'year' && (
+          <div style={{ display:'flex', gap:4, alignItems:'center' }}>
+            <button className="btn btn-secondary btn-sm" onClick={() => setViewOffset(o => o-1)}>← {today.getFullYear()+viewOffset-1}</button>
+            <span style={{ fontSize:13, fontWeight:600, color:'var(--text-primary)', minWidth:80, textAlign:'center' }}>{today.getFullYear()+viewOffset}</span>
+            <button className="btn btn-secondary btn-sm" onClick={() => setViewOffset(o => o+1)}>{today.getFullYear()+viewOffset+1} →</button>
+          </div>
+        )}
       </div>
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+
+      {/* Render based on mode */}
+      {viewMode === 'week' && renderWeekTable(data[0], 'week')}
+      {viewMode === 'month' && (
+        <div>
+          <div className="card mb-8" style={{ padding:'8px 14px', fontSize:14, fontWeight:600, color:'var(--text-primary)' }}>
+            {viewLabel()}
+          </div>
+          {data.map((week, wi) => renderWeekTable(week, `week-${wi}`))}
+        </div>
+      )}
+      {viewMode === 'year' && (
+        <div>
+          {data.map(({ month, year, weeks }) => (
+            <div key={month} style={{ marginBottom: 24 }}>
+              <div style={{ fontSize:14, fontWeight:600, color:'var(--accent)', marginBottom:8, padding:'4px 0', borderBottom:'1px solid var(--border)' }}>
+                📅 {MONTHS[month]} {year}
+              </div>
+              {weeks.map((week, wi) => renderWeekTable(week, `${month}-${wi}`))}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={{ display:'flex', gap:8, flexWrap:'wrap', marginTop:8 }}>
         {users.map(u => (
           <button key={u.id} className="ical-btn" onClick={() => exportIcal(u)}>
             📆 Export {u.name.split(' ')[0]}'s Rota (.ics)
@@ -989,26 +1334,26 @@ function RotaPage({ users, rota, setRota, holidays, upgrades, swapRequests, setS
   const generate = () => { if (!isManager) return; setRota(generateRota(users, startDate, weeks)); setGenerated(true); };
 
   const setCell = (userId, date, shift) => {
-    if (isManager) return; // Managers have read-only access
+    if (!isManager) return; // Only managers can edit
     setRota(prev => ({ ...prev, [userId]: { ...(prev[userId] || {}), [date]: shift } }));
     setEditCell(null);
   };
 
   const deleteCell = (userId, date) => {
-    if (isManager) return; // Managers have read-only access
+    if (!isManager) return; // Only managers can delete
     const next = JSON.parse(JSON.stringify(rota));
     if (next[userId]) delete next[userId][date];
     setRota(next);
   };
 
   const toggleBulk = (userId, date) => {
-    if (isManager) return; // Managers cannot bulk edit
+    if (!isManager) return; // Only managers can bulk edit
     const key = `${userId}::${date}`;
     setBulkSelected(prev => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n; });
   };
 
   const applyBulk = () => {
-    if (isManager) return; // Managers cannot bulk edit
+    if (!isManager) return; // Only managers can bulk edit
     const next = JSON.parse(JSON.stringify(rota));
     bulkSelected.forEach(key => {
       const [uid, date] = key.split('::');
@@ -1018,7 +1363,7 @@ function RotaPage({ users, rota, setRota, holidays, upgrades, swapRequests, setS
   };
 
   const deleteBulk = () => {
-    if (isManager) return; // Managers cannot bulk delete
+    if (!isManager) return; // Only managers can bulk delete
     const next = JSON.parse(JSON.stringify(rota));
     bulkSelected.forEach(key => {
       const [uid, date] = key.split('::');
@@ -1082,7 +1427,7 @@ function RotaPage({ users, rota, setRota, holidays, upgrades, swapRequests, setS
             </FormGroup>
             <FormGroup label="Weeks">
               <select className="select" value={weeks} onChange={e => setWeeks(+e.target.value)} style={{ width: 120 }}>
-                {[2,4,6,8,12].map(w => <option key={w}>{w}</option>)}
+                {[2,4,6,8,12,16,24,26,52].map(w => <option key={w} value={w}>{w} week{w>=52?' (1 year)':w>=26?' (6 months)':w>=12?' (3 months)':''}</option>)}
               </select>
             </FormGroup>
             <button className="btn btn-primary" onClick={generate}>🔄 Generate Rota</button>
@@ -1231,94 +1576,81 @@ function RotaPage({ users, rota, setRota, holidays, upgrades, swapRequests, setS
 // ── Incidents ──────────────────────────────────────────────────────────────
 const INC_SEVERITIES = [
   { value: 'Disaster', label: '🔴 Disaster', color: '#ef4444' },
-  { value: 'High',     label: '🟠 High',     color: '#f97316' },
+  { value: 'High',     label: '🟠 High',     color: '#f59e0b' },
 ];
 
-function Incidents({ users, incidents, setIncidents, currentUser, isManager }) {
+function Incidents({ users, incidents, setIncidents, currentUser, isManager, timesheets, setTimesheets }) {
   const [showModal, setShowModal] = useState(false);
-  const [viewInc,   setViewInc]   = useState(null);
-  const [editInc,   setEditInc]   = useState(null);
-  const [filter,    setFilter]    = useState('all');
+  const [viewInc, setViewInc]    = useState(null);
+  const [editInc, setEditInc]    = useState(null);
+  const [filter, setFilter]      = useState('all');
   const { selected, toggleOne, toggleAll, clearAll } = useBulkSelect(incidents);
 
   const EMPTY_FORM = {
     alert_name: '', vm_service: '', severity: 'Disaster', assigned_to: currentUser,
     kb_ref: '', ticket_ref: '', email_ref: '',
-    // Three structured sections
-    issue: '', issue_images: [],           // Section 1: Issue
-    actions: '', actions_images: [], actions_code: '', actions_results: '',  // Section 2: Actions Taken
-    solution: '',                          // Section 3: Solution
+    issue_desc: '', issue_images: [],
+    actions_desc: '', actions_images: [], actions_code: '',
+    solution_desc: '',
+    duration_hours: ''
   };
-  const [form, setForm]     = useState(EMPTY_FORM);
-  const [activeTab, setActiveTab] = useState('issue'); // 'issue' | 'actions' | 'solution'
-  const [imgUploading, setImgUploading] = useState(false);
+  const [form, setForm] = useState(EMPTY_FORM);
 
-  const openAdd  = () => { setForm({ ...EMPTY_FORM, assigned_to: currentUser }); setEditInc(null); setActiveTab('issue'); setShowModal(true); };
-  const openEdit = (inc, e) => { e.stopPropagation(); setForm({ ...EMPTY_FORM, ...inc }); setEditInc(inc.id); setActiveTab('issue'); setShowModal(true); };
+  const openAdd = () => { setForm({ ...EMPTY_FORM, assigned_to: currentUser }); setEditInc(null); setShowModal(true); };
+  const openEdit = (inc, e) => { e.stopPropagation(); setForm({ ...inc }); setEditInc(inc.id); setShowModal(true); };
 
   const save = () => {
     if (!form.alert_name) return;
+    // Build combined desc for backward compat display
+    const combinedDesc = [
+      form.issue_desc ? `<h3>🔴 Issue</h3>${form.issue_desc}` : '',
+      form.actions_desc ? `<h3>⚙️ Actions Taken</h3>${form.actions_desc}${form.actions_code ? `<pre style="background:rgba(0,0,0,0.4);padding:10px;border-radius:6px;overflow:auto;font-size:12px">${form.actions_code}</pre>` : ''}` : '',
+      form.solution_desc ? `<h3>✅ Solution</h3>${form.solution_desc}` : '',
+    ].filter(Boolean).join('');
     if (editInc) {
-      setIncidents(incidents.map(i => i.id === editInc ? { ...i, ...form } : i));
+      setIncidents(incidents.map(i => i.id === editInc ? { ...i, ...form, desc: combinedDesc } : i));
     } else {
       const id = 'INC-' + String(incidents.length + 1).padStart(3, '0');
-      setIncidents([{ id, ...form, status: 'Investigating', reporter: currentUser,
-        date: new Date().toISOString().slice(0, 16).replace('T', ' '), updates: [] }, ...incidents]);
+      setIncidents([{ id, ...form, desc: combinedDesc, status: 'Investigating', reporter: currentUser, date: new Date().toISOString().slice(0, 16).replace('T', ' '), updates: [] }, ...incidents]);
+      if (form.duration_hours && form.assigned_to && setTimesheets) {
+        const incDate = new Date().toISOString().slice(0, 10);
+        const dow = new Date().getDay();
+        const isWE = dow === 0 || dow === 6;
+        const hrs = +form.duration_hours;
+        const weekLabel = `INC ${id}`;
+        setTimesheets(prev => ({
+          ...prev,
+          [form.assigned_to]: [
+            {
+              week: weekLabel,
+              weekday_oncall: isWE ? 0 : hrs,
+              weekend_oncall: isWE ? hrs : 0,
+              worked_wd: isWE ? 0 : hrs,
+              worked_we: isWE ? hrs : 0,
+              standby_wd: 0, standby_we: 0,
+              notes: `Auto-logged: ${form.alert_name} on ${incDate} (${hrs}h)`
+            },
+            ...(prev[form.assigned_to] || [])
+          ]
+        }));
+      }
     }
     setShowModal(false); setForm(EMPTY_FORM);
   };
 
-  const resolve   = (id, e) => { e.stopPropagation(); setIncidents(incidents.map(i => i.id === id ? { ...i, status: 'Resolved', resolvedAt: new Date().toISOString().slice(0,16).replace('T',' ') } : i)); };
-  const deleteOne  = (id, e) => { e.stopPropagation(); if (window.confirm('Delete this incident?')) setIncidents(incidents.filter(i => i.id !== id)); };
+  const resolve  = (id, e) => { e.stopPropagation(); setIncidents(incidents.map(i => i.id === id ? { ...i, status: 'Resolved', resolvedAt: new Date().toISOString().slice(0,16).replace('T',' ') } : i)); };
+  const deleteOne = (id, e) => { e.stopPropagation(); if (window.confirm('Delete this incident?')) setIncidents(incidents.filter(i => i.id !== id)); };
   const deleteBulk = () => { if (window.confirm(`Delete ${selected.size} incidents?`)) { setIncidents(incidents.filter(i => !selected.has(i.id))); clearAll(); } };
 
   const filtered = filter === 'all' ? incidents : incidents.filter(i => i.status === filter || i.severity === filter);
 
-  // Image upload → base64
-  const handleImgUpload = async (files, field) => {
-    if (!files || files.length === 0) return;
-    setImgUploading(true);
-    const newImgs = await Promise.all(Array.from(files).map(f => new Promise(res => {
-      const r = new FileReader(); r.onload = e => res({ name: f.name, src: e.target.result }); r.readAsDataURL(f);
-    })));
-    setForm(prev => ({ ...prev, [field]: [...(prev[field] || []), ...newImgs] }));
-    setImgUploading(false);
-  };
-
-  const removeImg = (field, idx) => setForm(prev => ({ ...prev, [field]: prev[field].filter((_, i) => i !== idx) }));
-
-  // Shared image strip
-  const ImageStrip = ({ field }) => (
-    <div>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 6 }}>
-        {(form[field] || []).map((img, idx) => (
-          <div key={idx} style={{ position: 'relative' }}>
-            <img src={img.src} alt={img.name} style={{ width: 80, height: 60, objectFit: 'cover', borderRadius: 6, border: '1px solid var(--border)' }} />
-            <button onClick={() => removeImg(field, idx)}
-              style={{ position: 'absolute', top: -4, right: -4, background: '#ef4444', color: '#fff', border: 'none', borderRadius: '50%', width: 16, height: 16, fontSize: 9, cursor: 'pointer', lineHeight: '16px', textAlign: 'center' }}>✕</button>
-            <div style={{ fontSize: 9, color: 'var(--text-muted)', maxWidth: 80, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{img.name}</div>
-          </div>
-        ))}
-      </div>
-      <label className="btn btn-secondary btn-sm" style={{ cursor: 'pointer', display: 'inline-flex', gap: 4, alignItems: 'center' }}>
-        {imgUploading ? '⏳' : '📷 Attach Image'}
-        <input type="file" accept="image/*" multiple style={{ display: 'none' }} onChange={e => handleImgUpload(e.target.files, field)} />
-      </label>
-    </div>
-  );
-
-  const tabStyle = (t) => ({
-    padding: '8px 18px', borderRadius: '8px 8px 0 0', cursor: 'pointer', fontSize: 13, fontWeight: 600,
-    background: activeTab === t ? 'var(--bg-card2)' : 'transparent',
-    color: activeTab === t ? 'var(--accent)' : 'var(--text-muted)',
-    borderBottom: activeTab === t ? '2px solid var(--accent)' : '2px solid transparent',
-  });
+  const assignedUser = (id) => users.find(u => u.id === id);
 
   return (
     <div>
       <PageHeader title="Incidents" sub="Log and track operational incidents"
         actions={<>
-          <select className="select" value={filter} onChange={e => setFilter(e.target.value)} style={{ width: 160 }}>
+          <select className="select" value={filter} onChange={e => setFilter(e.target.value)} style={{ width: 150 }}>
             <option value="all">All</option>
             <option value="Investigating">Investigating</option>
             <option value="Resolved">Resolved</option>
@@ -1328,35 +1660,36 @@ function Incidents({ users, incidents, setIncidents, currentUser, isManager }) {
           {selected.size > 0 && <button className="btn btn-danger btn-sm" onClick={deleteBulk}>🗑 Delete {selected.size}</button>}
           <button className="btn btn-primary" onClick={openAdd}>+ Log Incident</button>
         </>} />
-
       <div className="card" style={{ overflowX: 'auto' }}>
         <table>
           <thead>
             <tr>
               <th style={{ width: 32 }}><input type="checkbox" checked={selected.size === incidents.length && incidents.length > 0} onChange={toggleAll} /></th>
               <th>ID</th><th>Alert Name</th><th>VM/Service</th><th>Severity</th><th>Status</th>
-              <th>Assigned To</th><th>KB Ref</th><th>Date</th><th>Actions</th>
+              <th>Assigned To</th><th>Duration</th><th>KB Ref</th><th>Date</th><th>Actions</th>
             </tr>
           </thead>
           <tbody>
             {[...filtered].sort((a, b) => new Date(b.date) - new Date(a.date)).map(i => {
-              const sev = INC_SEVERITIES.find(s => s.value === i.severity) || INC_SEVERITIES[0];
-              const eng = users.find(u => u.id === i.assigned_to);
-              const hasImages = (i.issue_images?.length || 0) + (i.actions_images?.length || 0) > 0;
+              const sev = INC_SEVERITIES.find(s => s.value === i.severity) || INC_SEVERITIES[2];
+              const eng = assignedUser(i.assigned_to);
               return (
                 <tr key={i.id} style={{ cursor: 'pointer' }} onClick={() => setViewInc(i)}>
                   <td onClick={e => e.stopPropagation()}><input type="checkbox" checked={selected.has(i.id)} onChange={() => toggleOne(i.id)} /></td>
                   <td><span style={{ fontFamily: 'DM Mono', fontSize: 12, color: 'var(--accent)' }}>{i.id}</span></td>
                   <td>
-                    <div style={{ color: 'var(--text-primary)', fontWeight: 500, fontSize: 13 }}>{i.alert_name}{hasImages && <span style={{ marginLeft: 4, fontSize: 11 }}>📷</span>}</div>
-                    {i.vm_service && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{i.vm_service}</div>}
+                    <div style={{ color: 'var(--text-primary)', fontWeight: 500, fontSize: 13 }}>{i.alert_name}</div>
+                    {i.desc && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }} dangerouslySetInnerHTML={{ __html: (i.desc||'').replace(/<[^>]+>/g,'').slice(0,60) + (i.desc?.length > 60 ? '…' : '') }} />}
                   </td>
                   <td style={{ fontSize: 12 }}>{i.vm_service || '—'}</td>
-                  <td><span style={{ background: sev.color + '25', color: sev.color, padding: '3px 8px', borderRadius: 6, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>{sev.label}</span></td>
+                  <td><span style={{ background: sev.color + '25', color: sev.color, padding: '3px 8px', borderRadius: 6, fontSize: 11, fontWeight: 600 }}>{sev.label}</span></td>
                   <td><Tag label={i.status} type={i.status === 'Resolved' ? 'green' : 'red'} /></td>
-                  <td>{eng ? <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}><Avatar user={eng} size={20} /><span style={{ fontSize: 12 }}>{eng.name.split(' ')[0]}</span></div> : <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>—</span>}</td>
+                  <td>
+                    {eng ? <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}><Avatar user={eng} size={20} /><span style={{ fontSize: 12 }}>{eng.name.split(' ')[0]}</span></div> : <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>—</span>}
+                  </td>
                   <td style={{ fontSize: 11, fontFamily: 'DM Mono', color: 'var(--accent)' }}>{i.kb_ref || '—'}</td>
-                  <td style={{ fontSize: 11, fontFamily: 'DM Mono', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{i.date}</td>
+                  <td style={{ fontSize: 11, fontFamily: 'DM Mono', color: i.duration_hours ? '#fcd34d' : 'var(--text-muted)' }}>{i.duration_hours ? `${i.duration_hours}h` : '—'}</td>
+                  <td style={{ fontSize: 11, fontFamily: 'DM Mono', color: 'var(--text-muted)' }}>{i.date}</td>
                   <td onClick={e => e.stopPropagation()}>
                     <div style={{ display: 'flex', gap: 4 }}>
                       <button className="btn btn-secondary btn-sm" onClick={e => openEdit(i, e)}>✏</button>
@@ -1371,15 +1704,14 @@ function Incidents({ users, incidents, setIncidents, currentUser, isManager }) {
         </table>
       </div>
 
-      {/* ── Log / Edit Modal ── */}
       {showModal && (
         <Modal title={editInc ? 'Edit Incident' : 'Log New Incident'} onClose={() => setShowModal(false)} wide>
-          {/* Header fields */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
-            <FormGroup label="Alert Name *">
+          {/* Row 1: core fields */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <FormGroup label="Alert Name">
               <input className="input" placeholder="e.g. High CPU on prod-api-01" value={form.alert_name} onChange={e => setForm({ ...form, alert_name: e.target.value })} />
             </FormGroup>
-            <FormGroup label="VM / Service">
+            <FormGroup label="VM / Service Issue">
               <input className="input" placeholder="e.g. prod-api-01 / payment-service" value={form.vm_service} onChange={e => setForm({ ...form, vm_service: e.target.value })} />
             </FormGroup>
             <FormGroup label="Severity">
@@ -1392,178 +1724,154 @@ function Incidents({ users, incidents, setIncidents, currentUser, isManager }) {
                 {users.map(u => <option key={u.id} value={u.id}>{u.name} ({u.id})</option>)}
               </select>
             </FormGroup>
-            <FormGroup label="KB Reference">
+            <FormGroup label="KB Reference (optional)">
               <input className="input" placeholder="e.g. KB-1234" value={form.kb_ref} onChange={e => setForm({ ...form, kb_ref: e.target.value })} />
             </FormGroup>
-            <FormGroup label="Ticket Ref">
-              <input className="input" placeholder="e.g. JIRA-5678" value={form.ticket_ref} onChange={e => setForm({ ...form, ticket_ref: e.target.value })} />
+            <FormGroup label="Ticket Ref (optional)">
+              <input className="input" placeholder="e.g. JIRA-5678 / ServiceNow#" value={form.ticket_ref} onChange={e => setForm({ ...form, ticket_ref: e.target.value })} />
             </FormGroup>
-            <FormGroup label="Email Ref" hint="subject or link">
-              <input className="input" placeholder="e.g. Alert: High CPU prod-api" value={form.email_ref} onChange={e => setForm({ ...form, email_ref: e.target.value })} />
+            <FormGroup label="Email Ref (optional)" hint="paste email subject or link">
+              <input className="input" placeholder="e.g. Alert email subject" value={form.email_ref} onChange={e => setForm({ ...form, email_ref: e.target.value })} />
+            </FormGroup>
+            <FormGroup label="Duration (Hours)" hint="Auto-added to timesheets & payroll">
+              <select className="select" value={form.duration_hours} onChange={e => setForm({ ...form, duration_hours: e.target.value })}>
+                <option value="">Select duration…</option>
+                {[1,2,3,4,5,6,7,8,9,10,11,12].map(h => <option key={h} value={h}>{h} hour{h > 1 ? 's' : ''}</option>)}
+              </select>
             </FormGroup>
           </div>
 
-          {/* Section tabs */}
-          <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid var(--border)', marginBottom: 0 }}>
-            <div style={tabStyle('issue')}    onClick={() => setActiveTab('issue')}>🔍 Issue</div>
-            <div style={tabStyle('actions')}  onClick={() => setActiveTab('actions')}>⚙ Actions Taken</div>
-            <div style={tabStyle('solution')} onClick={() => setActiveTab('solution')}>✅ Solution</div>
+          {/* Section: Issue */}
+          <div style={{ marginTop: 16, border: '1px solid rgba(239,68,68,0.3)', borderRadius: 10, overflow: 'hidden' }}>
+            <div style={{ background: 'rgba(239,68,68,0.12)', padding: '8px 14px', fontWeight: 600, fontSize: 13, color: '#fca5a5', display: 'flex', alignItems: 'center', gap: 8 }}>
+              🔴 Issue
+              <label style={{ marginLeft: 'auto', cursor: 'pointer', fontSize: 12, color: 'var(--accent)', fontWeight: 400, display: 'flex', alignItems: 'center', gap: 4 }}>
+                📎 Attach Image
+                <input type="file" accept="image/*" multiple style={{ display: 'none' }} onChange={e => {
+                  const files = Array.from(e.target.files);
+                  const readers = files.map(f => new Promise(res => { const r = new FileReader(); r.onload = ev => res(ev.target.result); r.readAsDataURL(f); }));
+                  Promise.all(readers).then(imgs => setForm(prev => ({ ...prev, issue_images: [...(prev.issue_images||[]), ...imgs] })));
+                  e.target.value = '';
+                }} />
+              </label>
+            </div>
+            <div style={{ padding: 12 }}>
+              <RichEditor value={form.issue_desc} onChange={v => setForm({ ...form, issue_desc: v })} placeholder="Describe the issue — what happened, what was impacted, error messages…" rows={5} />
+              {(form.issue_images||[]).length > 0 && (
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
+                  {form.issue_images.map((img, i) => (
+                    <div key={i} style={{ position: 'relative' }}>
+                      <img src={img} alt={`issue-${i}`} style={{ width: 100, height: 80, objectFit: 'cover', borderRadius: 6, border: '1px solid var(--border)' }} />
+                      <button onClick={() => setForm(prev => ({ ...prev, issue_images: prev.issue_images.filter((_,j)=>j!==i) }))}
+                        style={{ position: 'absolute', top: 2, right: 2, background: '#ef4444', border: 'none', borderRadius: '50%', width: 18, height: 18, cursor: 'pointer', fontSize: 10, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>✕</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
 
-          <div style={{ background: 'var(--bg-card2)', borderRadius: '0 8px 8px 8px', padding: '16px', marginBottom: 16, border: '1px solid var(--border)', borderTop: 'none' }}>
-
-            {/* Section 1: Issue */}
-            {activeTab === 'issue' && (
-              <div>
-                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>Describe the issue — what was observed, when it started, what was impacted.</div>
-                <RichEditor value={form.issue} onChange={v => setForm({ ...form, issue: v })} placeholder="Describe the issue in detail…" rows={7} />
-                <div style={{ marginTop: 12 }}>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 6 }}>📷 Issue Screenshots / Evidence</div>
-                  <ImageStrip field="issue_images" />
-                </div>
+          {/* Section: Actions Taken */}
+          <div style={{ marginTop: 12, border: '1px solid rgba(245,158,11,0.3)', borderRadius: 10, overflow: 'hidden' }}>
+            <div style={{ background: 'rgba(245,158,11,0.12)', padding: '8px 14px', fontWeight: 600, fontSize: 13, color: '#fcd34d', display: 'flex', alignItems: 'center', gap: 8 }}>
+              ⚙️ Actions Taken
+              <label style={{ marginLeft: 'auto', cursor: 'pointer', fontSize: 12, color: 'var(--accent)', fontWeight: 400, display: 'flex', alignItems: 'center', gap: 4 }}>
+                📎 Attach Image
+                <input type="file" accept="image/*" multiple style={{ display: 'none' }} onChange={e => {
+                  const files = Array.from(e.target.files);
+                  const readers = files.map(f => new Promise(res => { const r = new FileReader(); r.onload = ev => res(ev.target.result); r.readAsDataURL(f); }));
+                  Promise.all(readers).then(imgs => setForm(prev => ({ ...prev, actions_images: [...(prev.actions_images||[]), ...imgs] })));
+                  e.target.value = '';
+                }} />
+              </label>
+            </div>
+            <div style={{ padding: 12 }}>
+              <RichEditor value={form.actions_desc} onChange={v => setForm({ ...form, actions_desc: v })} placeholder="What actions were taken? Commands run, services restarted, people contacted…" rows={5} />
+              <div style={{ marginTop: 10 }}>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>Code Block / Command Output</div>
+                <textarea
+                  className="input"
+                  style={{ fontFamily: 'DM Mono, monospace', fontSize: 12, minHeight: 80, background: 'rgba(0,0,0,0.4)' }}
+                  placeholder="Paste commands, logs, or results here…"
+                  value={form.actions_code}
+                  onChange={e => setForm({ ...form, actions_code: e.target.value })}
+                />
               </div>
-            )}
-
-            {/* Section 2: Actions Taken */}
-            {activeTab === 'actions' && (
-              <div>
-                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>Document every action taken during investigation and remediation.</div>
-                <RichEditor value={form.actions} onChange={v => setForm({ ...form, actions: v })} placeholder="List actions taken step by step…" rows={5} />
-
-                <div style={{ marginTop: 14 }}>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 6 }}>💻 Code / Commands</div>
-                  <textarea
-                    className="input"
-                    placeholder={"# Paste commands, scripts or code snippets here\nkubectl get pods -n production\ndocker logs prod-api-01 --tail=100"}
-                    value={form.actions_code}
-                    onChange={e => setForm({ ...form, actions_code: e.target.value })}
-                    style={{ fontFamily: 'DM Mono', fontSize: 12, minHeight: 100, resize: 'vertical', whiteSpace: 'pre', overflowX: 'auto' }}
-                  />
+              {(form.actions_images||[]).length > 0 && (
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
+                  {form.actions_images.map((img, i) => (
+                    <div key={i} style={{ position: 'relative' }}>
+                      <img src={img} alt={`action-${i}`} style={{ width: 100, height: 80, objectFit: 'cover', borderRadius: 6, border: '1px solid var(--border)' }} />
+                      <button onClick={() => setForm(prev => ({ ...prev, actions_images: prev.actions_images.filter((_,j)=>j!==i) }))}
+                        style={{ position: 'absolute', top: 2, right: 2, background: '#ef4444', border: 'none', borderRadius: '50%', width: 18, height: 18, cursor: 'pointer', fontSize: 10, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>✕</button>
+                    </div>
+                  ))}
                 </div>
-
-                <div style={{ marginTop: 14 }}>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 6 }}>📋 Results / Output</div>
-                  <textarea
-                    className="input"
-                    placeholder={"Paste command output, logs, error messages…"}
-                    value={form.actions_results}
-                    onChange={e => setForm({ ...form, actions_results: e.target.value })}
-                    style={{ fontFamily: 'DM Mono', fontSize: 12, minHeight: 80, resize: 'vertical', whiteSpace: 'pre', overflowX: 'auto' }}
-                  />
-                </div>
-
-                <div style={{ marginTop: 14 }}>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 6 }}>📷 Screenshots / Graphs</div>
-                  <ImageStrip field="actions_images" />
-                </div>
-              </div>
-            )}
-
-            {/* Section 3: Solution */}
-            {activeTab === 'solution' && (
-              <div>
-                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>Document the root cause and the fix applied. This becomes the KB entry.</div>
-                <RichEditor value={form.solution} onChange={v => setForm({ ...form, solution: v })} placeholder="Root cause and resolution…" rows={9} />
-              </div>
-            )}
+              )}
+            </div>
           </div>
 
-          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          {/* Section: Solution */}
+          <div style={{ marginTop: 12, border: '1px solid rgba(16,185,129,0.3)', borderRadius: 10, overflow: 'hidden' }}>
+            <div style={{ background: 'rgba(16,185,129,0.12)', padding: '8px 14px', fontWeight: 600, fontSize: 13, color: '#6ee7b7' }}>
+              ✅ Solution
+            </div>
+            <div style={{ padding: 12 }}>
+              <RichEditor value={form.solution_desc} onChange={v => setForm({ ...form, solution_desc: v })} placeholder="How was it resolved? Root cause, fix applied, follow-up actions required…" rows={5} />
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
             <button className="btn btn-secondary" onClick={() => setShowModal(false)}>Cancel</button>
-            <button className="btn btn-secondary" onClick={() => setActiveTab(activeTab === 'issue' ? 'actions' : activeTab === 'actions' ? 'solution' : 'solution')}
-              disabled={activeTab === 'solution'}>Next →</button>
-            <button className="btn btn-primary" onClick={save} disabled={!form.alert_name}>{editInc ? 'Update Incident' : 'Log Incident'}</button>
+            <button className="btn btn-primary" onClick={save}>{editInc ? 'Update Incident' : 'Log Incident'}</button>
           </div>
         </Modal>
       )}
 
-      {/* ── View Incident Modal ── */}
-      {viewInc && (() => {
-        const sev = INC_SEVERITIES.find(x => x.value === viewInc.severity) || INC_SEVERITIES[0];
-        return (
-          <Modal title={`${viewInc.id} — ${viewInc.alert_name}`} onClose={() => setViewInc(null)} wide>
-            {/* Meta strip */}
-            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 14 }}>
-              <span style={{ background: sev.color + '25', color: sev.color, padding: '4px 10px', borderRadius: 6, fontSize: 12, fontWeight: 700 }}>{sev.label}</span>
-              <Tag label={viewInc.status} type={viewInc.status === 'Resolved' ? 'green' : 'red'} />
-              <span className="muted-xs">📅 {viewInc.date}</span>
-              {viewInc.resolvedAt && <span className="muted-xs">✅ Resolved: {viewInc.resolvedAt}</span>}
+      {viewInc && (
+        <Modal title={`${viewInc.id} — ${viewInc.alert_name}`} onClose={() => setViewInc(null)} wide>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 16 }}>
+            {(() => { const s = INC_SEVERITIES.find(x => x.value === viewInc.severity); return s ? <span style={{ background: s.color + '25', color: s.color, padding: '3px 8px', borderRadius: 6, fontSize: 11, fontWeight: 600 }}>{s.label}</span> : null; })()}
+            <Tag label={viewInc.status} type={viewInc.status === 'Resolved' ? 'green' : 'red'} />
+            <span className="muted-xs">{viewInc.date}</span>
+          </div>
+          {viewInc.vm_service && <div className="muted-xs" style={{ marginBottom: 8 }}>VM/Service: <strong>{viewInc.vm_service}</strong></div>}
+          {viewInc.assigned_to && <div className="muted-xs" style={{ marginBottom: 8 }}>Assigned to: <strong>{users.find(u => u.id === viewInc.assigned_to)?.name || viewInc.assigned_to}</strong></div>}
+          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 12 }}>
+            {viewInc.kb_ref     && <div className="muted-xs">📚 KB: <span style={{ color: 'var(--accent)' }}>{viewInc.kb_ref}</span></div>}
+            {viewInc.ticket_ref && <div className="muted-xs">🎫 Ticket: <span style={{ color: 'var(--accent)' }}>{viewInc.ticket_ref}</span></div>}
+            {viewInc.email_ref  && <div className="muted-xs">📧 Email: <span style={{ color: 'var(--accent)' }}>{viewInc.email_ref}</span></div>}
+            {viewInc.duration_hours && <div className="muted-xs">⏱ Duration: <span style={{ color: '#fcd34d' }}>{viewInc.duration_hours}h</span></div>}
+          </div>
+          {/* Structured sections */}
+          {viewInc.issue_desc && (
+            <div style={{ marginBottom: 12, border: '1px solid rgba(239,68,68,0.3)', borderRadius: 8, overflow: 'hidden' }}>
+              <div style={{ background: 'rgba(239,68,68,0.12)', padding: '6px 12px', fontWeight: 600, fontSize: 12, color: '#fca5a5' }}>🔴 Issue</div>
+              <div style={{ padding: '10px 12px', fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.7 }} dangerouslySetInnerHTML={{ __html: viewInc.issue_desc }} />
+              {(viewInc.issue_images||[]).length > 0 && <div style={{ padding: '0 12px 10px', display: 'flex', gap: 8, flexWrap: 'wrap' }}>{viewInc.issue_images.map((img,i) => <img key={i} src={img} alt="" style={{ maxWidth: 200, maxHeight: 150, borderRadius: 6, border: '1px solid var(--border)' }} />)}</div>}
             </div>
-            <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 14 }}>
-              {viewInc.vm_service  && <span className="muted-xs">🖥 <strong>{viewInc.vm_service}</strong></span>}
-              {viewInc.assigned_to && <span className="muted-xs">👤 <strong>{users.find(u => u.id === viewInc.assigned_to)?.name || viewInc.assigned_to}</strong></span>}
-              {viewInc.kb_ref      && <span className="muted-xs">📚 <span style={{ color: 'var(--accent)' }}>{viewInc.kb_ref}</span></span>}
-              {viewInc.ticket_ref  && <span className="muted-xs">🎫 <span style={{ color: 'var(--accent)' }}>{viewInc.ticket_ref}</span></span>}
-              {viewInc.email_ref   && <span className="muted-xs">📧 <span style={{ color: 'var(--accent)' }}>{viewInc.email_ref}</span></span>}
+          )}
+          {viewInc.actions_desc && (
+            <div style={{ marginBottom: 12, border: '1px solid rgba(245,158,11,0.3)', borderRadius: 8, overflow: 'hidden' }}>
+              <div style={{ background: 'rgba(245,158,11,0.12)', padding: '6px 12px', fontWeight: 600, fontSize: 12, color: '#fcd34d' }}>⚙️ Actions Taken</div>
+              <div style={{ padding: '10px 12px', fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.7 }} dangerouslySetInnerHTML={{ __html: viewInc.actions_desc }} />
+              {viewInc.actions_code && <pre style={{ margin: '0 12px 10px', background: 'rgba(0,0,0,0.4)', padding: '10px', borderRadius: 6, fontSize: 12, overflow: 'auto', color: '#6ee7b7' }}>{viewInc.actions_code}</pre>}
+              {(viewInc.actions_images||[]).length > 0 && <div style={{ padding: '0 12px 10px', display: 'flex', gap: 8, flexWrap: 'wrap' }}>{viewInc.actions_images.map((img,i) => <img key={i} src={img} alt="" style={{ maxWidth: 200, maxHeight: 150, borderRadius: 6, border: '1px solid var(--border)' }} />)}</div>}
             </div>
-
-            {/* Section: Issue */}
-            {(viewInc.issue || viewInc.issue_images?.length > 0) && (
-              <div style={{ marginBottom: 18 }}>
-                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <span style={{ background: '#ef444422', color: '#ef4444', borderRadius: 6, padding: '2px 8px', fontSize: 11 }}>🔍 Issue</span>
-                </div>
-                {viewInc.issue && <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.8 }} dangerouslySetInnerHTML={{ __html: viewInc.issue }} />}
-                {viewInc.issue_images?.length > 0 && (
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
-                    {viewInc.issue_images.map((img, i) => (
-                      <a key={i} href={img.src} target="_blank" rel="noreferrer">
-                        <img src={img.src} alt={img.name} style={{ width: 120, height: 90, objectFit: 'cover', borderRadius: 6, border: '1px solid var(--border)', cursor: 'zoom-in' }} />
-                      </a>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Section: Actions Taken */}
-            {(viewInc.actions || viewInc.actions_code || viewInc.actions_results || viewInc.actions_images?.length > 0) && (
-              <div style={{ marginBottom: 18 }}>
-                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 8 }}>
-                  <span style={{ background: '#f97316' + '22', color: '#f97316', borderRadius: 6, padding: '2px 8px', fontSize: 11 }}>⚙ Actions Taken</span>
-                </div>
-                {viewInc.actions && <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.8, marginBottom: 8 }} dangerouslySetInnerHTML={{ __html: viewInc.actions }} />}
-                {viewInc.actions_code && (
-                  <div style={{ marginBottom: 8 }}>
-                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>💻 Code / Commands</div>
-                    <pre style={{ background: '#0f172a', border: '1px solid var(--border)', borderRadius: 8, padding: '12px 14px', fontSize: 12, fontFamily: 'DM Mono', color: '#e2e8f0', overflowX: 'auto', margin: 0, whiteSpace: 'pre-wrap' }}>{viewInc.actions_code}</pre>
-                  </div>
-                )}
-                {viewInc.actions_results && (
-                  <div style={{ marginBottom: 8 }}>
-                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>📋 Results / Output</div>
-                    <pre style={{ background: '#0a0f1a', border: '1px solid var(--border)', borderRadius: 8, padding: '12px 14px', fontSize: 11, fontFamily: 'DM Mono', color: '#94a3b8', overflowX: 'auto', margin: 0, whiteSpace: 'pre-wrap' }}>{viewInc.actions_results}</pre>
-                  </div>
-                )}
-                {viewInc.actions_images?.length > 0 && (
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
-                    {viewInc.actions_images.map((img, i) => (
-                      <a key={i} href={img.src} target="_blank" rel="noreferrer">
-                        <img src={img.src} alt={img.name} style={{ width: 120, height: 90, objectFit: 'cover', borderRadius: 6, border: '1px solid var(--border)', cursor: 'zoom-in' }} />
-                      </a>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Section: Solution */}
-            {viewInc.solution && (
-              <div style={{ marginBottom: 8 }}>
-                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 8 }}>
-                  <span style={{ background: '#22c55e22', color: '#22c55e', borderRadius: 6, padding: '2px 8px', fontSize: 11 }}>✅ Solution</span>
-                </div>
-                <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.8 }} dangerouslySetInnerHTML={{ __html: viewInc.solution }} />
-              </div>
-            )}
-
-            <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
-              <button className="btn btn-secondary btn-sm" onClick={e => { setViewInc(null); openEdit(viewInc, { stopPropagation: () => {} }); }}>✏ Edit</button>
-              {viewInc.status !== 'Resolved' && <button className="btn btn-success btn-sm" onClick={e => { resolve(viewInc.id, { stopPropagation: () => {} }); setViewInc(null); }}>✓ Mark Resolved</button>}
+          )}
+          {viewInc.solution_desc && (
+            <div style={{ marginBottom: 12, border: '1px solid rgba(16,185,129,0.3)', borderRadius: 8, overflow: 'hidden' }}>
+              <div style={{ background: 'rgba(16,185,129,0.12)', padding: '6px 12px', fontWeight: 600, fontSize: 12, color: '#6ee7b7' }}>✅ Solution</div>
+              <div style={{ padding: '10px 12px', fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.7 }} dangerouslySetInnerHTML={{ __html: viewInc.solution_desc }} />
             </div>
-          </Modal>
-        );
-      })()}
+          )}
+          {/* Fallback for old-format incidents */}
+          {!viewInc.issue_desc && !viewInc.actions_desc && !viewInc.solution_desc && viewInc.desc && (
+            <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.7 }} dangerouslySetInnerHTML={{ __html: viewInc.desc || '' }} />
+          )}
+          {viewInc.resolvedAt && <div className="muted-xs" style={{ marginTop: 12 }}>Resolved: {viewInc.resolvedAt}</div>}
+        </Modal>
+      )}
     </div>
   );
 }
@@ -2220,38 +2528,152 @@ function TOIL({ users, timesheets, toil, setToil, currentUser, isManager }) {
 }
 
 // ── Absence / Sickness ─────────────────────────────────────────────────────
-
-// ── Absence / Sickness ─────────────────────────────────────────────────────
-function Absence({ users, absences, setAbsences, currentUser, isManager }) {
+function Absence({ users, absences, setAbsences, currentUser, isManager, driveToken }) {
   const [showModal, setShowModal]   = useState(false);
   const [editId, setEditId]         = useState(null);
   const [form, setForm]             = useState({ userId: currentUser, start: '', end: '', type: 'Sick', notes: '' });
+  const [sheetMsg, setSheetMsg]     = useState('');
+  const [syncing, setSyncing]       = useState(false);
   const { selected, toggleOne, toggleAll, clearAll } = useBulkSelect(absences);
   const visible = isManager ? absences : absences.filter(a => a.userId === currentUser);
 
+  // ── Google Sheet sync ───────────────────────────────────────────────────
+  const ABSENCE_SHEET_NAME = 'CloudOps-Absences';
+
+  const syncToSheet = async (updatedAbsences) => {
+    if (!driveToken) return;
+    setSyncing(true);
+    try {
+      // Find or create the sheet
+      let sheetId = null;
+      const listResp = await fetch(
+        `https://www.googleapis.com/drive/v3/files?q=name%3D'${ABSENCE_SHEET_NAME}'+and+trashed%3Dfalse&fields=files(id,name)`,
+        { headers: { Authorization: `Bearer ${driveToken}` } }
+      ).then(r => r.json());
+
+      if (listResp.files && listResp.files.length > 0) {
+        sheetId = listResp.files[0].id;
+      } else {
+        const createResp = await fetch('https://sheets.googleapis.com/v4/spreadsheets', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${driveToken}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            properties: { title: ABSENCE_SHEET_NAME },
+            sheets: [{ properties: { title: 'Absences', sheetId: 0 } }]
+          })
+        }).then(r => r.json());
+        sheetId = createResp.spreadsheetId;
+      }
+
+      const header = ['ID', 'Engineer ID', 'Engineer Name', 'Type', 'Start Date', 'End Date', 'Days', 'Notes', 'Logged By'];
+      const rows = [header, ...(updatedAbsences || absences).map(a => {
+        const u = users.find(x => x.id === a.userId);
+        const d = a.end ? Math.ceil((new Date(a.end) - new Date(a.start)) / 86400000) + 1 : 1;
+        return [a.id, a.userId, u?.name || a.userId, a.type, a.start, a.end || '', d, a.notes || '', a.loggedBy || currentUser];
+      })];
+
+      await fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/Absences!A1:I${rows.length}?valueInputOption=RAW`,
+        { method: 'PUT', headers: { Authorization: `Bearer ${driveToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ values: rows }) }
+      );
+      // Bold header
+      await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}:batchUpdate`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${driveToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requests: [{ repeatCell: { range: { sheetId: 0, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 0, endColumnIndex: 9 }, cell: { userEnteredFormat: { textFormat: { bold: true, foregroundColor: { red:1,green:1,blue:1 } }, backgroundColor: { red: 0.07, green: 0.21, blue: 0.37 } } }, fields: 'userEnteredFormat(textFormat,backgroundColor)' } }] })
+      });
+      setSheetMsg(`✅ Synced to Google Sheet "${ABSENCE_SHEET_NAME}" — ${new Date().toLocaleTimeString('en-GB')}`);
+    } catch (e) {
+      console.error('Absence sheet sync error:', e);
+      setSheetMsg('⚠️ Drive not accessible. Data saved locally. Speak to Meetul to share the folder.');
+    } finally { setSyncing(false); }
+  };
+
+  const loadFromSheet = async () => {
+    if (!driveToken) { setSheetMsg('⚠️ Not connected to Google Drive.'); return; }
+    setSyncing(true);
+    try {
+      const listResp = await fetch(
+        `https://www.googleapis.com/drive/v3/files?q=name%3D'${ABSENCE_SHEET_NAME}'+and+trashed%3Dfalse&fields=files(id,name)`,
+        { headers: { Authorization: `Bearer ${driveToken}` } }
+      ).then(r => r.json());
+      if (!listResp.files || listResp.files.length === 0) { setSheetMsg('No absence sheet found yet. Log an absence to create it.'); setSyncing(false); return; }
+      const sheetId = listResp.files[0].id;
+      const dataResp = await fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/Absences!A2:I1000`,
+        { headers: { Authorization: `Bearer ${driveToken}` } }
+      ).then(r => r.json());
+      const rows = dataResp.values || [];
+      const loaded = rows.filter(r => r[0]).map(r => ({
+        id: r[0], userId: r[1], type: r[3] || 'Sick',
+        start: r[4], end: r[5] || '', notes: r[7] || '', loggedBy: r[8] || ''
+      }));
+      if (loaded.length > 0) {
+        setAbsences(loaded);
+        setSheetMsg(`✅ Loaded ${loaded.length} records from Google Sheet.`);
+      } else {
+        setSheetMsg('Sheet is empty.');
+      }
+    } catch (e) { setSheetMsg('⚠️ Could not load from sheet.'); }
+    finally { setSyncing(false); }
+  };
+
   const openAdd  = () => { setForm({ userId: currentUser, start: '', end: '', type: 'Sick', notes: '' }); setEditId(null); setShowModal(true); };
-  const openEdit = (a, e) => { e.stopPropagation(); setForm({ ...a }); setEditId(a.id); setShowModal(true); };
+  const openEdit = (a, e) => {
+    if (!isManager) { alert('Only the manager can edit absence records.'); return; }
+    e.stopPropagation(); setForm({ ...a }); setEditId(a.id); setShowModal(true);
+  };
 
   const save = () => {
     if (!form.start) return;
+    let updated;
     if (editId) {
-      setAbsences(absences.map(a => a.id === editId ? { ...a, ...form } : a));
+      updated = absences.map(a => a.id === editId ? { ...a, ...form } : a);
     } else {
-      setAbsences([...absences, { id: 'abs-' + Date.now(), ...form }]);
+      updated = [...absences, { id: 'abs-' + Date.now(), ...form, loggedBy: currentUser }];
     }
+    setAbsences(updated);
     setShowModal(false);
+    syncToSheet(updated);
   };
 
-  const deleteOne  = (id, e) => { e.stopPropagation(); setAbsences(absences.filter(a => a.id !== id)); };
-  const deleteBulk = () => { setAbsences(absences.filter(a => !selected.has(a.id))); clearAll(); };
+  const deleteOne  = (id, e) => {
+    if (!isManager) { alert('Only the manager can delete absence records.'); return; }
+    e.stopPropagation();
+    const updated = absences.filter(a => a.id !== id);
+    setAbsences(updated);
+    syncToSheet(updated);
+  };
+  const deleteBulk = () => {
+    if (!isManager) return;
+    const updated = absences.filter(a => !selected.has(a.id));
+    setAbsences(updated); clearAll();
+    syncToSheet(updated);
+  };
 
   return (
     <div>
-      <PageHeader title="Absence &amp; Sickness" sub="Track all absences and sickness"
+      <PageHeader title="Absence &amp; Sickness" sub="Track all absences and sickness — synced to Google Sheet"
         actions={<>
-          {selected.size > 0 && <button className="btn btn-danger btn-sm" onClick={deleteBulk}>🗑 Delete {selected.size}</button>}
+          {isManager && selected.size > 0 && <button className="btn btn-danger btn-sm" onClick={deleteBulk}>🗑 Delete {selected.size}</button>}
+          {isManager && driveToken && <button className="btn btn-secondary btn-sm" onClick={loadFromSheet} disabled={syncing}>{syncing ? '⏳' : '📥'} Load from Sheet</button>}
+          {isManager && driveToken && <button className="btn btn-secondary btn-sm" onClick={() => syncToSheet()} disabled={syncing}>{syncing ? '⏳ Syncing…' : '📤 Sync to Sheet'}</button>}
           <button className="btn btn-primary" onClick={openAdd}>+ Log Absence</button>
         </>} />
+
+      {/* Drive status */}
+      {!driveToken && (
+        <div style={{ background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: 8, padding: '10px 14px', marginBottom: 16, fontSize: 12, color: '#fcd34d' }}>
+          ⚠️ Google Drive not connected. Absence records are saved locally only. Manager (MBA47) must be connected to Drive to sync to the Google Sheet.
+        </div>
+      )}
+      {sheetMsg && (
+        <div style={{ background: sheetMsg.startsWith('✅') ? 'rgba(16,185,129,0.1)' : 'rgba(245,158,11,0.1)', border: `1px solid ${sheetMsg.startsWith('✅') ? 'rgba(16,185,129,0.3)' : 'rgba(245,158,11,0.3)'}`, borderRadius: 8, padding: '10px 14px', marginBottom: 16, fontSize: 12, color: sheetMsg.startsWith('✅') ? '#6ee7b7' : '#fcd34d', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span>{sheetMsg}</span>
+          <button onClick={() => setSheetMsg('')} style={{ background: 'none', border: 'none', color: 'inherit', cursor: 'pointer', fontSize: 14 }}>✕</button>
+        </div>
+      )}
+
       <div className="grid-3 mb-16">
         <StatCard label="Total Records" value={absences.length} sub="All engineers" accent="#ef4444" />
         <StatCard label="Sick Days" value={absences.filter(a=>a.type==='Sick').length} sub="Records" accent="#f59e0b" />
@@ -2280,8 +2702,9 @@ function Absence({ users, absences, setAbsences, currentUser, isManager }) {
                   <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>{a.notes || '—'}</td>
                   <td>
                     <div style={{ display: 'flex', gap: 4 }}>
-                      <button className="btn btn-secondary btn-sm" onClick={e => openEdit(a, e)}>✏</button>
-                      <button className="btn btn-danger btn-sm" onClick={e => deleteOne(a.id, e)}>🗑</button>
+                      {isManager && <button className="btn btn-secondary btn-sm" onClick={e => openEdit(a, e)}>✏</button>}
+                      {isManager && <button className="btn btn-danger btn-sm" onClick={e => deleteOne(a.id, e)}>🗑</button>}
+                      {!isManager && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Manager only</span>}
                     </div>
                   </td>
                 </tr>
@@ -2305,6 +2728,7 @@ function Absence({ users, absences, setAbsences, currentUser, isManager }) {
           <FormGroup label="Start Date"><input className="input" type="date" value={form.start} onChange={e => setForm({ ...form, start: e.target.value })} /></FormGroup>
           <FormGroup label="End Date (optional)"><input className="input" type="date" value={form.end} onChange={e => setForm({ ...form, end: e.target.value })} /></FormGroup>
           <FormGroup label="Notes"><textarea className="textarea" rows={3} value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} /></FormGroup>
+          {driveToken && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8 }}>📊 This will be automatically synced to the <strong>{ABSENCE_SHEET_NAME}</strong> Google Sheet.</div>}
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
             <button className="btn btn-secondary" onClick={() => setShowModal(false)}>Cancel</button>
             <button className="btn btn-primary" onClick={save}>{editId ? 'Update' : 'Log Absence'}</button>
@@ -3050,11 +3474,16 @@ function Notes({ obsidianNotes, setObsidianNotes, users, currentUser, isManager 
 }
 
 // ── WhatsApp Team Chat ────────────────────────────────────────────────────
-function WhatsAppChat({ whatsappChats, setWhatsappChats, users, currentUser, isManager }) {
+function WhatsAppChat({ whatsappChats, setWhatsappChats, users, currentUser, isManager, driveToken }) {
   const [selectedChat, setSelectedChat] = useState(null);
   const [newMessage, setNewMessage] = useState('');
   const [showCreateChat, setShowCreateChat] = useState(false);
   const [chatForm, setChatForm] = useState({ name: '', members: [] });
+  const [saveStatus, setSaveStatus] = useState('');
+  const messagesEndRef = useRef(null);
+
+  // Scroll to bottom when messages change
+  useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior:'smooth' }); }, [selectedChat, whatsappChats]);
 
   const createChat = () => {
     if (!chatForm.name || chatForm.members.length === 0) return;
@@ -3066,7 +3495,7 @@ function WhatsAppChat({ whatsappChats, setWhatsappChats, users, currentUser, isM
       created: new Date().toISOString().slice(0, 10),
       messages: []
     };
-    setWhatsappChats([...whatsappChats, chat]);
+    setWhatsappChats(prev => [...prev, chat]);
     setShowCreateChat(false);
     setChatForm({ name: '', members: [] });
     setSelectedChat(chat.id);
@@ -3074,28 +3503,99 @@ function WhatsAppChat({ whatsappChats, setWhatsappChats, users, currentUser, isM
 
   const sendMessage = () => {
     if (!newMessage.trim() || !selectedChat) return;
-    const chat = whatsappChats.find(c => c.id === selectedChat);
-    if (!chat) return;
-
     const message = {
       id: 'msg-' + Date.now(),
       sender: currentUser,
-      content: newMessage,
+      content: newMessage.trim(),
       timestamp: new Date().toISOString()
     };
-
-    setWhatsappChats(whatsappChats.map(c =>
+    setWhatsappChats(prev => prev.map(c =>
       c.id === selectedChat
         ? { ...c, messages: [...(c.messages || []), message] }
         : c
     ));
     setNewMessage('');
+    setSaveStatus('Saved locally ✓');
+    setTimeout(() => setSaveStatus(''), 2000);
+    // Background sync to Google Doc (non-blocking)
+    if (driveToken) setTimeout(() => syncToGoogleDoc(), 500);
   };
 
   const deleteChat = (chatId) => {
     if (window.confirm('Delete this chat?')) {
-      setWhatsappChats(whatsappChats.filter(c => c.id !== chatId));
+      setWhatsappChats(prev => prev.filter(c => c.id !== chatId));
       setSelectedChat(null);
+    }
+  };
+
+  // Save all chats to Google Doc (creates/updates a single compact doc)
+  const syncToGoogleDoc = async () => {
+    if (!driveToken) {
+      setSaveStatus('⚠️ Connect Drive first');
+      setTimeout(() => setSaveStatus(''), 3000);
+      return;
+    }
+    setSaveStatus('⏳ Syncing to Google Doc…');
+    try {
+      const DOC_NAME = 'CloudOps-TeamChat';
+      // Check if doc already exists
+      const listResp = await fetch(
+        `https://www.googleapis.com/drive/v3/files?q=name%3D'${DOC_NAME}'+and+trashed%3Dfalse+and+mimeType%3D'application%2Fvnd.google-apps.document'&fields=files(id,name)`,
+        { headers: { Authorization: `Bearer ${driveToken}` } }
+      ).then(r => r.json());
+
+      let docId = listResp.files && listResp.files.length > 0 ? listResp.files[0].id : null;
+
+      if (!docId) {
+        // Create new doc
+        const createResp = await fetch('https://www.googleapis.com/drive/v3/files', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${driveToken}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: DOC_NAME, mimeType: 'application/vnd.google-apps.document' })
+        }).then(r => r.json());
+        docId = createResp.id;
+      }
+
+      // Build compact plain text content
+      const lines = [];
+      lines.push(`CloudOps Team Chat — exported ${new Date().toLocaleString('en-GB')}`);
+      lines.push('='.repeat(60));
+      whatsappChats.forEach(chat => {
+        lines.push(`\n=== ${chat.name} (${chat.members.length} members) ===`);
+        (chat.messages || []).forEach(m => {
+          const sender = users.find(u => u.id === m.sender)?.name || m.sender;
+          const time = new Date(m.timestamp).toLocaleString('en-GB', { day:'2-digit', month:'2-digit', year:'2-digit', hour:'2-digit', minute:'2-digit' });
+          lines.push(`[${time}] ${sender}: ${m.content}`);
+        });
+        if ((chat.messages||[]).length === 0) lines.push('(no messages)');
+      });
+      const fullText = lines.join('\n');
+
+      // Clear existing content and write new content via Docs API
+      // First get doc to find end index
+      const docResp = await fetch(`https://docs.googleapis.com/v1/documents/${docId}`, {
+        headers: { Authorization: `Bearer ${driveToken}` }
+      }).then(r => r.json());
+      const endIndex = docResp.body?.content?.slice(-1)[0]?.endIndex || 1;
+
+      const requests = [];
+      if (endIndex > 1) {
+        requests.push({ deleteContentRange: { range: { startIndex: 1, endIndex: endIndex - 1 } } });
+      }
+      requests.push({ insertText: { location: { index: 1 }, text: fullText } });
+
+      await fetch(`https://docs.googleapis.com/v1/documents/${docId}:batchUpdate`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${driveToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requests })
+      });
+
+      setSaveStatus(`✅ Synced to Google Doc "${DOC_NAME}"`);
+      setTimeout(() => setSaveStatus(''), 4000);
+    } catch (e) {
+      console.error('Chat doc sync error:', e);
+      setSaveStatus('⚠️ Drive not accessible. Speak to Meetul.');
+      setTimeout(() => setSaveStatus(''), 4000);
     }
   };
 
@@ -3103,8 +3603,12 @@ function WhatsAppChat({ whatsappChats, setWhatsappChats, users, currentUser, isM
 
   return (
     <div>
-      <PageHeader title="💬 WhatsApp Team Chat" sub="Team collaboration & messaging"
-        actions={isManager && <button className="btn btn-primary" onClick={() => setShowCreateChat(true)}>+ New Group</button>} />
+      <PageHeader title="💬 Team Chat" sub="Team collaboration & messaging — auto-saved to Google Doc"
+        actions={<>
+          {saveStatus && <span style={{ fontSize:11, color: saveStatus.startsWith('✅') ? '#6ee7b7' : saveStatus.startsWith('⚠') ? '#fcd34d' : 'var(--accent)' }}>{saveStatus}</span>}
+          {isManager && <button className="btn btn-secondary btn-sm" onClick={syncToGoogleDoc}>📄 Sync to Google Doc</button>}
+          {isManager && <button className="btn btn-primary" onClick={() => setShowCreateChat(true)}>+ New Group</button>}
+        </>} />
 
       <div style={{ display: 'grid', gridTemplateColumns: '280px 1fr', gap: 16, height: '70vh' }}>
         {/* Chat List */}
@@ -3113,29 +3617,24 @@ function WhatsAppChat({ whatsappChats, setWhatsappChats, users, currentUser, isM
           <div style={{ overflowY: 'auto', flex: 1 }}>
             {whatsappChats.length === 0 ? (
               <div style={{ padding: 12, fontSize: 12, color: 'var(--text-muted)', textAlign: 'center' }}>
-                No chats yet. Create one to get started!
+                No chats yet. {isManager ? 'Create one above!' : 'Ask your manager to create a group.'}
               </div>
             ) : (
-              whatsappChats.map(chat => (
-                <div
-                  key={chat.id}
-                  onClick={() => setSelectedChat(chat.id)}
-                  style={{
-                    padding: '10px 12px',
-                    background: selectedChat === chat.id ? 'var(--accent)' : 'transparent',
-                    color: selectedChat === chat.id ? '#fff' : 'var(--text-primary)',
-                    borderRadius: 6,
-                    cursor: 'pointer',
-                    marginBottom: 6,
-                    fontSize: 13
-                  }}
-                >
-                  <div style={{ fontWeight: 500, marginBottom: 4 }}>💬 {chat.name}</div>
-                  <div style={{ fontSize: 11, opacity: 0.8 }}>
-                    {chat.members.length} members · {(chat.messages || []).length} messages
+              whatsappChats.map(chat => {
+                const lastMsg = (chat.messages||[]).slice(-1)[0];
+                const lastSender = lastMsg ? users.find(u=>u.id===lastMsg.sender)?.name?.split(' ')[0] || lastMsg.sender : null;
+                return (
+                  <div key={chat.id} onClick={() => setSelectedChat(chat.id)}
+                    style={{ padding:'10px 12px', background: selectedChat===chat.id?'var(--accent)':'transparent',
+                      color: selectedChat===chat.id?'#fff':'var(--text-primary)', borderRadius:6, cursor:'pointer', marginBottom:6, fontSize:13 }}>
+                    <div style={{ fontWeight:500, marginBottom:2 }}>💬 {chat.name}</div>
+                    <div style={{ fontSize:11, opacity:0.75 }}>{chat.members.length} members · {(chat.messages||[]).length} msgs</div>
+                    {lastMsg && <div style={{ fontSize:10, opacity:0.6, marginTop:2, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
+                      {lastSender}: {lastMsg.content.slice(0,30)}{lastMsg.content.length>30?'…':''}
+                    </div>}
                   </div>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
         </div>
@@ -3143,91 +3642,55 @@ function WhatsAppChat({ whatsappChats, setWhatsappChats, users, currentUser, isM
         {/* Chat View */}
         {currentChat ? (
           <div className="card" style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-            {/* Chat Header */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingBottom: 12, borderBottom: '1px solid var(--border)' }}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', paddingBottom:12, borderBottom:'1px solid var(--border)' }}>
               <div>
-                <h3 style={{ margin: '0 0 4px' }}>{currentChat.name}</h3>
-                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                  {currentChat.members.length} members
+                <h3 style={{ margin:'0 0 2px' }}>{currentChat.name}</h3>
+                <div style={{ fontSize:11, color:'var(--text-muted)' }}>
+                  {currentChat.members.map(id => users.find(u=>u.id===id)?.name?.split(' ')[0]).filter(Boolean).join(', ')}
                 </div>
               </div>
-              {isManager && (
-                <button
-                  className="btn btn-danger btn-sm"
-                  onClick={() => deleteChat(currentChat.id)}
-                >
-                  🗑 Delete
-                </button>
-              )}
+              <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+                {isManager && <button className="btn btn-danger btn-sm" onClick={() => deleteChat(currentChat.id)}>🗑 Delete</button>}
+              </div>
             </div>
 
-            {/* Messages */}
-            <div style={{ overflowY: 'auto', flex: 1, padding: '12px', display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {(currentChat.messages || []).length === 0 ? (
-                <div style={{ textAlign: 'center', color: 'var(--text-muted)', margin: 'auto' }}>
-                  No messages yet. Start the conversation!
-                </div>
+            <div ref={messagesEndRef} style={{ overflowY:'auto', flex:1, padding:'12px', display:'flex', flexDirection:'column', gap:8 }}>
+              {(currentChat.messages||[]).length === 0 ? (
+                <div style={{ textAlign:'center', color:'var(--text-muted)', margin:'auto' }}>No messages yet. Start the conversation!</div>
               ) : (
-                (currentChat.messages || []).map(msg => {
+                (currentChat.messages||[]).map(msg => {
                   const sender = users.find(u => u.id === msg.sender);
                   const isOwn = msg.sender === currentUser;
                   return (
-                    <div
-                      key={msg.id}
-                      style={{
-                        display: 'flex',
-                        justifyContent: isOwn ? 'flex-end' : 'flex-start'
-                      }}
-                    >
-                      <div
-                        style={{
-                          maxWidth: '70%',
-                          padding: '8px 12px',
-                          borderRadius: 12,
-                          background: isOwn ? 'var(--accent)' : 'rgba(255,255,255,0.05)',
-                          color: isOwn ? '#fff' : 'var(--text-primary)',
-                          fontSize: 13,
-                          wordWrap: 'break-word'
-                        }}
-                      >
-                        {!isOwn && <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 4 }}>{sender?.name}</div>}
-                        <div>{msg.content}</div>
-                        <div style={{ fontSize: 10, opacity: 0.7, marginTop: 4, textAlign: 'right' }}>
-                          {new Date(msg.timestamp).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
+                    <div key={msg.id} style={{ display:'flex', justifyContent:isOwn?'flex-end':'flex-start' }}>
+                      {!isOwn && <Avatar user={sender||{avatar:'?',color:'#475569'}} size={28} style={{ marginRight:6, flexShrink:0 }} />}
+                      <div style={{ maxWidth:'70%', padding:'8px 12px', borderRadius:12,
+                        background: isOwn ? 'var(--accent)' : 'rgba(255,255,255,0.05)',
+                        color: isOwn ? '#fff' : 'var(--text-primary)', fontSize:13 }}>
+                        {!isOwn && <div style={{ fontSize:11, fontWeight:600, opacity:0.8, marginBottom:2 }}>{sender?.name}</div>}
+                        <div style={{ wordBreak:'break-word' }}>{msg.content}</div>
+                        <div style={{ fontSize:9, opacity:0.6, marginTop:4, textAlign:'right' }}>
+                          {new Date(msg.timestamp).toLocaleTimeString('en-GB', { hour:'2-digit', minute:'2-digit' })}
                         </div>
                       </div>
                     </div>
                   );
                 })
               )}
+              <div ref={messagesEndRef} />
             </div>
 
-            {/* Message Input */}
-            <div style={{ padding: '12px', borderTop: '1px solid var(--border)', display: 'flex', gap: 8 }}>
-              <input
-                type="text"
-                className="input"
-                placeholder="Type a message…"
-                value={newMessage}
-                onChange={e => setNewMessage(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && sendMessage()}
-                style={{ flex: 1, margin: 0 }}
-              />
-              <button
-                className="btn btn-primary btn-sm"
-                onClick={sendMessage}
-                disabled={!newMessage.trim()}
-              >
-                Send
-              </button>
+            <div style={{ padding:'12px', borderTop:'1px solid var(--border)', display:'flex', gap:8 }}>
+              <input type="text" className="input" placeholder="Type a message… (Enter to send)"
+                value={newMessage} onChange={e => setNewMessage(e.target.value)}
+                onKeyDown={e => e.key==='Enter' && !e.shiftKey && sendMessage()}
+                style={{ flex:1, margin:0 }} />
+              <button className="btn btn-primary btn-sm" onClick={sendMessage} disabled={!newMessage.trim()}>Send</button>
             </div>
           </div>
         ) : (
-          <div className="card" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', textAlign: 'center' }}>
-            <div>
-              <div style={{ fontSize: 24, marginBottom: 8 }}>💬</div>
-              <div>Select a chat or create a new group to start messaging</div>
-            </div>
+          <div className="card" style={{ display:'flex', alignItems:'center', justifyContent:'center', color:'var(--text-muted)', textAlign:'center' }}>
+            <div><div style={{ fontSize:32, marginBottom:8 }}>💬</div><div>Select a chat or create a new group</div></div>
           </div>
         )}
       </div>
@@ -3235,43 +3698,27 @@ function WhatsAppChat({ whatsappChats, setWhatsappChats, users, currentUser, isM
       {showCreateChat && (
         <Modal title="Create Group Chat" onClose={() => setShowCreateChat(false)}>
           <FormGroup label="Group Name">
-            <input
-              className="input"
-              placeholder="e.g. Cloud Ops Team"
-              value={chatForm.name}
-              onChange={e => setChatForm({ ...chatForm, name: e.target.value })}
-            />
+            <input className="input" placeholder="e.g. Cloud Ops Team" value={chatForm.name}
+              onChange={e => setChatForm({ ...chatForm, name: e.target.value })} />
           </FormGroup>
           <FormGroup label="Add Members">
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
               {users.filter(u => u.id !== currentUser).map(u => (
-                <label key={u.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px', cursor: 'pointer' }}>
-                  <input
-                    type="checkbox"
-                    checked={chatForm.members.includes(u.id)}
+                <label key={u.id} style={{ display:'flex', alignItems:'center', gap:8, padding:'6px', cursor:'pointer' }}>
+                  <input type="checkbox" checked={chatForm.members.includes(u.id)}
                     onChange={e => {
-                      if (e.target.checked) {
-                        setChatForm({ ...chatForm, members: [...chatForm.members, u.id] });
-                      } else {
-                        setChatForm({ ...chatForm, members: chatForm.members.filter(id => id !== u.id) });
-                      }
-                    }}
-                  />
+                      if (e.target.checked) setChatForm({ ...chatForm, members:[...chatForm.members, u.id] });
+                      else setChatForm({ ...chatForm, members:chatForm.members.filter(id=>id!==u.id) });
+                    }} />
                   <Avatar user={u} size={24} />
-                  <span style={{ fontSize: 13 }}>{u.name} ({u.id})</span>
+                  <span style={{ fontSize:13 }}>{u.name} ({u.id})</span>
                 </label>
               ))}
             </div>
           </FormGroup>
-          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
+          <div style={{ display:'flex', gap:8, justifyContent:'flex-end', marginTop:12 }}>
             <button className="btn btn-secondary" onClick={() => setShowCreateChat(false)}>Cancel</button>
-            <button
-              className="btn btn-primary"
-              onClick={createChat}
-              disabled={!chatForm.name || chatForm.members.length === 0}
-            >
-              Create Group
-            </button>
+            <button className="btn btn-primary" onClick={createChat} disabled={!chatForm.name||chatForm.members.length===0}>Create Group</button>
           </div>
         </Modal>
       )}
@@ -3282,7 +3729,7 @@ function WhatsAppChat({ whatsappChats, setWhatsappChats, users, currentUser, isM
 // ── Insights (Manager only) ────────────────────────────────────────────────
 function Insights({ users, incidents, timesheets, holidays, absences, isManager }) {
   if (!isManager) return <Alert type="warning">⚠ Insights are restricted to managers.</Alert>;
-  const p1 = incidents.filter(i => i.severity === 'P1').length;
+  const disasters = incidents.filter(i => i.severity === 'Disaster').length;
   const resolved = incidents.filter(i => i.status === 'Resolved').length;
   const totalOC = Object.values(timesheets).flatMap(t => t).reduce((a, b) => a + (b.weekday_oncall || 0) + (b.weekend_oncall || 0), 0);
 
@@ -3290,7 +3737,7 @@ function Insights({ users, incidents, timesheets, holidays, absences, isManager 
     <div>
       <PageHeader title="Insights" sub="Team performance and operational metrics" />
       <div className="grid-4 mb-16">
-        <StatCard label="Total Incidents"  value={incidents.length}  sub={p1 + ' P1 disasters'}  accent="#ef4444" icon="🚨" />
+        <StatCard label="Total Incidents"  value={incidents.length}  sub={disasters + ' disasters'}  accent="#ef4444" icon="🚨" />
         <StatCard label="Resolution Rate"  value={(incidents.length ? Math.round(resolved/incidents.length*100) : 0) + '%'} sub={resolved + '/' + incidents.length} accent="#10b981" icon="✅" />
         <StatCard label="Total OC Hours"   value={totalOC}           sub="All engineers"          accent="#3b82f6" icon="⏱" />
         <StatCard label="Approved Leave"   value={holidays.length}   sub="Entries"                accent="#f59e0b" icon="🌴" />
@@ -3299,11 +3746,11 @@ function Insights({ users, incidents, timesheets, holidays, absences, isManager 
         <div className="card">
           <div className="card-title">Incident Breakdown by Engineer</div>
           <table>
-            <thead><tr><th>Engineer</th><th>Total</th><th>P1s</th><th>Resolved</th></tr></thead>
+            <thead><tr><th>Engineer</th><th>Total</th><th>Disasters</th><th>Resolved</th></tr></thead>
             <tbody>
               {users.map(u => {
                 const inc = incidents.filter(i => i.assigned_to === u.id);
-                const p   = inc.filter(i => i.severity === 'P1').length;
+                const p   = inc.filter(i => i.severity === 'Disaster').length;
                 const r   = inc.filter(i => i.status === 'Resolved').length;
                 return (
                   <tr key={u.id}>
@@ -3343,37 +3790,214 @@ function Insights({ users, incidents, timesheets, holidays, absences, isManager 
 }
 
 // ── Capacity (Manager only) ────────────────────────────────────────────────
-function Capacity({ users, rota, holidays, timesheets, isManager }) {
+function Capacity({ users, rota, holidays, timesheets, incidents, isManager }) {
   if (!isManager) return <Alert type="warning">⚠ Capacity is restricted to managers.</Alert>;
   const today = new Date();
-  const weeks = Array.from({ length: 8 }, (_, w) => {
-    const start = new Date(today); start.setDate(today.getDate() + w * 7 - today.getDay() + 1);
-    const days  = Array.from({ length: 5 }, (_, d) => { const dt = new Date(start); dt.setDate(start.getDate()+d); return dt.toISOString().slice(0,10); });
-    const available = users.filter(u => !days.some(d => holidays.find(h => h.userId===u.id && d>=h.start && d<=h.end))).length;
-    return { label: `W${w+1}`, start: start.toISOString().slice(0,10), available, total: users.length };
+  const [planWeeks, setPlanWeeks] = useState(12);
+
+  const weeks = Array.from({ length: planWeeks }, (_, w) => {
+    const start = new Date(today);
+    start.setDate(today.getDate() + w * 7 - today.getDay() + 1);
+    const days = Array.from({ length: 5 }, (_, d) => { const dt = new Date(start); dt.setDate(start.getDate()+d); return dt.toISOString().slice(0,10); });
+    const onLeave = users.filter(u => days.some(d => (holidays||[]).find(h => h.userId===u.id && d>=h.start && d<=h.end)));
+    const available = users.length - onLeave.length;
+    const openIncs = (incidents||[]).filter(i => { const id = i.date?.slice(0,10); return id >= days[0] && id <= days[4] && i.status==='Investigating'; }).length;
+    return { label: `W${w+1}`, startDate: start.toISOString().slice(0,10), available, total: users.length, onLeave: onLeave.map(u=>u.name.split(' ')[0]), openIncs };
   });
+
+  const maxAvail = users.length;
+
+  const engineerCapacity = users.map(u => {
+    const leaveWeeks = weeks.filter(w => {
+      const wStart = w.startDate;
+      const wEnd = new Date(wStart); wEnd.setDate(new Date(wStart).getDate()+4);
+      return (holidays||[]).some(h => h.userId===u.id && h.start<=wEnd.toISOString().slice(0,10) && h.end>=wStart);
+    }).length;
+    const sheets = timesheets[u.id] || [];
+    const totalOC = sheets.reduce((a,b)=>a+(b.weekday_oncall||0)+(b.weekend_oncall||0),0);
+    const ocIncs = (incidents||[]).filter(i=>i.assigned_to===u.id).length;
+    const openIncs = (incidents||[]).filter(i=>i.assigned_to===u.id&&i.status==='Investigating').length;
+    const resolvedIncs = (incidents||[]).filter(i=>i.assigned_to===u.id&&i.status==='Resolved').length;
+    const availPct = Math.round(((planWeeks-leaveWeeks)/planWeeks)*100);
+    const incHrs = sheets.filter(e=>e.week&&e.week.startsWith('INC')).reduce((a,e)=>a+(e.weekday_oncall||0)+(e.weekend_oncall||0),0);
+    return { ...u, leaveWeeks, totalOC, ocIncs, openIncs, resolvedIncs, availPct, incHrs };
+  });
+
+  // Incident distribution pie per engineer
+  const incByEng = users.map(u => ({ name: u.name.split(' ')[0], count: (incidents||[]).filter(i=>i.assigned_to===u.id).length }));
+  const maxIncEng = Math.max(...incByEng.map(e => e.count), 1);
+  const incColors = ['#ef4444','#f59e0b','#3b82f6','#10b981','#818cf8','#ec4899','#14b8a6','#f97316'];
+
+  // Average weekly capacity
+  const avgAvail = Math.round(weeks.reduce((a,w)=>a+w.available,0)/weeks.length);
+  const minAvail = Math.min(...weeks.map(w=>w.available));
+  const criticalWeeks = weeks.filter(w => (w.available/maxAvail) < 0.5).length;
 
   return (
     <div>
-      <PageHeader title="Capacity Planning" sub="8-week forward view of team availability" />
+      <PageHeader title="Capacity Planning" sub="Forward view of team availability, workload and risk" />
+
+      <div style={{ display:'flex', gap:8, marginBottom:16, alignItems:'center', flexWrap:'wrap' }}>
+        <span style={{ fontSize:13, color:'var(--text-muted)' }}>Planning horizon:</span>
+        {[4,8,12,16,26,52].map(w => (
+          <button key={w} className={`btn btn-sm ${planWeeks===w?'btn-primary':'btn-secondary'}`} onClick={() => setPlanWeeks(w)}>
+            {w}w{w===52?' (1yr)':w===26?' (6mo)':''}
+          </button>
+        ))}
+      </div>
+
+      {/* KPI row */}
+      <div className="grid-4 mb-16">
+        <StatCard label="Planning Weeks"  value={planWeeks}                          sub="Forward view"            accent="#3b82f6" />
+        <StatCard label="Avg Available"   value={`${avgAvail}/${maxAvail}`}          sub="Engineers per week"      accent="#10b981" />
+        <StatCard label="Min Available"   value={`${minAvail}/${maxAvail}`}          sub="Lowest week"             accent="#ef4444" />
+        <StatCard label="Critical Weeks"  value={criticalWeeks}                      sub="< 50% capacity"          accent={criticalWeeks>0?'#ef4444':'#10b981'} />
+      </div>
+
+      {/* Availability bar chart */}
       <div className="card mb-16">
-        <div className="card-title">Team Availability (Next 8 Weeks)</div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
-          {weeks.map(w => {
-            const pct = (w.available / w.total) * 100;
-            return (
-              <div key={w.label} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, flex: 1, minWidth: 60 }}>
-                <div style={{ fontSize: 11, fontFamily: 'DM Mono', color: 'var(--text-muted)' }}>{w.available}/{w.total}</div>
-                <div style={{ width: '100%', height: 80, background: 'var(--bg-card2)', borderRadius: 6, display: 'flex', alignItems: 'flex-end', overflow: 'hidden' }}>
-                  <div style={{ width: '100%', height: pct + '%', background: pct > 80 ? '#10b981' : pct > 50 ? '#f59e0b' : '#ef4444', transition: 'height 0.3s' }} />
+        <div className="card-title">📊 Team Availability — {planWeeks}-Week Forward View</div>
+        <div style={{ overflowX:'auto' }}>
+          <div style={{ display:'flex', gap:4, alignItems:'flex-end', minWidth: planWeeks * 44, paddingBottom:8 }}>
+            {weeks.map(w => {
+              const pct = (w.available / maxAvail) * 100;
+              const color = pct > 80 ? '#10b981' : pct > 50 ? '#f59e0b' : '#ef4444';
+              return (
+                <div key={w.label} style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', gap:4, minWidth:40 }}
+                  title={`${w.label}: ${w.available}/${maxAvail} available${w.onLeave.length?'\nOn leave: '+w.onLeave.join(', '):''}${w.openIncs?'\nOpen incidents: '+w.openIncs:''}`}>
+                  <div style={{ fontSize:9, fontFamily:'DM Mono', color:'var(--text-muted)', textAlign:'center' }}>{w.available}/{maxAvail}</div>
+                  {w.openIncs > 0 && <div style={{ fontSize:9, color:'#ef4444' }}>🚨{w.openIncs}</div>}
+                  <div style={{ width:'100%', height:80, background:'var(--bg-card2)', borderRadius:4, display:'flex', alignItems:'flex-end', overflow:'hidden' }}>
+                    <div style={{ width:'100%', height:`${pct}%`, background:color, transition:'height 0.3s' }} />
+                  </div>
+                  <div style={{ fontSize:9, color:'var(--text-muted)', textAlign:'center' }}>{w.label}</div>
+                  <div style={{ fontSize:8, color:'var(--text-muted)', textAlign:'center' }}>{w.startDate.slice(5)}</div>
                 </div>
-                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{w.label}</div>
+              );
+            })}
+          </div>
+        </div>
+        <div style={{ display:'flex', gap:16, marginTop:8, fontSize:11, color:'var(--text-muted)' }}>
+          <span><span style={{ background:'#10b981', display:'inline-block', width:10, height:10, borderRadius:2, marginRight:4 }}/>&gt; 80% (Healthy)</span>
+          <span><span style={{ background:'#f59e0b', display:'inline-block', width:10, height:10, borderRadius:2, marginRight:4 }}/>50–80% (Reduced)</span>
+          <span><span style={{ background:'#ef4444', display:'inline-block', width:10, height:10, borderRadius:2, marginRight:4 }}/>&lt; 50% (Critical)</span>
+          <span>🚨 = Open incidents</span>
+        </div>
+      </div>
+
+      <div className="grid-2 mb-16">
+        {/* Incident load per engineer bar chart */}
+        <div className="card">
+          <div className="card-title">🚨 Incident Load per Engineer</div>
+          {incByEng.map((e, i) => (
+            <div key={e.name} style={{ marginBottom:10 }}>
+              <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
+                <span style={{ fontSize:12 }}>{e.name}</span>
+                <span style={{ fontSize:11, fontFamily:'DM Mono', color: incColors[i % incColors.length] }}>{e.count} incident{e.count!==1?'s':''}</span>
+              </div>
+              <div style={{ height:8, background:'var(--bg-card2)', borderRadius:4, overflow:'hidden' }}>
+                <div style={{ width:`${(e.count/maxIncEng)*100}%`, height:'100%', background: incColors[i % incColors.length], transition:'width 0.4s' }} />
+              </div>
+            </div>
+          ))}
+          {incByEng.every(e => e.count === 0) && <p className="muted-sm">No incidents assigned yet</p>}
+        </div>
+
+        {/* Per-engineer OC hours bar chart */}
+        <div className="card">
+          <div className="card-title">⏱ On-Call Hours per Engineer</div>
+          {engineerCapacity.map((u, i) => {
+            const maxH = Math.max(...engineerCapacity.map(e=>e.totalOC), 1);
+            return (
+              <div key={u.id} style={{ marginBottom:10 }}>
+                <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
+                  <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+                    <Avatar user={u} size={18} />
+                    <span style={{ fontSize:12 }}>{u.name.split(' ')[0]}</span>
+                  </div>
+                  <span style={{ fontSize:11, fontFamily:'DM Mono', color:'#6ee7b7' }}>{u.totalOC}h{u.incHrs>0?` (+${u.incHrs}h inc)`:''}</span>
+                </div>
+                <div style={{ height:8, background:'var(--bg-card2)', borderRadius:4, overflow:'hidden', display:'flex' }}>
+                  <div style={{ width:`${((u.totalOC-u.incHrs)/maxH)*100}%`, height:'100%', background:'#166534' }} />
+                  <div style={{ width:`${(u.incHrs/maxH)*100}%`, height:'100%', background:'#f59e0b' }} />
+                </div>
               </div>
             );
           })}
+          <div style={{ display:'flex', gap:12, marginTop:8, fontSize:11, color:'var(--text-muted)' }}>
+            <span><span style={{ background:'#166534', display:'inline-block', width:10, height:10, borderRadius:2, marginRight:4 }} />Standby OC</span>
+            <span><span style={{ background:'#f59e0b', display:'inline-block', width:10, height:10, borderRadius:2, marginRight:4 }} />Incident hrs</span>
+          </div>
         </div>
       </div>
-      <Alert>📈 Red = &lt;50% capacity, Amber = 50–80%, Green = &gt;80%.</Alert>
+
+      {/* Weekly detail table */}
+      <div className="card mb-16" style={{ overflowX:'auto' }}>
+        <div className="card-title">📋 Weekly Availability Detail</div>
+        <table style={{ minWidth: 500 }}>
+          <thead>
+            <tr><th>Week</th><th>Start Date</th><th>Available</th><th>Capacity %</th><th>On Leave</th><th>Open Incidents</th><th>Status</th></tr>
+          </thead>
+          <tbody>
+            {weeks.map(w => {
+              const pct = Math.round((w.available/maxAvail)*100);
+              const statusLabel = pct > 80 ? 'Healthy' : pct > 50 ? 'Reduced' : 'Critical';
+              const statusType = pct > 80 ? 'green' : pct > 50 ? 'amber' : 'red';
+              return (
+                <tr key={w.label}>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:'var(--accent)' }}>{w.label}</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12 }}>{w.startDate}</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12, fontWeight:600 }}>{w.available}/{maxAvail}</td>
+                  <td>
+                    <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+                      <div style={{ flex:1, height:6, background:'var(--bg-card2)', borderRadius:3, overflow:'hidden', minWidth:60 }}>
+                        <div style={{ width:`${pct}%`, height:'100%', background:pct>80?'#10b981':pct>50?'#f59e0b':'#ef4444' }} />
+                      </div>
+                      <span style={{ fontSize:11, fontFamily:'DM Mono' }}>{pct}%</span>
+                    </div>
+                  </td>
+                  <td style={{ fontSize:11, color:'var(--text-muted)' }}>{w.onLeave.join(', ') || '—'}</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:w.openIncs>0?'#ef4444':'var(--text-muted)' }}>{w.openIncs || '—'}</td>
+                  <td><Tag label={statusLabel} type={statusType} /></td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Per-engineer capacity table */}
+      <div className="card mb-16">
+        <div className="card-title">👥 Per-Engineer Capacity ({planWeeks}w horizon)</div>
+        <table style={{ overflowX:'auto', display:'block', minWidth:700 }}>
+          <thead>
+            <tr><th>Engineer</th><th>Leave Wks</th><th>Availability</th><th>OC Hours</th><th>Inc Hrs</th><th>Open Incs</th><th>Resolved</th><th>Avail %</th></tr>
+          </thead>
+          <tbody>
+            {engineerCapacity.map(u => (
+              <tr key={u.id}>
+                <td><div style={{ display:'flex', gap:8, alignItems:'center' }}><Avatar user={u} size={22} /><span style={{ fontSize:12 }}>{u.name}</span></div></td>
+                <td style={{ fontFamily:'DM Mono', fontSize:12, color: u.leaveWeeks>0?'#f59e0b':'var(--text-muted)' }}>{u.leaveWeeks}w</td>
+                <td>
+                  <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+                    <div style={{ width:80, height:6, background:'var(--bg-card2)', borderRadius:3, overflow:'hidden' }}>
+                      <div style={{ width:`${u.availPct}%`, height:'100%', background:u.availPct>80?'#10b981':u.availPct>50?'#f59e0b':'#ef4444' }} />
+                    </div>
+                    <span style={{ fontSize:11 }}>{planWeeks-u.leaveWeeks}/{planWeeks}w</span>
+                  </div>
+                </td>
+                <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#6ee7b7' }}>{u.totalOC}h</td>
+                <td style={{ fontFamily:'DM Mono', fontSize:12, color: u.incHrs>0?'#f59e0b':'var(--text-muted)' }}>{u.incHrs>0?`${u.incHrs}h`:'—'}</td>
+                <td style={{ fontFamily:'DM Mono', fontSize:12, color: u.openIncs>0?'#ef4444':'var(--text-muted)' }}>{u.openIncs}</td>
+                <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#10b981' }}>{u.resolvedIncs}</td>
+                <td><span style={{ fontFamily:'DM Mono', fontSize:12, fontWeight:600, color:u.availPct>80?'#10b981':u.availPct>50?'#f59e0b':'#ef4444' }}>{u.availPct}%</span></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <Alert>📈 Red = &lt;50% capacity, Amber = 50–80%, Green = &gt;80%. Hover over bars for week detail.</Alert>
     </div>
   );
 }
@@ -3422,18 +4046,20 @@ function WeeklyReports({ users, incidents, timesheets, holidays, isManager }) {
 }
 
 // ── Payroll (Manager only) ─────────────────────────────────────────────────
-// ── Payroll (Manager only) ─────────────────────────────────────────────────
-function Payroll({ users, timesheets, payconfig, toil, isManager }) {
+function Payroll({ users, timesheets, payconfig, toil, incidents, isManager }) {
   if (!isManager) return <Alert type="warning">⚠ Payroll is restricted to managers.</Alert>;
 
   const exportCSV = () => {
-    const rows = [['Trigram', 'Full Name', 'Standby Hours', 'On-Call Worked Hours', 'TOIL Balance (hrs)', 'TOIL Capped (hrs)']];
+    const rows = [['Trigram','Full Name','Annual Salary','Monthly Net (base)','Standby Hrs','Worked OC Hrs','Incident Hrs','Total OC Pay (£)','TOIL Balance (hrs)']];
     users.forEach(u => {
-      const p   = payconfig[u.id] || { rate: 40, base: 2500 };
-      const hourly = (p.base * 12) / 2080;
-      const oc  = calcOncallPay(timesheets[u.id], hourly);
-      const tb  = calcTOILBalance(timesheets[u.id], toil, u.id);
-      rows.push([u.id, u.name, oc.totalStandbyHours, oc.totalWorkedHours, tb.balance, tb.cappedAt]);
+      const p      = payconfig[u.id] || { rate: 40, base: 2500 };
+      const annual = p.annual || p.base * 12;
+      const hourly = annual / 2080;
+      const oc     = calcOncallPay(timesheets[u.id], hourly);
+      const tb     = calcTOILBalance(timesheets[u.id], toil, u.id);
+      const tx     = calcUKTax(annual, { pensionPct: p.pensionPct||0, studentLoan: p.studentLoan||false });
+      const incHrs = (timesheets[u.id]||[]).filter(e=>e.week&&e.week.startsWith('INC')).reduce((a,e)=>a+(e.weekday_oncall||0)+(e.weekend_oncall||0),0);
+      rows.push([u.id, u.name, `£${annual.toLocaleString()}`, `£${tx.monthly.net.toFixed(0)}`, oc.totalStandbyHours, oc.totalWorkedHours, incHrs, oc.total.toFixed(2), tb.balance]);
     });
     const csv = rows.map(r => r.map(v => `"${v}"`).join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
@@ -3441,21 +4067,44 @@ function Payroll({ users, timesheets, payconfig, toil, isManager }) {
     a.download = `cloudops-payroll-${new Date().toISOString().slice(0,10)}.csv`; a.click();
   };
 
+  // Summary stats
+  const totalPayroll = users.reduce((sum, u) => {
+    const p = payconfig[u.id] || { base: 2500 };
+    return sum + (p.annual || p.base * 12);
+  }, 0);
+  const totalOCPay = users.reduce((sum, u) => {
+    const p = payconfig[u.id] || { base: 2500 };
+    const hourly = (p.annual || p.base*12) / 2080;
+    return sum + calcOncallPay(timesheets[u.id], hourly).total;
+  }, 0);
+  const totalIncidentHrs = Object.values(timesheets).flatMap(t=>t||[]).filter(e=>e.week&&e.week.startsWith('INC')).reduce((a,e)=>a+(e.weekday_oncall||0)+(e.weekend_oncall||0),0);
+
   return (
     <div>
-      <PageHeader title="Payroll" sub="On-call pay, TOIL and tax summary — manager only"
+      <PageHeader title="Payroll" sub="On-call pay, TOIL, tax and take-home — manager only"
         actions={<button className="btn btn-primary" onClick={exportCSV}>📥 Export CSV</button>} />
 
+      {/* Summary KPIs */}
+      <div className="grid-4 mb-16">
+        <StatCard label="Total Payroll" value={`£${Math.round(totalPayroll/1000)}k/yr`} sub="Base salaries combined" accent="#3b82f6" icon="💷" />
+        <StatCard label="Total OC Pay" value={`£${Math.round(totalOCPay)}`} sub="All engineers" accent="#10b981" icon="🌙" />
+        <StatCard label="Incident Hours" value={`${totalIncidentHrs}h`} sub="Auto-logged from incidents" accent="#f59e0b" icon="🚨" />
+        <StatCard label="Engineers" value={users.length} sub="On payroll" accent="#818cf8" icon="👥" />
+      </div>
+
+      {/* On-call pay table */}
       <div className="card mb-16" style={{ overflowX: 'auto' }}>
-        <div className="card-title">On-Call Pay Summary (includes standby + worked)</div>
-        <table style={{ minWidth: 820 }}>
+        <div className="card-title">On-Call Pay Summary (standby + worked + incident hours)</div>
+        <table style={{ minWidth: 900 }}>
           <thead>
             <tr>
               <th>Engineer</th>
+              <th>Annual Salary</th>
               <th>Standby WD (h)</th><th>Worked WD (h)</th>
               <th>Standby WE (h)</th><th>Worked WE (h)</th>
-              <th>Standby Pay (£5/h)</th>
-              <th>Worked Pay (1.5x)</th>
+              <th style={{ color: '#f59e0b' }}>Incident Hrs</th>
+              <th style={{ color: '#93c5fd' }}>Standby Pay</th>
+              <th style={{ color: '#fcd34d' }}>Worked Pay</th>
               <th style={{ color: '#6ee7b7' }}>Total OC Pay</th>
               <th>TOIL Balance</th>
             </tr>
@@ -3463,55 +4112,91 @@ function Payroll({ users, timesheets, payconfig, toil, isManager }) {
           <tbody>
             {users.map(u => {
               const p      = payconfig[u.id] || { rate: 40, base: 2500 };
-              const hourly = (p.base * 12) / 2080;
+              const annual = p.annual || p.base * 12;
+              const hourly = annual / 2080;
               const oc     = calcOncallPay(timesheets[u.id], hourly);
               const tb     = calcTOILBalance(timesheets[u.id], toil, u.id);
+              const incHrs = (timesheets[u.id]||[]).filter(e=>e.week&&e.week.startsWith('INC')).reduce((a,e)=>a+(e.weekday_oncall||0)+(e.weekend_oncall||0),0);
               return (
                 <tr key={u.id}>
-                  <td><div style={{ display: 'flex', gap: 8, alignItems: 'center' }}><Avatar user={u} size={24} /><div><div style={{ fontSize: 12 }}>{u.name}</div><div style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'DM Mono' }}>{u.id} · £{hourly.toFixed(2)}/hr</div></div></div></td>
-                  <td style={{ fontFamily: 'DM Mono', fontSize: 12 }}>{oc.standbyWD}h</td>
-                  <td style={{ fontFamily: 'DM Mono', fontSize: 12 }}>{oc.workedWD}h</td>
-                  <td style={{ fontFamily: 'DM Mono', fontSize: 12 }}>{oc.standbyWE}h</td>
-                  <td style={{ fontFamily: 'DM Mono', fontSize: 12 }}>{oc.workedWE}h</td>
-                  <td style={{ fontFamily: 'DM Mono', fontSize: 12, color: '#93c5fd' }}>£{oc.standbyPay.toFixed(2)}</td>
-                  <td style={{ fontFamily: 'DM Mono', fontSize: 12, color: '#fcd34d' }}>£{oc.workedPay.toFixed(2)}</td>
-                  <td style={{ fontFamily: 'DM Mono', fontSize: 12, fontWeight: 700, color: '#6ee7b7' }}>£{oc.total.toFixed(2)}</td>
-                  <td style={{ fontFamily: 'DM Mono', fontSize: 12, color: tb.balance > 0 ? '#6ee7b7' : '#fca5a5' }}>{tb.balance}h</td>
+                  <td><div style={{ display:'flex', gap:8, alignItems:'center' }}><Avatar user={u} size={24} /><div><div style={{ fontSize:12 }}>{u.name}</div><div style={{ fontSize:10, color:'var(--text-muted)', fontFamily:'DM Mono' }}>{u.id} · £{hourly.toFixed(2)}/hr</div></div></div></td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:'var(--text-secondary)' }}>£{annual.toLocaleString()}</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12 }}>{oc.standbyWD}h</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12 }}>{oc.workedWD}h</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12 }}>{oc.standbyWE}h</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12 }}>{oc.workedWE}h</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12, color: incHrs>0?'#f59e0b':'var(--text-muted)' }}>{incHrs>0?`${incHrs}h`:'—'}</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#93c5fd' }}>£{oc.standbyPay.toFixed(2)}</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#fcd34d' }}>£{oc.workedPay.toFixed(2)}</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12, fontWeight:700, color:'#6ee7b7' }}>£{oc.total.toFixed(2)}</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:tb.balance>0?'#6ee7b7':'#fca5a5' }}>{tb.balance}h</td>
                 </tr>
               );
             })}
           </tbody>
         </table>
-        <div style={{ marginTop: 10, fontSize: 11, color: 'var(--text-muted)' }}>
-          Standby rate: £{ONCALL_STANDBY_RATE}/hr flat · Worked rate: {ONCALL_WORKED_MULTIPLIER}x hourly · TOIL: UK WTR 1:1 on worked hours · max {TOIL_MAX_CARRYOVER_HOURS}h carryover
+        <div style={{ marginTop:10, fontSize:11, color:'var(--text-muted)' }}>
+          Standby: £{ONCALL_STANDBY_RATE}/hr flat · Worked: {ONCALL_WORKED_MULTIPLIER}x hourly · TOIL: UK WTR 1:1 · max {TOIL_MAX_CARRYOVER_HOURS}h · 🚨 Incident hours auto-logged from Incidents page
         </div>
       </div>
 
-      {/* Per-engineer take-home breakdown */}
-      <div className="card-title" style={{ marginBottom: 12 }}>Take-Home Breakdown (base + on-call, after UK tax)</div>
+      {/* Full take-home breakdown per engineer */}
+      <div className="card-title" style={{ marginBottom:12 }}>💷 Take-Home Breakdown (base + OC, after UK tax 2025-26)</div>
       <div className="grid-2 mb-16">
         {users.map(u => {
-          const p      = payconfig[u.id] || { rate: 40, base: 2500 };
-          const hourly = (p.base * 12) / 2080;
+          const p      = payconfig[u.id] || { base: 2500 };
+          const annual = p.annual || p.base * 12;
+          const hourly = annual / 2080;
           const oc     = calcOncallPay(timesheets[u.id], hourly);
-          const annualBase = p.base * 12;
-          const annualOC   = oc.total * 12; // annualise for tax calc
-          const tx = calcUKTax(annualBase + annualOC, { pensionPct: p.pensionPct || 0, studentLoan: p.studentLoan || false });
+          const annualOC   = oc.total * 12;
+          const tx = calcUKTax(annual + annualOC, { pensionPct:p.pensionPct||0, studentLoan:p.studentLoan||false });
+          const incHrs = (timesheets[u.id]||[]).filter(e=>e.week&&e.week.startsWith('INC')).reduce((a,e)=>a+(e.weekday_oncall||0)+(e.weekend_oncall||0),0);
           return (
             <div key={u.id} className="card">
-              <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 10 }}>
+              <div style={{ display:'flex', gap:10, alignItems:'center', marginBottom:10 }}>
                 <Avatar user={u} size={28} />
-                <div>
-                  <div style={{ fontSize: 13, fontWeight: 600 }}>{u.name}</div>
-                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Gross incl. OC: £{(tx.annualGross/12).toLocaleString('en-GB',{maximumFractionDigits:0})}/mo · Eff. rate: {(tx.effectiveRate*100).toFixed(1)}%</div>
+                <div style={{ flex:1 }}>
+                  <div style={{ fontSize:13, fontWeight:600 }}>{u.name}</div>
+                  <div style={{ fontSize:11, color:'var(--text-muted)' }}>
+                    £{annual.toLocaleString()}/yr base · Eff. rate: {(tx.effectiveRate*100).toFixed(1)}%
+                    {incHrs>0 && <span style={{ color:'#f59e0b', marginLeft:6 }}>· 🚨 {incHrs}h incident hrs</span>}
+                  </div>
                 </div>
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 6, fontSize: 11 }}>
+              {/* Tax breakdown summary */}
+              <div style={{ background:'rgba(30,64,175,0.1)', borderRadius:8, padding:'8px 12px', marginBottom:10, fontSize:11 }}>
+                <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
+                  <span style={{ color:'var(--text-muted)' }}>Annual gross (inc. OC)</span>
+                  <span style={{ fontFamily:'DM Mono' }}>£{Math.round(tx.annualGross).toLocaleString()}</span>
+                </div>
+                <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
+                  <span style={{ color:'#fca5a5' }}>Income Tax</span>
+                  <span style={{ fontFamily:'DM Mono', color:'#fca5a5' }}>-£{Math.round(tx.incomeTax).toLocaleString()}</span>
+                </div>
+                <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
+                  <span style={{ color:'#fcd34d' }}>National Insurance</span>
+                  <span style={{ fontFamily:'DM Mono', color:'#fcd34d' }}>-£{Math.round(tx.ni).toLocaleString()}</span>
+                </div>
+                {(p.pensionPct||0) > 0 && <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
+                  <span style={{ color:'#93c5fd' }}>Pension ({p.pensionPct}%)</span>
+                  <span style={{ fontFamily:'DM Mono', color:'#93c5fd' }}>-£{Math.round(tx.pension).toLocaleString()}</span>
+                </div>}
+                {p.studentLoan && <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
+                  <span style={{ color:'#c4b5fd' }}>Student Loan Plan 2</span>
+                  <span style={{ fontFamily:'DM Mono', color:'#c4b5fd' }}>-£{Math.round(tx.slRepay).toLocaleString()}</span>
+                </div>}
+                <div style={{ display:'flex', justifyContent:'space-between', borderTop:'1px solid var(--border)', paddingTop:4, marginTop:4 }}>
+                  <span style={{ fontWeight:600 }}>Annual take-home</span>
+                  <span style={{ fontFamily:'DM Mono', fontWeight:700, color:'#6ee7b7' }}>£{Math.round(tx.annualNet).toLocaleString()}</span>
+                </div>
+              </div>
+              {/* Period grid */}
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:6, fontSize:11 }}>
                 {[['Monthly','monthly'],['Weekly','weekly'],['Daily','daily'],['Hourly','hourly']].map(([label,key]) => (
-                  <div key={key} style={{ background: 'rgba(30,64,175,0.15)', borderRadius: 6, padding: '6px 8px' }}>
-                    <div style={{ color: 'var(--text-muted)', marginBottom: 2 }}>{label}</div>
-                    <div style={{ fontWeight: 700, color: '#6ee7b7', fontFamily: 'DM Mono' }}>£{tx[key].net.toFixed(key==='hourly'?2:0)}</div>
-                    <div style={{ color: 'var(--text-muted)', fontSize: 10 }}>gross £{tx[key].gross.toFixed(key==='hourly'?2:0)}</div>
+                  <div key={key} style={{ background:'rgba(30,64,175,0.15)', borderRadius:6, padding:'6px 8px', textAlign:'center' }}>
+                    <div style={{ color:'var(--text-muted)', marginBottom:2, fontSize:10 }}>{label}</div>
+                    <div style={{ fontWeight:700, color:'#6ee7b7', fontFamily:'DM Mono', fontSize:12 }}>£{tx[key].net.toFixed(key==='hourly'?2:0)}</div>
+                    <div style={{ color:'var(--text-muted)', fontSize:9 }}>gross £{tx[key].gross.toFixed(key==='hourly'?2:0)}</div>
                   </div>
                 ))}
               </div>
@@ -3540,16 +4225,29 @@ function PayConfig({ users, payconfig, setPayconfig, isManager }) {
   };
 
   const u   = users.find(x => x.id === selectedUid);
-  const p   = payconfig[selectedUid] || { base: 2500, rate: 40, pensionPct: 0, studentLoan: false };
+  const p   = payconfig[selectedUid] || { annual: 30000, base: 2500, rate: 40, pensionPct: 0, studentLoan: false };
   const set = (updates) => setPayconfig({ ...payconfig, [selectedUid]: { ...p, ...updates } });
 
-  const annual  = p.base * 12;
+  // Salary entry mode: 'annual' (default) or 'monthly'
+  const [salaryMode, setSalaryMode] = useState('annual');
+
+  const annual  = salaryMode === 'annual' ? (p.annual || p.base * 12) : p.base * 12;
+  const monthly = annual / 12;
   const hourly  = annual / 2080;
   const tx      = calcUKTax(annual, { pensionPct: p.pensionPct || 0, studentLoan: p.studentLoan || false });
   const standbyRate = ONCALL_STANDBY_RATE;
   const workedRate  = hourly * ONCALL_WORKED_MULTIPLIER;
 
   const fmt = (n, dp=2) => `£${n.toLocaleString('en-GB', { minimumFractionDigits: dp, maximumFractionDigits: dp })}`;
+
+  const handleSalaryChange = (val) => {
+    const num = +val;
+    if (salaryMode === 'annual') {
+      set({ annual: num, base: Math.round(num / 12) });
+    } else {
+      set({ base: num, annual: num * 12 });
+    }
+  };
 
   return (
     <div>
@@ -3591,9 +4289,23 @@ function PayConfig({ users, payconfig, setPayconfig, isManager }) {
           {/* Left: inputs */}
           <div className="card">
             <div className="card-title">💷 Pay Settings — {u.name}</div>
-            <FormGroup label="Monthly Gross Base (£)">
-              <input className="input" type="number" value={p.base} onChange={e => set({ base: +e.target.value })} />
-            </FormGroup>
+            {/* Salary mode toggle */}
+            <div style={{ display: 'flex', gap: 8, marginBottom: 12, alignItems: 'center' }}>
+              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Salary entry:</span>
+              <button className={`btn btn-sm ${salaryMode === 'annual' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setSalaryMode('annual')}>Yearly (default)</button>
+              <button className={`btn btn-sm ${salaryMode === 'monthly' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setSalaryMode('monthly')}>Monthly</button>
+            </div>
+            {salaryMode === 'annual' ? (
+              <FormGroup label="Annual Gross Salary (£)" hint="Default — enter yearly salary">
+                <input className="input" type="number" step="1000" value={p.annual || p.base * 12} onChange={e => handleSalaryChange(e.target.value)} />
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>= {fmt(monthly, 0)}/month · {fmt(hourly)}/hr</div>
+              </FormGroup>
+            ) : (
+              <FormGroup label="Monthly Gross Base (£)">
+                <input className="input" type="number" value={p.base} onChange={e => handleSalaryChange(e.target.value)} />
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>= {fmt(annual, 0)}/year · {fmt(hourly)}/hr</div>
+              </FormGroup>
+            )}
             <FormGroup label="Pension Contribution (%)" hint="employee">
               <input className="input" type="number" min="0" max="100" step="0.5" value={p.pensionPct||0} onChange={e => set({ pensionPct: +e.target.value })} />
             </FormGroup>
@@ -3687,7 +4399,7 @@ function PayConfig({ users, payconfig, setPayconfig, isManager }) {
 
 
 // ── Settings (Manager only, all settings here) ─────────────────────────────
-function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks, driveToken, profilePics, setProfilePicsState }) {
+function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks, driveToken, profilePics, setProfilePicsState, rota, setRota }) {
   const BLANK_FORM = { name: '', role: 'Engineer', mobile_number: '', google_email: '', profile_picture: '', avatar: '', color: '' };
   const [showAdd, setShowAdd]         = useState(false);
   const [showLink, setShowLink]       = useState(false);
@@ -3731,6 +4443,16 @@ function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks, dri
       profile_picture: form.profile_picture || '' };
     const updatedUsers = [...users, newUser];
     setUsers(updatedUsers);
+    // Auto-extend rota for the new engineer — inherit existing date range from rota
+    const existingDates = Object.values(rota).flatMap(r => Object.keys(r));
+    if (existingDates.length > 0) {
+      const sorted = existingDates.sort();
+      const newRota = generateRota(updatedUsers, sorted[0], Math.ceil(existingDates.length / 7));
+      // Merge: keep existing entries, add new engineer's generated entries
+      const merged = { ...newRota };
+      Object.keys(rota).forEach(uid => { merged[uid] = { ...newRota[uid], ...rota[uid] }; });
+      setRota(merged);
+    }
     // Initialise password in registry
     const reg = updatePasswordInRegistry(id, id.toLowerCase());
     if (driveToken) await syncRegistryToDrive(driveToken, reg, updatedUsers);
@@ -4101,7 +4823,12 @@ export default function App() {
       setLastSync(new Date());
       setSyncing(false);
       setConnectingDrive(false);
-    } catch (e) { console.error('Drive connect error:', e); setSyncing(false); setConnectingDrive(false); }
+    } catch (e) { console.error('Drive connect error:', e); setSyncing(false); setConnectingDrive(false);
+      // Show friendly message if Drive is inaccessible
+      if (currentUser === 'MBA47') {
+        alert('⚠️ Google Drive is not accessible.\n\nThe folder (dsmeetul@3ds.com) may not be shared with this application, or OAuth permissions are pending.\n\nPlease speak to Meetul to ensure the Drive folder is shared with the app.\n\nAll data is still saved locally in your browser session.');
+      }
+    }
   };
 
   const save = useCallback(async (key, data) => {
@@ -4131,7 +4858,12 @@ export default function App() {
   useEffect(() => { save('obsidianNotes', obsidianNotes); }, [obsidianNotes]);
   useEffect(() => { save('whatsappChats', whatsappChats); }, [whatsappChats]);
 
-  const login = (uid) => { setCurrentUser(uid); setLoggedIn(true); setPage(uid === 'MBA47' ? 'dashboard' : 'oncall'); };
+  const login = (uid) => { setCurrentUser(uid); setLoggedIn(true); setPage(uid === 'MBA47' ? 'dashboard' : 'oncall');
+    // Auto-connect Google Drive for manager (MBA47)
+    if (uid === 'MBA47' && !driveToken) {
+      setTimeout(() => connectDrive().catch(() => {}), 300);
+    }
+  };
 
   if (!loggedIn) return <LoginScreen onLogin={login} driveToken={driveToken} onConnectDrive={connectDrive} users={users} connectingDrive={connectingDrive} />;
 
@@ -4157,14 +4889,14 @@ export default function App() {
       case 'myshift':    return <MyShift {...props} />;
       case 'calendar':   return <CalendarView {...props} />;
       case 'rota':       return <RotaPage {...props} />;
-      case 'incidents':  return <Incidents {...props} />;
+      case 'incidents':  return <Incidents {...props} timesheets={timesheets} setTimesheets={setTimesheets} />;
       case 'timesheets': return <Timesheets {...props} />;
       case 'holidays':   return <Holidays {...props} />;
       case 'swaps':      return <ShiftSwaps {...props} />;
       case 'upgrades':   return <UpgradeDays {...props} />;
       case 'stress':     return <StressScore {...props} />;
       case 'toil':       return <TOIL {...props} />;
-      case 'absence':    return <Absence {...props} />;
+      case 'absence':    return <Absence {...props} driveToken={driveToken} />;
       case 'logbook':    return <Logbook {...props} />;
       case 'wiki':       return <Wiki {...props} />;
       case 'glossary':   return <Glossary {...props} />;
@@ -4173,9 +4905,9 @@ export default function App() {
       case 'docs':       return <Documents {...props} />;
       case 'whatsapp':   return <WhatsAppChat {...props} />;
       case 'insights':   return <Insights {...props} />;
-      case 'capacity':   return <Capacity {...props} />;
+      case 'capacity':   return <Capacity {...props} incidents={incidents} />;
       case 'reports':    return <WeeklyReports {...props} />;
-      case 'payroll':    return <Payroll {...props} />;
+      case 'payroll':    return <Payroll {...props} incidents={incidents} />;
       case 'payconfig':  return <PayConfig {...props} />;
       case 'settings':   return <Settings {...props} />;
       case 'myaccount':  return <MyAccount currentUser={currentUser} users={users} setUsers={setUsers} driveToken={driveToken} profilePics={profilePics} setProfilePicsState={setProfilePicsState} />;
