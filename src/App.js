@@ -15,6 +15,11 @@ import {
   generateTrigramId, TRICOLORS
 } from './utils/defaults';
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Google Drive auto-connects on page load using the OAuth Client ID below.
+// Drive account: dsmeetul@gmail.com  |  Folder: CloudOps-Rota
+// All app data is stored in this Drive. Engineers never need to connect manually.
+// ─────────────────────────────────────────────────────────────────────────────
 const GOOGLE_CLIENT_ID = process.env.REACT_APP_GOOGLE_CLIENT_ID || 'YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com';
 
 // ── AUTH & DRIVE HELPERS ────────────────────────────────────────────────────
@@ -514,7 +519,7 @@ function useBulkSelect(items) {
 }
 
 // ── Login Screen ───────────────────────────────────────────────────────────
-function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDrive }) {
+function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDrive, driveReady }) {
   const [uid, setUid]               = useState('');
   const [pw, setPw]                 = useState('');
   const [err, setErr]               = useState('');
@@ -525,18 +530,6 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDri
   const [forgotUid, setForgotUid]   = useState('');
   const [forgotMsg, setForgotMsg]   = useState('');
   const [showHelp, setShowHelp]     = useState(false);
-  const [driveLoading, setDriveLoading] = useState(false);
-
-  // Allow any user to connect Drive to pull the latest registry/passwords
-  const handleConnectDrive = async () => {
-    setDriveLoading(true);
-    setErr('');
-    try {
-      await onConnectDrive();
-    } catch (e) {
-      setErr('Could not connect to Google Drive. Check your account and try again.');
-    } finally { setDriveLoading(false); }
-  };
 
   const handle = () => {
     const id = uid.trim().toUpperCase();
@@ -548,7 +541,7 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDri
       if (id === 'MBA47') { setPending2FA(id); setShow2FA(true); }
       else onLogin(id);
     } else {
-      setErr('Incorrect password. If this is your first login, your default password is your username in lowercase (e.g. mba47). If you changed it and forgot it, use "Forgot Password" below or ask the manager to reset it.');
+      setErr('Incorrect password. Your default password is your username in lowercase (e.g. mba47). If you changed it and the app isn\'t connected to Drive yet, please wait for the Drive indicator to show green, then try again.');
     }
   };
 
@@ -560,7 +553,7 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDri
   const handleForgot = () => {
     const id = forgotUid.trim().toUpperCase();
     const userExists = users.find(u => u.id === id);
-    if (!userExists) { setForgotMsg('Username not found. Check your tri-gram ID or speak to the manager.'); return; }
+    if (!userExists) { setForgotMsg('Username not found. Check your tri-gram ID.'); return; }
     const reg = updatePasswordInRegistry(id, id.toLowerCase());
     if (driveToken) syncRegistryToDrive(driveToken, reg, users).catch(() => {});
     setForgotMsg(`Password for ${id} has been reset to "${id.toLowerCase()}". Sign in with that, then change it in My Account.`);
@@ -568,28 +561,18 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDri
 
   if (showHelp) return (
     <div className="login-screen">
-      <div className="login-box" style={{ maxWidth: 540 }}>
+      <div className="login-box" style={{ maxWidth: 520 }}>
         <div className="login-logo">
           <div className="login-logo-icon">CR</div>
           <div className="login-title">Sign-In Help</div>
-          <div className="login-sub">CloudOps Rota · Setup Guide</div>
+          <div className="login-sub">CloudOps Rota</div>
         </div>
-        <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.8 }}>
-          <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: 6 }}>🖥️ First time on a new computer?</div>
-          <ol style={{ paddingLeft: 20, margin: '0 0 14px' }}>
-            <li>Click <strong>"📁 Connect Google Drive"</strong> above the login form.</li>
-            <li>Sign in with your <strong>3DS Google account</strong> when prompted.</li>
-            <li>This loads your password and profile from the shared team Drive.</li>
-            <li>Then sign in with your tri-gram ID and password as normal.</li>
-          </ol>
-          <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: 6 }}>🔑 Default Password</div>
-          <p style={{ margin: '0 0 12px' }}>Your default password is your username in <strong>lowercase</strong>. Example: if your ID is <code style={{ background: 'rgba(255,255,255,0.1)', padding: '1px 5px', borderRadius: 4 }}>JDO23</code>, your default password is <code style={{ background: 'rgba(255,255,255,0.1)', padding: '1px 5px', borderRadius: 4 }}>jdo23</code>.</p>
-          <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: 6 }}>🔒 Password Changed?</div>
-          <p style={{ margin: '0 0 12px' }}>If you changed your password, you <strong>must connect Google Drive first</strong> (step 1 above) so the app can load your saved password. Without Drive connected, only the default password works.</p>
-          <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: 6 }}>❓ Still can't log in?</div>
-          <p style={{ margin: 0 }}>Use <strong>"Forgot Password?"</strong> to reset your password to your lowercase ID. Or ask <strong>MBA47 (Manager)</strong> to reset it via Google Sheet → Settings → Sync Registry.</p>
+        <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.9 }}>
+          <p><strong style={{ color: 'var(--text-primary)' }}>🔑 Default password</strong><br />Your password is your username in lowercase. E.g. username <code style={{ background: 'rgba(255,255,255,0.1)', padding: '1px 5px', borderRadius: 4 }}>JDO23</code> → password <code style={{ background: 'rgba(255,255,255,0.1)', padding: '1px 5px', borderRadius: 4 }}>jdo23</code></p>
+          <p><strong style={{ color: 'var(--text-primary)' }}>🌐 Drive connection</strong><br />Google Drive connects automatically in the background when you open the app. Wait for the green dot to appear before signing in if you have a custom password.</p>
+          <p><strong style={{ color: 'var(--text-primary)' }}>❓ Still can't log in?</strong><br />Use <strong>Forgot Password?</strong> to reset to your lowercase ID, or ask the manager (MBA47) to reset it.</p>
         </div>
-        <button className="btn btn-primary" style={{ width: '100%', marginTop: 16 }} onClick={() => setShowHelp(false)}>← Back to Sign In</button>
+        <button className="btn btn-primary" style={{ width: '100%', marginTop: 8 }} onClick={() => setShowHelp(false)}>← Back to Sign In</button>
       </div>
     </div>
   );
@@ -600,20 +583,13 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDri
         <div className="login-logo">
           <div className="login-logo-icon">CR</div>
           <div className="login-title">Reset Password</div>
-          <div className="login-sub">CloudOps Rota · Cloud Run Operations</div>
+          <div className="login-sub">CloudOps Rota</div>
         </div>
         {forgotMsg
           ? <Alert type="info">ℹ {forgotMsg}</Alert>
-          : <Alert type="info">ℹ Enter your username. Your password will be reset to your lowercase ID. Connect Google Drive first so the reset is saved to the shared registry.</Alert>
-        }
-        {!driveToken && (
-          <button className="btn btn-secondary" style={{ width: '100%', marginBottom: 12 }} onClick={handleConnectDrive} disabled={driveLoading || connectingDrive}>
-            {(driveLoading || connectingDrive) ? '⏳ Connecting…' : '📁 Connect Google Drive (recommended)'}
-          </button>
-        )}
-        {driveToken && <div className="gd-status" style={{ marginBottom: 12 }}><div className="dot-live" /> Drive connected — reset will sync to all devices</div>}
+          : <Alert type="info">ℹ Your password will be reset to your lowercase username ID.</Alert>}
         <FormGroup label="Username (Tri-gram)">
-          <input className="input" placeholder="e.g. MBA47" value={forgotUid} onChange={e => setForgotUid(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleForgot()} />
+          <input className="input" placeholder="e.g. MBA47" value={forgotUid} onChange={e => setForgotUid(e.target.value.toUpperCase())} onKeyDown={e => e.key === 'Enter' && handleForgot()} />
         </FormGroup>
         <button className="btn btn-primary" style={{ width: '100%', padding: 11 }} onClick={handleForgot}>Reset Password</button>
         <button className="btn btn-secondary btn-sm" style={{ width: '100%', marginTop: 8 }} onClick={() => { setShowForgot(false); setForgotMsg(''); setForgotUid(''); }}>← Back to Sign In</button>
@@ -630,36 +606,52 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDri
           <div className="login-sub">Cloud Run Operations Team</div>
         </div>
 
-        {/* Drive connect — available to ALL users */}
-        {driveToken ? (
-          <div className="gd-status" style={{ marginBottom: 16 }}><div className="dot-live" /> Connected to Google Drive — team registry loaded</div>
-        ) : (
-          <div style={{ marginBottom: 16, padding: '12px 14px', border: '1px solid var(--border)', borderRadius: 8, background: 'rgba(59,130,246,0.06)' }}>
-            <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 10, fontWeight: 500 }}>
-              📁 Connect Google Drive to load your team profile &amp; password
-            </div>
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10 }}>
-              Required if you've changed your password or are using a new device.
-            </div>
-            <button className="btn btn-secondary btn-sm" style={{ width: '100%' }} onClick={handleConnectDrive} disabled={driveLoading || connectingDrive}>
-              {(driveLoading || connectingDrive) ? '⏳ Connecting to Google Drive…' : '📁 Connect Google Drive'}
-            </button>
-          </div>
-        )}
+        {/* Drive status — shows automatically, no button needed */}
+        <div style={{ marginBottom: 16, padding: '10px 14px', border: '1px solid var(--border)', borderRadius: 8, background: 'rgba(59,130,246,0.05)', display: 'flex', alignItems: 'center', gap: 10 }}>
+          {driveToken ? (
+            <>
+              <div className="dot-live" />
+              <span style={{ fontSize: 12, color: '#6ee7b7' }}>Google Drive connected — team data loaded ✓</span>
+            </>
+          ) : connectingDrive ? (
+            <>
+              <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#f59e0b', animation: 'pulse 1.5s infinite' }} />
+              <span style={{ fontSize: 12, color: '#fcd34d' }}>Connecting to Google Drive…</span>
+            </>
+          ) : (
+            <>
+              <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#6b7280' }} />
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Drive connecting in background…</div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>You can still sign in with your default password while it loads.</div>
+              </div>
+              <button className="btn btn-secondary btn-sm" onClick={onConnectDrive} style={{ whiteSpace: 'nowrap' }}>
+                📁 Connect
+              </button>
+            </>
+          )}
+        </div>
 
         <Alert type="info" style={{ marginBottom: 12 }}>
-          💡 Default password = your username in lowercase — e.g. <strong>mba47</strong>
+          💡 Default password = username in lowercase — e.g. <strong>mba47</strong>
         </Alert>
         {err && <Alert type="warning" style={{ marginBottom: 12 }}>⚠ {err}</Alert>}
+
         {!show2FA ? (
           <>
             <FormGroup label="Username (Tri-gram)">
-              <input className="input" placeholder="e.g. MBA47" value={uid} onChange={e => setUid(e.target.value.toUpperCase())} onKeyDown={e => e.key === 'Enter' && handle()} autoFocus />
+              <input className="input" placeholder="e.g. MBA47" value={uid}
+                onChange={e => setUid(e.target.value.toUpperCase())}
+                onKeyDown={e => e.key === 'Enter' && handle()} autoFocus />
             </FormGroup>
             <FormGroup label="Password">
-              <input className="input" type="password" placeholder="Password" value={pw} onChange={e => setPw(e.target.value)} onKeyDown={e => e.key === 'Enter' && handle()} />
+              <input className="input" type="password" placeholder="Password" value={pw}
+                onChange={e => setPw(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handle()} />
             </FormGroup>
-            <button className="btn btn-primary" style={{ width: '100%', padding: 11, marginBottom: 8 }} onClick={handle}>Sign In</button>
+            <button className="btn btn-primary" style={{ width: '100%', padding: 11, marginBottom: 8 }} onClick={handle}>
+              Sign In
+            </button>
             <div style={{ display: 'flex', gap: 8 }}>
               <button className="btn btn-secondary btn-sm" style={{ flex: 1 }} onClick={() => setShowForgot(true)}>🔑 Forgot Password?</button>
               <button className="btn btn-secondary btn-sm" style={{ flex: 1 }} onClick={() => setShowHelp(true)}>❓ Help</button>
@@ -669,7 +661,9 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDri
           <>
             <Alert type="info">🔐 Two-factor authentication required for manager access.</Alert>
             <FormGroup label="2FA Code">
-              <input className="input" placeholder="6-digit code" maxLength={6} value={twoFACode} onChange={e => setTwoFACode(e.target.value.replace(/\D/g, ''))} onKeyDown={e => e.key === 'Enter' && verify2FA()} autoFocus />
+              <input className="input" placeholder="6-digit code" maxLength={6} value={twoFACode}
+                onChange={e => setTwoFACode(e.target.value.replace(/\D/g, ''))}
+                onKeyDown={e => e.key === 'Enter' && verify2FA()} autoFocus />
             </FormGroup>
             <button className="btn btn-primary" style={{ width: '100%', padding: 11 }} onClick={verify2FA}>Verify & Sign In</button>
             <button className="btn btn-secondary btn-sm" style={{ width: '100%', marginTop: 8 }} onClick={() => { setShow2FA(false); setErr(''); }}>← Back</button>
@@ -1241,13 +1235,22 @@ function MyShift({ currentUser, rota, users, swapRequests, setSwapRequests }) {
   const [swapForm, setSwapForm]   = useState({ myDate: '', targetId: '', theirDate: '', reason: '' });
 
   const requestSwap = () => {
-    if (!swapForm.myDate || !swapForm.targetId || !swapForm.theirDate) return;
+    // myDate (the date needing cover) is required; targetId required; theirDate is optional
+    if (!swapForm.myDate || !swapForm.targetId) return;
     setSwapRequests([...(swapRequests || []), {
       id: 'swap-' + Date.now(), requesterId: currentUser, targetId: swapForm.targetId,
-      reqDate: swapForm.myDate, tgtDate: swapForm.theirDate, reason: swapForm.reason,
+      reqDate: swapForm.myDate,
+      tgtDate: swapForm.theirDate || '', // optional - engineer may just need cover
+      reason: swapForm.reason,
+      coverOnly: !swapForm.theirDate, // flag: just needs coverage, no specific date to swap
       status: 'pending', created: new Date().toISOString().slice(0, 10)
     }]);
     setSwapModal(false); setSwapForm({ myDate: '', targetId: '', theirDate: '', reason: '' });
+  };
+
+  const cancelSwap = (swapId) => {
+    if (!window.confirm('Cancel this swap request?')) return;
+    setSwapRequests((swapRequests || []).filter(s => s.id !== swapId));
   };
 
   const mySwaps = (swapRequests || []).filter(s => s.requesterId === currentUser || s.targetId === currentUser);
@@ -1255,16 +1258,14 @@ function MyShift({ currentUser, rota, users, swapRequests, setSwapRequests }) {
   return (
     <div>
       <PageHeader title="My Shift" sub={`${user?.name} · ${user?.id}`}
-        actions={<button className="btn btn-primary" onClick={() => setSwapModal(true)}>🔁 Request Swap</button>} />
+        actions={<button className="btn btn-primary" onClick={() => setSwapModal(true)}>🔁 Request Cover / Swap</button>} />
       <div className="grid-2 mb-16">
         <div className="card" style={{ borderColor: todayShift && todayShift !== 'off' ? 'var(--accent)' : undefined }}>
           <div className="card-title">Today's Shift</div>
           {todayShift && todayShift !== 'off' ? (
-            <>
-              <div style={{ fontSize: 22, fontWeight: 600, color: SHIFT_COLORS[todayShift]?.text || 'var(--text-primary)', marginBottom: 6 }}>
-                {SHIFT_COLORS[todayShift]?.label || todayShift}
-              </div>
-            </>
+            <div style={{ fontSize: 22, fontWeight: 600, color: SHIFT_COLORS[todayShift]?.text || 'var(--text-primary)', marginBottom: 6 }}>
+              {SHIFT_COLORS[todayShift]?.label || todayShift}
+            </div>
           ) : <p className="muted-sm">No shift today — enjoy your time off!</p>}
         </div>
         <div className="card">
@@ -1284,7 +1285,9 @@ function MyShift({ currentUser, rota, users, swapRequests, setSwapRequests }) {
               </div>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                 <span style={{ background: (col.bg || '#1e40af') + '33', color: col.text || '#bfdbfe', padding: '3px 8px', borderRadius: 6, fontSize: 11, fontWeight: 600 }}>{col.label || shift}</span>
-                <button className="btn btn-secondary btn-sm" onClick={() => { setSwapForm({ ...swapForm, myDate: date }); setSwapModal(true); }}>Swap</button>
+                <button className="btn btn-secondary btn-sm" onClick={() => { setSwapForm({ myDate: date, targetId: '', theirDate: '', reason: '' }); setSwapModal(true); }}>
+                  🔁 Cover / Swap
+                </button>
               </div>
             </div>
           );
@@ -1292,36 +1295,60 @@ function MyShift({ currentUser, rota, users, swapRequests, setSwapRequests }) {
       </div>
       {mySwaps.length > 0 && (
         <div className="card mb-16">
-          <div className="card-title">🔁 My Swap Requests</div>
+          <div className="card-title">🔁 My Swap / Cover Requests</div>
           {mySwaps.map(s => {
             const other = users.find(u => u.id === (s.requesterId === currentUser ? s.targetId : s.requesterId));
+            const isMine = s.requesterId === currentUser;
             return (
               <div key={s.id} className="flex-between row-item">
-                <div>
-                  <div className="name-sm">{s.requesterId === currentUser ? 'You requested' : `${other?.name} requested`}</div>
-                  <div className="muted-xs">{s.reqDate} ↔ {s.tgtDate} with {other?.name}</div>
+                <div style={{ flex: 1 }}>
+                  <div className="name-sm">
+                    {isMine ? 'You requested' : `${other?.name} requested`}
+                    {s.coverOnly ? ' cover' : ' a swap'}
+                  </div>
+                  <div className="muted-xs">
+                    📅 {s.reqDate}
+                    {s.tgtDate ? ` ↔ ${s.tgtDate}` : ' (cover only)'}
+                    {' · with '}{other?.name}
+                  </div>
                   {s.reason && <div className="muted-xs">Reason: {s.reason}</div>}
                 </div>
-                <Tag label={s.status} type={s.status === 'approved' ? 'green' : s.status === 'rejected' ? 'red' : 'amber'} />
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  <Tag label={s.status} type={s.status === 'approved' ? 'green' : s.status === 'rejected' ? 'red' : 'amber'} />
+                  {isMine && s.status === 'pending' && (
+                    <button className="btn btn-danger btn-sm" onClick={() => cancelSwap(s.id)}>✕ Cancel</button>
+                  )}
+                </div>
               </div>
             );
           })}
         </div>
       )}
       {swapModal && (
-        <Modal title="Request Shift Swap" onClose={() => setSwapModal(false)}>
-          <FormGroup label="My Shift Date"><input className="input" type="date" value={swapForm.myDate} onChange={e => setSwapForm({ ...swapForm, myDate: e.target.value })} /></FormGroup>
-          <FormGroup label="Swap With">
+        <Modal title="Request Cover or Shift Swap" onClose={() => setSwapModal(false)}>
+          <Alert type="info" style={{ marginBottom: 12 }}>
+            💡 Use this to request cover for a day you can't work, or to swap a shift with a colleague. "Their date" is optional — leave blank if you just need someone to cover your shift.
+          </Alert>
+          <FormGroup label="Date I need covered *">
+            <input className="input" type="date" value={swapForm.myDate} onChange={e => setSwapForm({ ...swapForm, myDate: e.target.value })} />
+          </FormGroup>
+          <FormGroup label="Ask engineer *">
             <select className="select" value={swapForm.targetId} onChange={e => setSwapForm({ ...swapForm, targetId: e.target.value })}>
               <option value="">Select engineer…</option>
               {users.filter(u => u.id !== currentUser).map(u => <option key={u.id} value={u.id}>{u.name} ({u.id})</option>)}
             </select>
           </FormGroup>
-          <FormGroup label="Their Shift Date"><input className="input" type="date" value={swapForm.theirDate} onChange={e => setSwapForm({ ...swapForm, theirDate: e.target.value })} /></FormGroup>
-          <FormGroup label="Reason (optional)"><input className="input" placeholder="e.g. Medical appointment" value={swapForm.reason} onChange={e => setSwapForm({ ...swapForm, reason: e.target.value })} /></FormGroup>
+          <FormGroup label="Their date to swap (optional)" hint="Leave blank if you just need cover">
+            <input className="input" type="date" value={swapForm.theirDate} onChange={e => setSwapForm({ ...swapForm, theirDate: e.target.value })} />
+          </FormGroup>
+          <FormGroup label="Reason">
+            <input className="input" placeholder="e.g. Medical appointment, personal commitment" value={swapForm.reason} onChange={e => setSwapForm({ ...swapForm, reason: e.target.value })} />
+          </FormGroup>
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
             <button className="btn btn-secondary" onClick={() => setSwapModal(false)}>Cancel</button>
-            <button className="btn btn-primary" onClick={requestSwap}>Submit Request</button>
+            <button className="btn btn-primary" onClick={requestSwap} disabled={!swapForm.myDate || !swapForm.targetId}>
+              Submit Request
+            </button>
           </div>
         </Modal>
       )}
@@ -1387,11 +1414,33 @@ function RotaPage({ users, rota, setRota, holidays, upgrades, swapRequests, setS
   const [swapSuggestion, setSwapSuggestion] = useState(null);
   const DAYS = ['M','T','W','T','F','S','S'];
 
-  const generate = () => { if (!isManager) return; setRota(generateRota(users, startDate, weeks)); setGenerated(true); };
+  const generate = () => {
+    if (!isManager) return;
+    const raw = generateRota(users, startDate, weeks);
+    // Sanitise: Daily shift is Mon-Fri only (0=Sun,6=Sat → remove daily)
+    const sanitised = {};
+    Object.entries(raw).forEach(([uid, days]) => {
+      sanitised[uid] = {};
+      Object.entries(days || {}).forEach(([date, shift]) => {
+        const dow = new Date(date).getDay(); // 0=Sun … 6=Sat
+        if (shift === 'daily' && (dow === 0 || dow === 6)) {
+          sanitised[uid][date] = 'off'; // strip weekend daily
+        } else {
+          sanitised[uid][date] = shift;
+        }
+      });
+    });
+    setRota(sanitised);
+    setGenerated(true);
+  };
 
   const setCell = (userId, date, shift) => {
-    if (!isManager) return; // Only managers can edit
-    setRota(prev => ({ ...prev, [userId]: { ...(prev[userId] || {}), [date]: shift } }));
+    if (!isManager) return;
+    const dow = new Date(date).getDay();
+    const isWeekend = dow === 0 || dow === 6;
+    // Daily shift is Mon–Fri only; prevent setting it on weekends
+    const safeShift = (shift === 'daily' && isWeekend) ? 'weekend' : shift;
+    setRota(prev => ({ ...prev, [userId]: { ...(prev[userId] || {}), [date]: safeShift } }));
     setEditCell(null);
   };
 
@@ -2213,11 +2262,16 @@ function ShiftSwaps({ users, swapRequests, setSwapRequests, rota, setRota, curre
     if (!swap) return;
     const newRota = JSON.parse(JSON.stringify(rota));
     const reqShift = newRota[swap.requesterId]?.[swap.reqDate];
-    const tgtShift = newRota[swap.targetId]?.[swap.tgtDate];
+    const tgtShift = swap.tgtDate ? newRota[swap.targetId]?.[swap.tgtDate] : null;
     if (reqShift) { newRota[swap.targetId] = { ...(newRota[swap.targetId]||{}), [swap.reqDate]: reqShift }; delete newRota[swap.requesterId][swap.reqDate]; }
-    if (tgtShift) { newRota[swap.requesterId] = { ...(newRota[swap.requesterId]||{}), [swap.tgtDate]: tgtShift }; delete newRota[swap.targetId][swap.tgtDate]; }
+    if (tgtShift && swap.tgtDate) { newRota[swap.requesterId] = { ...(newRota[swap.requesterId]||{}), [swap.tgtDate]: tgtShift }; delete newRota[swap.targetId][swap.tgtDate]; }
     setRota(newRota);
     setSwapRequests(all.map(s => s.id === swapId ? { ...s, status: 'approved' } : s));
+  };
+
+  const cancelRequest = (id) => {
+    if (!window.confirm('Cancel this request?')) return;
+    setSwapRequests(all.filter(s => s.id !== id));
   };
 
   const deleteOne  = (id, e) => { e.stopPropagation(); setSwapRequests(all.filter(s => s.id !== id)); };
@@ -2225,7 +2279,7 @@ function ShiftSwaps({ users, swapRequests, setSwapRequests, rota, setRota, curre
 
   return (
     <div>
-      <PageHeader title="Shift Swaps" sub="All shift swap requests — managers approve/reject" />
+      <PageHeader title="Shift Swaps &amp; Cover Requests" sub="All shift swap and cover requests — managers approve/reject" />
       <div className="grid-3 mb-16">
         <StatCard label="Pending"  value={all.filter(s=>s.status==='pending').length}  sub="Awaiting decision" accent="#f59e0b" />
         <StatCard label="Approved" value={all.filter(s=>s.status==='approved').length} sub="Completed"         accent="#10b981" />
@@ -2243,37 +2297,41 @@ function ShiftSwaps({ users, swapRequests, setSwapRequests, rota, setRota, curre
           <thead>
             <tr>
               {isManager && <th style={{ width: 32 }}><input type="checkbox" checked={selected.size === all.length && all.length > 0} onChange={toggleAll} /></th>}
-              <th>Requester</th><th>Their Date</th><th>Target</th><th>Their Date</th><th>Reason</th><th>Status</th><th>Created</th>
-              {isManager && <th>Actions</th>}
+              <th>Requester</th><th>Date Needed</th><th>Ask</th><th>Swap Date</th><th>Type</th><th>Reason</th><th>Status</th><th>Actions</th>
             </tr>
           </thead>
           <tbody>
-            {all.length === 0 && <tr><td colSpan={9} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 20 }}>No swap requests yet</td></tr>}
+            {all.length === 0 && <tr><td colSpan={9} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 20 }}>No swap or cover requests yet</td></tr>}
             {[...all].sort((a,b) => new Date(b.created) - new Date(a.created)).map(s => {
               const req = users.find(u => u.id === s.requesterId);
               const tgt = users.find(u => u.id === s.targetId);
+              const isMine = s.requesterId === currentUser;
               return (
                 <tr key={s.id}>
                   {isManager && <td><input type="checkbox" checked={selected.has(s.id)} onChange={() => toggleOne(s.id)} /></td>}
                   <td><div style={{ display: 'flex', gap: 6, alignItems: 'center' }}><Avatar user={req} size={22} /><span style={{ fontSize: 12 }}>{req?.name}</span></div></td>
-                  <td style={{ fontFamily: 'DM Mono', fontSize: 12 }}>{s.reqDate}</td>
+                  <td style={{ fontFamily: 'DM Mono', fontSize: 12, color: 'var(--accent)' }}>{s.reqDate}</td>
                   <td><div style={{ display: 'flex', gap: 6, alignItems: 'center' }}><Avatar user={tgt} size={22} /><span style={{ fontSize: 12 }}>{tgt?.name}</span></div></td>
-                  <td style={{ fontFamily: 'DM Mono', fontSize: 12 }}>{s.tgtDate}</td>
+                  <td style={{ fontFamily: 'DM Mono', fontSize: 12 }}>{s.tgtDate || <span style={{ color: 'var(--text-muted)' }}>—</span>}</td>
+                  <td><Tag label={s.coverOnly ? 'Cover Only' : 'Swap'} type={s.coverOnly ? 'purple' : 'blue'} /></td>
                   <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>{s.reason || '—'}</td>
                   <td><Tag label={s.status} type={s.status==='approved'?'green':s.status==='pending'?'amber':'red'} /></td>
-                  <td style={{ fontFamily: 'DM Mono', fontSize: 11, color: 'var(--text-muted)' }}>{s.created}</td>
-                  {isManager && (
-                    <td>
-                      <div style={{ display: 'flex', gap: 4 }}>
-                        {s.status === 'pending' && <>
-                          <button className="btn btn-success btn-sm" onClick={() => approve(s.id)}>✓</button>
-                          <button className="btn btn-danger btn-sm" onClick={() => setSwapRequests(all.map(x => x.id===s.id?{...x,status:'rejected'}:x))}>✗</button>
-                        </>}
+                  <td>
+                    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                      {isManager && s.status === 'pending' && <>
+                        <button className="btn btn-success btn-sm" onClick={() => approve(s.id)}>✓</button>
+                        <button className="btn btn-danger btn-sm" onClick={() => setSwapRequests(all.map(x => x.id===s.id?{...x,status:'rejected'}:x))}>✗</button>
+                      </>}
+                      {isManager && <>
                         <button className="btn btn-secondary btn-sm" onClick={e => openEdit(s, e)}>✏</button>
                         <button className="btn btn-danger btn-sm" onClick={e => deleteOne(s.id, e)}>🗑</button>
-                      </div>
-                    </td>
-                  )}
+                      </>}
+                      {/* Engineer can cancel their own pending request */}
+                      {!isManager && isMine && s.status === 'pending' && (
+                        <button className="btn btn-danger btn-sm" onClick={() => cancelRequest(s.id)}>✕ Cancel</button>
+                      )}
+                    </div>
+                  </td>
                 </tr>
               );
             })}
@@ -3844,10 +3902,22 @@ function WhatsAppChat({ whatsappChats, setWhatsappChats, users, currentUser, isM
   const [showCreateChat, setShowCreateChat] = useState(false);
   const [chatForm, setChatForm] = useState({ name: '', members: [] });
   const [saveStatus, setSaveStatus] = useState('');
+  const messagesContainerRef = useRef(null);
   const messagesEndRef = useRef(null);
 
+  // Auto-select first available chat if nothing selected
+  useEffect(() => {
+    if (!selectedChat && whatsappChats.length > 0) {
+      setSelectedChat(whatsappChats[0].id);
+    }
+  }, [whatsappChats]);
+
   // Scroll to bottom when messages change
-  useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior:'smooth' }); }, [selectedChat, whatsappChats]);
+  useEffect(() => {
+    if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [selectedChat, whatsappChats.length, whatsappChats.map?.(c => (c.messages||[]).length).join(',')]);
 
   const createChat = () => {
     if (!chatForm.name || chatForm.members.length === 0) return;
@@ -3879,9 +3949,8 @@ function WhatsAppChat({ whatsappChats, setWhatsappChats, users, currentUser, isM
         : c
     ));
     setNewMessage('');
-    setSaveStatus('Saved locally ✓');
+    setSaveStatus('✓ Saved');
     setTimeout(() => setSaveStatus(''), 2000);
-    // Background sync to Google Doc (non-blocking)
     if (driveToken) setTimeout(() => syncToGoogleDoc(), 500);
   };
 
@@ -4018,7 +4087,7 @@ function WhatsAppChat({ whatsappChats, setWhatsappChats, users, currentUser, isM
               </div>
             </div>
 
-            <div ref={messagesEndRef} style={{ overflowY:'auto', flex:1, padding:'12px', display:'flex', flexDirection:'column', gap:8 }}>
+            <div style={{ overflowY:'auto', flex:1, padding:'12px', display:'flex', flexDirection:'column', gap:8 }}>
               {(currentChat.messages||[]).length === 0 ? (
                 <div style={{ textAlign:'center', color:'var(--text-muted)', margin:'auto' }}>No messages yet. Start the conversation!</div>
               ) : (
@@ -5151,6 +5220,58 @@ export default function App() {
   const isManager = currentUser === 'MBA47';
   const [connectingDrive, setConnectingDrive] = useState(false);
   const [profilePics, setProfilePicsState] = useState({});
+  const [driveReady, setDriveReady]         = useState(false); // true once initial Drive load done
+
+  // ── Auto-connect Google Drive on app load ─────────────────────────────────
+  // Silently attempts to connect using any existing Google session.
+  // Engineers just see the login form; Drive connects in the background.
+  useEffect(() => {
+    const autoConnect = async () => {
+      try {
+        await gapiLoad();
+        const token = await initGoogleAuth(GOOGLE_CLIENT_ID);
+        if (token) {
+          setDriveToken(token);
+          setSyncing(true);
+          const [reg, pics] = await Promise.all([
+            loadRegistryFromDrive(token),
+            loadProfilePictures(token)
+          ]);
+          if (reg) setRegistry(reg);
+          if (pics) { setProfilePics(pics); setProfilePicsState(pics); }
+          const defaults = { users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, logbook, documents, obsidianNotes, whatsappChats };
+          const data = await loadAllFromDrive(token, defaults);
+          if (data.users)         setUsers(data.users);
+          if (data.holidays)      setHolidays(data.holidays);
+          if (data.incidents)     setIncidents(data.incidents);
+          if (data.timesheets)    setTimesheets(data.timesheets);
+          if (data.upgrades)      setUpgrades(data.upgrades);
+          if (data.wiki)          setWiki(data.wiki);
+          if (data.glossary)      setGlossary(data.glossary);
+          if (data.contacts)      setContacts(data.contacts);
+          if (data.payconfig)     setPayconfig(data.payconfig);
+          if (data.rota)          setRota(data.rota);
+          if (data.swapRequests)  setSwapRequests(data.swapRequests);
+          if (data.toil)          setToil(data.toil);
+          if (data.absences)      setAbsences(data.absences);
+          if (data.logbook)       setLogbook(data.logbook);
+          if (data.documents)     setDocuments(data.documents);
+          if (data.obsidianNotes) setObsidianNotes(data.obsidianNotes);
+          if (data.whatsappChats) setWhatsappChats(data.whatsappChats);
+          setLastSync(new Date());
+          setDriveReady(true);
+        }
+      } catch (e) {
+        // Silent fail — Drive not connected yet (user not signed in to Google)
+        console.warn('Auto Drive connect failed (user may not be signed in):', e?.message || e);
+      } finally {
+        setSyncing(false);
+        setConnectingDrive(false);
+      }
+    };
+    autoConnect();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const connectDrive = async () => {
     try {
@@ -5194,46 +5315,49 @@ export default function App() {
     } catch (e) { console.error('Drive connect error:', e); setSyncing(false); setConnectingDrive(false);
       // Show friendly message if Drive is inaccessible
       if (currentUser === 'MBA47') {
-        alert('⚠️ Google Drive is not accessible.\n\nThe folder (dsmeetul@3ds.com) may not be shared with this application, or OAuth permissions are pending.\n\nPlease speak to Meetul to ensure the Drive folder is shared with the app.\n\nAll data is still saved locally in your browser session.');
+        console.warn('Drive connect failed:', e?.message || e);
       }
     }
   };
 
   const save = useCallback(async (key, data) => {
     if (!driveToken) return;
-    await driveWrite(driveToken, key, data);
-    setLastSync(new Date());
+    try {
+      await driveWrite(driveToken, key, data);
+      setLastSync(new Date());
+    } catch (e) { console.warn('Drive save failed for', key, e?.message); }
   }, [driveToken]);
 
-  useEffect(() => {
-    save('users', users);
-    if (isManager && driveToken) syncRegistryToDrive(driveToken, getRegistry(), users).catch(() => {});
-  }, [users]);
-  useEffect(() => { save('holidays', holidays); },       [holidays]);
-  useEffect(() => { save('incidents', incidents); },     [incidents]);
-  useEffect(() => { save('timesheets', timesheets); },   [timesheets]);
-  useEffect(() => { save('upgrades', upgrades); },       [upgrades]);
-  useEffect(() => { save('wiki', wiki); },               [wiki]);
-  useEffect(() => { save('glossary', glossary); },       [glossary]);
-  useEffect(() => { save('contacts', contacts); },       [contacts]);
-  useEffect(() => { save('payconfig', payconfig); },     [payconfig]);
-  useEffect(() => { save('rota', rota); },               [rota]);
-  useEffect(() => { save('swapRequests', swapRequests); },[swapRequests]);
-  useEffect(() => { save('toil', toil); },               [toil]);
-  useEffect(() => { save('absences', absences); },       [absences]);
-  useEffect(() => { save('logbook', logbook); },         [logbook]);
-  useEffect(() => { save('documents', documents); },     [documents]);
-  useEffect(() => { save('obsidianNotes', obsidianNotes); }, [obsidianNotes]);
-  useEffect(() => { save('whatsappChats', whatsappChats); }, [whatsappChats]);
+  // Save all data to Drive whenever it changes (only when token present)
+  useEffect(() => { save('users', users); if (isManager && driveToken) syncRegistryToDrive(driveToken, getRegistry(), users).catch(() => {}); }, [users, driveToken]);
+  useEffect(() => { save('holidays', holidays); },         [holidays, driveToken]);
+  useEffect(() => { save('incidents', incidents); },       [incidents, driveToken]);
+  useEffect(() => { save('timesheets', timesheets); },     [timesheets, driveToken]);
+  useEffect(() => { save('upgrades', upgrades); },         [upgrades, driveToken]);
+  useEffect(() => { save('wiki', wiki); },                 [wiki, driveToken]);
+  useEffect(() => { save('glossary', glossary); },         [glossary, driveToken]);
+  useEffect(() => { save('contacts', contacts); },         [contacts, driveToken]);
+  useEffect(() => { save('payconfig', payconfig); },       [payconfig, driveToken]);
+  useEffect(() => { save('rota', rota); },                 [rota, driveToken]);
+  useEffect(() => { save('swapRequests', swapRequests); }, [swapRequests, driveToken]);
+  useEffect(() => { save('toil', toil); },                 [toil, driveToken]);
+  useEffect(() => { save('absences', absences); },         [absences, driveToken]);
+  useEffect(() => { save('logbook', logbook); },           [logbook, driveToken]);
+  useEffect(() => { save('documents', documents); },       [documents, driveToken]);
+  useEffect(() => { save('obsidianNotes', obsidianNotes); },[obsidianNotes, driveToken]);
+  useEffect(() => { save('whatsappChats', whatsappChats); },[whatsappChats, driveToken]);
 
-  const login = (uid) => { setCurrentUser(uid); setLoggedIn(true); setPage(uid === 'MBA47' ? 'dashboard' : 'oncall');
-    // Auto-connect Google Drive for manager (MBA47)
-    if (uid === 'MBA47' && !driveToken) {
+  const login = (uid) => {
+    setCurrentUser(uid);
+    setLoggedIn(true);
+    setPage(uid === 'MBA47' ? 'dashboard' : 'oncall');
+    // If Drive isn't connected yet (e.g. user signed in before auto-connect finished), try now
+    if (!driveToken) {
       setTimeout(() => connectDrive().catch(() => {}), 300);
     }
   };
 
-  if (!loggedIn) return <LoginScreen onLogin={login} driveToken={driveToken} onConnectDrive={connectDrive} users={users} connectingDrive={connectingDrive} />;
+  if (!loggedIn) return <LoginScreen onLogin={login} driveToken={driveToken} onConnectDrive={connectDrive} users={users} connectingDrive={connectingDrive} driveReady={driveReady} />;
 
   const openInc   = incidents.filter(i => i.status === 'Investigating').length;
   const pendingSwaps = swapRequests.filter(s => s.status === 'pending').length;
@@ -5328,12 +5452,33 @@ export default function App() {
         ))}
         <div style={{ marginTop: 'auto', padding: 12, borderTop: '1px solid var(--border)' }}>
           {driveToken ? (
-            sidebarOpen && <div className="gd-status"><div className="dot-live" /><span style={{ fontSize: 11 }}>Synced {lastSync && lastSync.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}</span></div>
+            sidebarOpen && (
+              <div className="gd-status">
+                <div className="dot-live" />
+                <span style={{ fontSize: 11 }}>
+                  {syncing ? 'Syncing…' : `Synced ${lastSync ? lastSync.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : ''}`}
+                </span>
+              </div>
+            )
           ) : (
-            <button className="btn btn-secondary btn-sm" style={{ width: '100%', marginBottom: 8 }} onClick={connectDrive}>{sidebarOpen ? '📁 Connect Drive' : '📁'}</button>
+            sidebarOpen ? (
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ fontSize: 11, color: '#fcd34d', marginBottom: 4 }}>
+                  {connectingDrive ? '⏳ Connecting to Drive…' : '⚠ Drive not connected'}
+                </div>
+                {!connectingDrive && (
+                  <button className="btn btn-secondary btn-sm" style={{ width: '100%' }} onClick={connectDrive}>
+                    📁 Reconnect Drive
+                  </button>
+                )}
+              </div>
+            ) : (
+              <button className="btn btn-secondary btn-sm" title="Reconnect Drive" onClick={connectDrive}>📁</button>
+            )
           )}
-          {syncing && sidebarOpen && <div style={{ fontSize: 11, color: 'var(--text-muted)', textAlign: 'center', marginTop: 4 }}>Syncing…</div>}
-          <button className="btn btn-secondary btn-sm" style={{ width: '100%', marginTop: 8 }} onClick={() => setLoggedIn(false)}>{sidebarOpen ? 'Sign Out' : '⎋'}</button>
+          <button className="btn btn-secondary btn-sm" style={{ width: '100%', marginTop: 8 }} onClick={() => setLoggedIn(false)}>
+            {sidebarOpen ? 'Sign Out' : '⎋'}
+          </button>
         </div>
       </div>
       <div className="main">
