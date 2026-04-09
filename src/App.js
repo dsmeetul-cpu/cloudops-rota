@@ -515,33 +515,44 @@ function useBulkSelect(items) {
 
 // ── Login Screen ───────────────────────────────────────────────────────────
 function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDrive }) {
-  const [uid, setUid]           = useState('');
-  const [pw, setPw]             = useState('');
-  const [err, setErr]           = useState('');
-  const [show2FA, setShow2FA]   = useState(false);
-  const [twoFACode, setTwoFACode] = useState('');
+  const [uid, setUid]               = useState('');
+  const [pw, setPw]                 = useState('');
+  const [err, setErr]               = useState('');
+  const [show2FA, setShow2FA]       = useState(false);
+  const [twoFACode, setTwoFACode]   = useState('');
   const [pending2FA, setPending2FA] = useState('');
   const [showForgot, setShowForgot] = useState(false);
   const [forgotUid, setForgotUid]   = useState('');
   const [forgotMsg, setForgotMsg]   = useState('');
+  const [showHelp, setShowHelp]     = useState(false);
+  const [driveLoading, setDriveLoading] = useState(false);
+
+  // Allow any user to connect Drive to pull the latest registry/passwords
+  const handleConnectDrive = async () => {
+    setDriveLoading(true);
+    setErr('');
+    try {
+      await onConnectDrive();
+    } catch (e) {
+      setErr('Could not connect to Google Drive. Check your account and try again.');
+    } finally { setDriveLoading(false); }
+  };
 
   const handle = () => {
     const id = uid.trim().toUpperCase();
-    if (!id) { setErr('Please enter your username.'); return; }
+    if (!id) { setErr('Please enter your username (tri-gram ID).'); return; }
     const userExists = users.find(u => u.id === id);
-    if (!userExists) { setErr('Username not found. Check your tri-gram ID.'); return; }
+    if (!userExists) { setErr('Username not found. Check your tri-gram ID — e.g. MBA47, JDO23.'); return; }
     if (checkPassword(id, pw)) {
       setErr('');
       if (id === 'MBA47') { setPending2FA(id); setShow2FA(true); }
       else onLogin(id);
     } else {
-      setErr('Incorrect password. Default password is your username in lowercase (e.g. mba47).');
+      setErr('Incorrect password. If this is your first login, your default password is your username in lowercase (e.g. mba47). If you changed it and forgot it, use "Forgot Password" below or ask the manager to reset it.');
     }
   };
 
   const verify2FA = () => {
-    // In production, validate against a real TOTP library.
-    // For now, any 6-digit code is accepted as a demo placeholder.
     if (twoFACode.length === 6) { onLogin(pending2FA); }
     else setErr('Enter a 6-digit code.');
   };
@@ -549,11 +560,39 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDri
   const handleForgot = () => {
     const id = forgotUid.trim().toUpperCase();
     const userExists = users.find(u => u.id === id);
-    if (!userExists) { setForgotMsg('Username not found. Only a manager can reset passwords.'); return; }
+    if (!userExists) { setForgotMsg('Username not found. Check your tri-gram ID or speak to the manager.'); return; }
     const reg = updatePasswordInRegistry(id, id.toLowerCase());
     if (driveToken) syncRegistryToDrive(driveToken, reg, users).catch(() => {});
-    setForgotMsg(`Password for ${id} has been reset to "${id.toLowerCase()}". Sign in and update it via My Account.`);
+    setForgotMsg(`Password for ${id} has been reset to "${id.toLowerCase()}". Sign in with that, then change it in My Account.`);
   };
+
+  if (showHelp) return (
+    <div className="login-screen">
+      <div className="login-box" style={{ maxWidth: 540 }}>
+        <div className="login-logo">
+          <div className="login-logo-icon">CR</div>
+          <div className="login-title">Sign-In Help</div>
+          <div className="login-sub">CloudOps Rota · Setup Guide</div>
+        </div>
+        <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.8 }}>
+          <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: 6 }}>🖥️ First time on a new computer?</div>
+          <ol style={{ paddingLeft: 20, margin: '0 0 14px' }}>
+            <li>Click <strong>"📁 Connect Google Drive"</strong> above the login form.</li>
+            <li>Sign in with your <strong>3DS Google account</strong> when prompted.</li>
+            <li>This loads your password and profile from the shared team Drive.</li>
+            <li>Then sign in with your tri-gram ID and password as normal.</li>
+          </ol>
+          <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: 6 }}>🔑 Default Password</div>
+          <p style={{ margin: '0 0 12px' }}>Your default password is your username in <strong>lowercase</strong>. Example: if your ID is <code style={{ background: 'rgba(255,255,255,0.1)', padding: '1px 5px', borderRadius: 4 }}>JDO23</code>, your default password is <code style={{ background: 'rgba(255,255,255,0.1)', padding: '1px 5px', borderRadius: 4 }}>jdo23</code>.</p>
+          <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: 6 }}>🔒 Password Changed?</div>
+          <p style={{ margin: '0 0 12px' }}>If you changed your password, you <strong>must connect Google Drive first</strong> (step 1 above) so the app can load your saved password. Without Drive connected, only the default password works.</p>
+          <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: 6 }}>❓ Still can't log in?</div>
+          <p style={{ margin: 0 }}>Use <strong>"Forgot Password?"</strong> to reset your password to your lowercase ID. Or ask <strong>MBA47 (Manager)</strong> to reset it via Google Sheet → Settings → Sync Registry.</p>
+        </div>
+        <button className="btn btn-primary" style={{ width: '100%', marginTop: 16 }} onClick={() => setShowHelp(false)}>← Back to Sign In</button>
+      </div>
+    </div>
+  );
 
   if (showForgot) return (
     <div className="login-screen">
@@ -565,8 +604,14 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDri
         </div>
         {forgotMsg
           ? <Alert type="info">ℹ {forgotMsg}</Alert>
-          : <Alert type="info">ℹ Enter your username. Your password will be reset to your lowercase ID.</Alert>
+          : <Alert type="info">ℹ Enter your username. Your password will be reset to your lowercase ID. Connect Google Drive first so the reset is saved to the shared registry.</Alert>
         }
+        {!driveToken && (
+          <button className="btn btn-secondary" style={{ width: '100%', marginBottom: 12 }} onClick={handleConnectDrive} disabled={driveLoading || connectingDrive}>
+            {(driveLoading || connectingDrive) ? '⏳ Connecting…' : '📁 Connect Google Drive (recommended)'}
+          </button>
+        )}
+        {driveToken && <div className="gd-status" style={{ marginBottom: 12 }}><div className="dot-live" /> Drive connected — reset will sync to all devices</div>}
         <FormGroup label="Username (Tri-gram)">
           <input className="input" placeholder="e.g. MBA47" value={forgotUid} onChange={e => setForgotUid(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleForgot()} />
         </FormGroup>
@@ -584,30 +629,41 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDri
           <div className="login-title">CloudOps Rota</div>
           <div className="login-sub">Cloud Run Operations Team</div>
         </div>
+
+        {/* Drive connect — available to ALL users */}
         {driveToken ? (
-          <div className="gd-status" style={{ marginBottom: 16 }}><div className="dot-live" /> Connected to Google Drive — team data loaded</div>
+          <div className="gd-status" style={{ marginBottom: 16 }}><div className="dot-live" /> Connected to Google Drive — team registry loaded</div>
         ) : (
           <div style={{ marginBottom: 16, padding: '12px 14px', border: '1px solid var(--border)', borderRadius: 8, background: 'rgba(59,130,246,0.06)' }}>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>
-              📁 <strong style={{ color: 'var(--text-secondary)' }}>Google Drive:</strong> Manager (MBA47) connects automatically on login. Engineers can sign in directly.
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 10, fontWeight: 500 }}>
+              📁 Connect Google Drive to load your team profile &amp; password
             </div>
-            {connectingDrive && <div style={{ fontSize:12, color:'var(--accent)' }}>⏳ Connecting to Google Drive (dsmeetul@3ds.com)…</div>}
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10 }}>
+              Required if you've changed your password or are using a new device.
+            </div>
+            <button className="btn btn-secondary btn-sm" style={{ width: '100%' }} onClick={handleConnectDrive} disabled={driveLoading || connectingDrive}>
+              {(driveLoading || connectingDrive) ? '⏳ Connecting to Google Drive…' : '📁 Connect Google Drive'}
+            </button>
           </div>
         )}
+
         <Alert type="info" style={{ marginBottom: 12 }}>
-          💡 First time? Your default password is your username in lowercase — e.g. <strong>mba47</strong>
+          💡 Default password = your username in lowercase — e.g. <strong>mba47</strong>
         </Alert>
-        {err && <Alert type="warning">⚠ {err}</Alert>}
+        {err && <Alert type="warning" style={{ marginBottom: 12 }}>⚠ {err}</Alert>}
         {!show2FA ? (
           <>
             <FormGroup label="Username (Tri-gram)">
-              <input className="input" placeholder="e.g. MBA47" value={uid} onChange={e => setUid(e.target.value)} onKeyDown={e => e.key === 'Enter' && handle()} />
+              <input className="input" placeholder="e.g. MBA47" value={uid} onChange={e => setUid(e.target.value.toUpperCase())} onKeyDown={e => e.key === 'Enter' && handle()} autoFocus />
             </FormGroup>
             <FormGroup label="Password">
               <input className="input" type="password" placeholder="Password" value={pw} onChange={e => setPw(e.target.value)} onKeyDown={e => e.key === 'Enter' && handle()} />
             </FormGroup>
-            <button className="btn btn-primary" style={{ width: '100%', padding: 11 }} onClick={handle}>Sign In</button>
-            <button className="btn btn-secondary btn-sm" style={{ width: '100%', marginTop: 8 }} onClick={() => setShowForgot(true)}>🔑 Forgot Password?</button>
+            <button className="btn btn-primary" style={{ width: '100%', padding: 11, marginBottom: 8 }} onClick={handle}>Sign In</button>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button className="btn btn-secondary btn-sm" style={{ flex: 1 }} onClick={() => setShowForgot(true)}>🔑 Forgot Password?</button>
+              <button className="btn btn-secondary btn-sm" style={{ flex: 1 }} onClick={() => setShowHelp(true)}>❓ Help</button>
+            </div>
           </>
         ) : (
           <>
@@ -1573,6 +1629,120 @@ function RotaPage({ users, rota, setRota, holidays, upgrades, swapRequests, setS
   );
 }
 
+// ── Incident Tabs (Issue | Actions | Solution) ────────────────────────────
+function IncidentTabs({ form, setForm }) {
+  const [activeTab, setActiveTab] = useState('issue');
+
+  const TABS = [
+    { id: 'issue',   label: '🔴 Issue',         color: '#fca5a5', border: 'rgba(239,68,68,0.4)',   bg: 'rgba(239,68,68,0.12)'   },
+    { id: 'actions', label: '⚙️ Actions Taken',  color: '#fcd34d', border: 'rgba(245,158,11,0.4)',  bg: 'rgba(245,158,11,0.12)'  },
+    { id: 'solution',label: '✅ Solution',        color: '#6ee7b7', border: 'rgba(16,185,129,0.4)',  bg: 'rgba(16,185,129,0.12)'  },
+  ];
+
+  const attachImages = (field, files) => {
+    const readers = Array.from(files).map(f => new Promise(res => { const r = new FileReader(); r.onload = ev => res(ev.target.result); r.readAsDataURL(f); }));
+    Promise.all(readers).then(imgs => setForm(prev => ({ ...prev, [field]: [...(prev[field]||[]), ...imgs] })));
+  };
+  const removeImage = (field, i) => setForm(prev => ({ ...prev, [field]: (prev[field]||[]).filter((_,j) => j !== i) }));
+
+  const tab = TABS.find(t => t.id === activeTab);
+
+  return (
+    <div style={{ marginTop: 16 }}>
+      {/* Tab bar */}
+      <div style={{ display: 'flex', gap: 4, marginBottom: 0 }}>
+        {TABS.map(t => (
+          <button key={t.id} onClick={() => setActiveTab(t.id)}
+            style={{
+              padding: '8px 16px', borderRadius: '8px 8px 0 0', border: `1px solid ${t.border}`,
+              borderBottom: activeTab === t.id ? '1px solid var(--bg-card2)' : `1px solid ${t.border}`,
+              background: activeTab === t.id ? t.bg : 'var(--bg-card)',
+              color: activeTab === t.id ? t.color : 'var(--text-muted)',
+              fontWeight: activeTab === t.id ? 700 : 400, fontSize: 12, cursor: 'pointer',
+              transition: 'all 0.15s',
+            }}>
+            {t.label}
+            {/* Badge if content exists */}
+            {(activeTab !== t.id) && (
+              (t.id === 'issue' && (form.issue_desc || (form.issue_images||[]).length > 0)) ||
+              (t.id === 'actions' && (form.actions_desc || form.actions_code || (form.actions_images||[]).length > 0)) ||
+              (t.id === 'solution' && form.solution_desc)
+            ) ? <span style={{ marginLeft: 5, background: t.color, color: '#000', borderRadius: '50%', width: 14, height: 14, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 9, fontWeight: 700 }}>✓</span> : null}
+          </button>
+        ))}
+      </div>
+
+      {/* Tab panel */}
+      <div style={{ border: `1px solid ${tab.border}`, borderRadius: '0 8px 8px 8px', background: tab.bg, padding: 14 }}>
+        {/* Attach image button always at top */}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 10 }}>
+          <label style={{ cursor: 'pointer', fontSize: 12, color: 'var(--accent)', fontWeight: 500, display: 'flex', alignItems: 'center', gap: 4, padding: '4px 10px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg-card)' }}>
+            📎 Attach Image
+            <input type="file" accept="image/*" multiple style={{ display: 'none' }} onChange={e => {
+              const field = activeTab === 'issue' ? 'issue_images' : activeTab === 'actions' ? 'actions_images' : 'solution_images';
+              attachImages(field, e.target.files); e.target.value = '';
+            }} />
+          </label>
+        </div>
+
+        {activeTab === 'issue' && (
+          <>
+            <RichEditor value={form.issue_desc} onChange={v => setForm(f => ({ ...f, issue_desc: v }))} placeholder="Describe the issue — what happened, what was impacted, error messages…" rows={6} />
+            {(form.issue_images||[]).length > 0 && (
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
+                {form.issue_images.map((img, i) => (
+                  <div key={i} style={{ position: 'relative' }}>
+                    <img src={img} alt={`issue-${i}`} style={{ width: 110, height: 85, objectFit: 'cover', borderRadius: 6, border: '1px solid var(--border)' }} />
+                    <button onClick={() => removeImage('issue_images', i)} style={{ position: 'absolute', top: 2, right: 2, background: '#ef4444', border: 'none', borderRadius: '50%', width: 18, height: 18, cursor: 'pointer', fontSize: 10, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>✕</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+
+        {activeTab === 'actions' && (
+          <>
+            <RichEditor value={form.actions_desc} onChange={v => setForm(f => ({ ...f, actions_desc: v }))} placeholder="What actions were taken? Commands run, services restarted, people contacted…" rows={6} />
+            <div style={{ marginTop: 10 }}>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>Code Block / Command Output</div>
+              <textarea className="input" style={{ fontFamily: 'DM Mono, monospace', fontSize: 12, minHeight: 80, background: 'rgba(0,0,0,0.4)' }}
+                placeholder="Paste commands, logs, or results here…" value={form.actions_code||''}
+                onChange={e => setForm(f => ({ ...f, actions_code: e.target.value }))} />
+            </div>
+            {(form.actions_images||[]).length > 0 && (
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
+                {form.actions_images.map((img, i) => (
+                  <div key={i} style={{ position: 'relative' }}>
+                    <img src={img} alt={`action-${i}`} style={{ width: 110, height: 85, objectFit: 'cover', borderRadius: 6, border: '1px solid var(--border)' }} />
+                    <button onClick={() => removeImage('actions_images', i)} style={{ position: 'absolute', top: 2, right: 2, background: '#ef4444', border: 'none', borderRadius: '50%', width: 18, height: 18, cursor: 'pointer', fontSize: 10, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>✕</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+
+        {activeTab === 'solution' && (
+          <>
+            <RichEditor value={form.solution_desc} onChange={v => setForm(f => ({ ...f, solution_desc: v }))} placeholder="How was it resolved? Root cause, fix applied, follow-up actions required…" rows={6} />
+            {(form.solution_images||[]).length > 0 && (
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
+                {form.solution_images.map((img, i) => (
+                  <div key={i} style={{ position: 'relative' }}>
+                    <img src={img} alt={`solution-${i}`} style={{ width: 110, height: 85, objectFit: 'cover', borderRadius: 6, border: '1px solid var(--border)' }} />
+                    <button onClick={() => removeImage('solution_images', i)} style={{ position: 'absolute', top: 2, right: 2, background: '#ef4444', border: 'none', borderRadius: '50%', width: 18, height: 18, cursor: 'pointer', fontSize: 10, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>✕</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Incidents ──────────────────────────────────────────────────────────────
 const INC_SEVERITIES = [
   { value: 'Disaster', label: '🔴 Disaster', color: '#ef4444' },
@@ -1741,85 +1911,8 @@ function Incidents({ users, incidents, setIncidents, currentUser, isManager, tim
             </FormGroup>
           </div>
 
-          {/* Section: Issue */}
-          <div style={{ marginTop: 16, border: '1px solid rgba(239,68,68,0.3)', borderRadius: 10, overflow: 'hidden' }}>
-            <div style={{ background: 'rgba(239,68,68,0.12)', padding: '8px 14px', fontWeight: 600, fontSize: 13, color: '#fca5a5', display: 'flex', alignItems: 'center', gap: 8 }}>
-              🔴 Issue
-              <label style={{ marginLeft: 'auto', cursor: 'pointer', fontSize: 12, color: 'var(--accent)', fontWeight: 400, display: 'flex', alignItems: 'center', gap: 4 }}>
-                📎 Attach Image
-                <input type="file" accept="image/*" multiple style={{ display: 'none' }} onChange={e => {
-                  const files = Array.from(e.target.files);
-                  const readers = files.map(f => new Promise(res => { const r = new FileReader(); r.onload = ev => res(ev.target.result); r.readAsDataURL(f); }));
-                  Promise.all(readers).then(imgs => setForm(prev => ({ ...prev, issue_images: [...(prev.issue_images||[]), ...imgs] })));
-                  e.target.value = '';
-                }} />
-              </label>
-            </div>
-            <div style={{ padding: 12 }}>
-              <RichEditor value={form.issue_desc} onChange={v => setForm({ ...form, issue_desc: v })} placeholder="Describe the issue — what happened, what was impacted, error messages…" rows={5} />
-              {(form.issue_images||[]).length > 0 && (
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
-                  {form.issue_images.map((img, i) => (
-                    <div key={i} style={{ position: 'relative' }}>
-                      <img src={img} alt={`issue-${i}`} style={{ width: 100, height: 80, objectFit: 'cover', borderRadius: 6, border: '1px solid var(--border)' }} />
-                      <button onClick={() => setForm(prev => ({ ...prev, issue_images: prev.issue_images.filter((_,j)=>j!==i) }))}
-                        style={{ position: 'absolute', top: 2, right: 2, background: '#ef4444', border: 'none', borderRadius: '50%', width: 18, height: 18, cursor: 'pointer', fontSize: 10, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>✕</button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Section: Actions Taken */}
-          <div style={{ marginTop: 12, border: '1px solid rgba(245,158,11,0.3)', borderRadius: 10, overflow: 'hidden' }}>
-            <div style={{ background: 'rgba(245,158,11,0.12)', padding: '8px 14px', fontWeight: 600, fontSize: 13, color: '#fcd34d', display: 'flex', alignItems: 'center', gap: 8 }}>
-              ⚙️ Actions Taken
-              <label style={{ marginLeft: 'auto', cursor: 'pointer', fontSize: 12, color: 'var(--accent)', fontWeight: 400, display: 'flex', alignItems: 'center', gap: 4 }}>
-                📎 Attach Image
-                <input type="file" accept="image/*" multiple style={{ display: 'none' }} onChange={e => {
-                  const files = Array.from(e.target.files);
-                  const readers = files.map(f => new Promise(res => { const r = new FileReader(); r.onload = ev => res(ev.target.result); r.readAsDataURL(f); }));
-                  Promise.all(readers).then(imgs => setForm(prev => ({ ...prev, actions_images: [...(prev.actions_images||[]), ...imgs] })));
-                  e.target.value = '';
-                }} />
-              </label>
-            </div>
-            <div style={{ padding: 12 }}>
-              <RichEditor value={form.actions_desc} onChange={v => setForm({ ...form, actions_desc: v })} placeholder="What actions were taken? Commands run, services restarted, people contacted…" rows={5} />
-              <div style={{ marginTop: 10 }}>
-                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>Code Block / Command Output</div>
-                <textarea
-                  className="input"
-                  style={{ fontFamily: 'DM Mono, monospace', fontSize: 12, minHeight: 80, background: 'rgba(0,0,0,0.4)' }}
-                  placeholder="Paste commands, logs, or results here…"
-                  value={form.actions_code}
-                  onChange={e => setForm({ ...form, actions_code: e.target.value })}
-                />
-              </div>
-              {(form.actions_images||[]).length > 0 && (
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
-                  {form.actions_images.map((img, i) => (
-                    <div key={i} style={{ position: 'relative' }}>
-                      <img src={img} alt={`action-${i}`} style={{ width: 100, height: 80, objectFit: 'cover', borderRadius: 6, border: '1px solid var(--border)' }} />
-                      <button onClick={() => setForm(prev => ({ ...prev, actions_images: prev.actions_images.filter((_,j)=>j!==i) }))}
-                        style={{ position: 'absolute', top: 2, right: 2, background: '#ef4444', border: 'none', borderRadius: '50%', width: 18, height: 18, cursor: 'pointer', fontSize: 10, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>✕</button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Section: Solution */}
-          <div style={{ marginTop: 12, border: '1px solid rgba(16,185,129,0.3)', borderRadius: 10, overflow: 'hidden' }}>
-            <div style={{ background: 'rgba(16,185,129,0.12)', padding: '8px 14px', fontWeight: 600, fontSize: 13, color: '#6ee7b7' }}>
-              ✅ Solution
-            </div>
-            <div style={{ padding: 12 }}>
-              <RichEditor value={form.solution_desc} onChange={v => setForm({ ...form, solution_desc: v })} placeholder="How was it resolved? Root cause, fix applied, follow-up actions required…" rows={5} />
-            </div>
-          </div>
+          {/* Tabbed: Issue | Actions | Solution */}
+          <IncidentTabs form={form} setForm={setForm} />
 
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
             <button className="btn btn-secondary" onClick={() => setShowModal(false)}>Cancel</button>
@@ -2208,21 +2301,23 @@ function ShiftSwaps({ users, swapRequests, setSwapRequests, rota, setRota, curre
 }
 
 // ── Upgrade Days ───────────────────────────────────────────────────────────
-function UpgradeDays({ users, upgrades, setUpgrades, isManager }) {
-  const [showModal, setShowModal] = useState(false);
-  const [editId, setEditId]       = useState(null);
-  const [form, setForm]           = useState({ date: '', name: '', desc: '' });
+function UpgradeDays({ users, upgrades, setUpgrades, isManager, currentUser, timesheets, setTimesheets }) {
+  const [showModal, setShowModal]   = useState(false);
+  const [editId, setEditId]         = useState(null);
+  const [form, setForm]             = useState({ date: '', startTime: '', name: '', desc: '' });
+  const [showCompleteModal, setShowCompleteModal] = useState(false);
+  const [completeForm, setCompleteForm] = useState({ upgradeId: '', completedTime: '' });
   const { selected, toggleOne, toggleAll, clearAll } = useBulkSelect(upgrades);
 
-  const openAdd  = () => { setForm({ date: '', name: '', desc: '' }); setEditId(null); setShowModal(true); };
-  const openEdit = (up, e) => { e.stopPropagation(); setForm({ date: up.date, name: up.name, desc: up.desc || '' }); setEditId(up.id); setShowModal(true); };
+  const openAdd  = () => { setForm({ date: '', startTime: '', name: '', desc: '' }); setEditId(null); setShowModal(true); };
+  const openEdit = (up, e) => { e.stopPropagation(); setForm({ date: up.date, startTime: up.startTime || '', name: up.name, desc: up.desc || '' }); setEditId(up.id); setShowModal(true); };
 
   const save = () => {
-    if (!form.date || !form.name) return;
+    if (!form.date || !form.name || !form.startTime) return;
     if (editId) {
       setUpgrades(upgrades.map(u => u.id === editId ? { ...u, ...form } : u));
     } else {
-      setUpgrades([...upgrades, { id: 'u' + Date.now(), ...form, attendees: [] }]);
+      setUpgrades([...upgrades, { id: 'u' + Date.now(), ...form, attendees: [], engineerTimes: [] }]);
     }
     setShowModal(false);
   };
@@ -2230,71 +2325,260 @@ function UpgradeDays({ users, upgrades, setUpgrades, isManager }) {
   const deleteOne  = (id, e) => { e.stopPropagation(); if (window.confirm('Delete?')) setUpgrades(upgrades.filter(u => u.id !== id)); };
   const deleteBulk = () => { if (window.confirm(`Delete ${selected.size}?`)) { setUpgrades(upgrades.filter(u => !selected.has(u.id))); clearAll(); } };
 
-  const toggleAttend = (id, uid) => setUpgrades(upgrades.map(u =>
-    u.id !== id ? u : { ...u, attendees: u.attendees.includes(uid) ? u.attendees.filter(x => x !== uid) : [...u.attendees, uid] }
+  const toggleAttend = (upgradeId, uid) => setUpgrades(upgrades.map(u =>
+    u.id !== upgradeId ? u : { ...u, attendees: (u.attendees||[]).includes(uid) ? (u.attendees||[]).filter(x => x !== uid) : [...(u.attendees||[]), uid] }
   ));
+
+  // Engineer logs their completed time
+  const openComplete = (upgradeId) => {
+    setCompleteForm({ upgradeId, completedTime: '' });
+    setShowCompleteModal(true);
+  };
+
+  const saveCompletedTime = () => {
+    if (!completeForm.completedTime) return;
+    const upgrade = upgrades.find(u => u.id === completeForm.upgradeId);
+    if (!upgrade) return;
+
+    // Calculate hours between startTime and completedTime
+    const [startH, startM] = (upgrade.startTime || '00:00').split(':').map(Number);
+    const [endH, endM]     = completeForm.completedTime.split(':').map(Number);
+    let hrs = (endH * 60 + endM - startH * 60 - startM) / 60;
+    if (hrs < 0) hrs += 24; // next day
+    hrs = Math.round(hrs * 4) / 4; // round to nearest 15min
+
+    const existing = (upgrade.engineerTimes || []).filter(e => e.engineerId !== currentUser);
+    const newEntry = {
+      engineerId: currentUser,
+      completedTime: completeForm.completedTime,
+      hours: hrs,
+      // Manager's time is auto-approved; engineers need manager approval
+      approved: isManager ? true : false,
+      submittedAt: new Date().toISOString()
+    };
+    setUpgrades(upgrades.map(u => u.id === completeForm.upgradeId
+      ? { ...u, engineerTimes: [...existing, newEntry] }
+      : u
+    ));
+    setShowCompleteModal(false);
+    // If manager, immediately apply to timesheets
+    if (isManager) applyUpgradeToTimesheet(upgrade, newEntry);
+  };
+
+  const applyUpgradeToTimesheet = (upgrade, entry) => {
+    if (!setTimesheets) return;
+    const dow = new Date(upgrade.date).getDay();
+    const isWE = dow === 0 || dow === 6;
+    const label = `UPG ${upgrade.id} ${upgrade.name.slice(0,20)}`;
+    setTimesheets(prev => ({
+      ...prev,
+      [entry.engineerId]: [
+        {
+          week: label,
+          weekday_oncall: isWE ? 0 : entry.hours,
+          weekend_oncall: isWE ? entry.hours : 0,
+          worked_wd: isWE ? 0 : entry.hours,
+          worked_we: isWE ? entry.hours : 0,
+          standby_wd: 0, standby_we: 0,
+          notes: `Upgrade: ${upgrade.name} on ${upgrade.date} (${entry.hours}h)`,
+          upgradeId: upgrade.id
+        },
+        ...(prev[entry.engineerId] || []).filter(e => e.upgradeId !== upgrade.id)
+      ]
+    }));
+  };
+
+  // Manager approves/rejects an engineer's completed time
+  const approveTime = (upgradeId, engineerId, approve) => {
+    const upgrade = upgrades.find(u => u.id === upgradeId);
+    if (!upgrade) return;
+    const updated = (upgrade.engineerTimes || []).map(e =>
+      e.engineerId === engineerId ? { ...e, approved: approve, reviewedAt: new Date().toISOString() } : e
+    );
+    setUpgrades(upgrades.map(u => u.id === upgradeId ? { ...u, engineerTimes: updated } : u));
+    // Apply to timesheet if approved
+    if (approve) {
+      const entry = updated.find(e => e.engineerId === engineerId);
+      if (entry) applyUpgradeToTimesheet(upgrade, entry);
+    } else {
+      // Remove from timesheets if rejected
+      if (setTimesheets) {
+        setTimesheets(prev => ({
+          ...prev,
+          [engineerId]: (prev[engineerId] || []).filter(e => e.upgradeId !== upgradeId)
+        }));
+      }
+    }
+  };
 
   return (
     <div>
-      <PageHeader title="Upgrade Days" sub="Global system upgrade events"
+      <PageHeader title="Upgrade Days" sub="Schedule and track system upgrade days — hours auto-added to payroll on approval"
         actions={<>
           {isManager && selected.size > 0 && <button className="btn btn-danger btn-sm" onClick={deleteBulk}>🗑 Delete {selected.size}</button>}
           {isManager && <button className="btn btn-primary" onClick={openAdd}>+ Add Upgrade Day</button>}
         </>} />
-      {upgrades.length === 0 && <Alert>No upgrade days scheduled.</Alert>}
-      {upgrades.map(up => (
-        <div key={up.id} className="card mb-16">
-          <div className="flex-between mb-12">
-            <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
-              {isManager && <input type="checkbox" checked={selected.has(up.id)} onChange={() => toggleOne(up.id)} style={{ marginTop: 4 }} />}
-              <div>
-                <div style={{ fontSize: 15, fontWeight: 600, color: '#fecaca' }}>{up.name}</div>
-                <div style={{ fontSize: 12, color: 'var(--text-muted)', fontFamily: 'DM Mono', marginTop: 2 }}>{up.date}</div>
-                {up.desc && <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 6 }}>{up.desc}</div>}
+
+      <Alert type="info" style={{ marginBottom: 16 }}>
+        ℹ Manager adds the upgrade day with date &amp; start time. Engineers log their completed time after the upgrade. Manager approves — hours are then included in payroll. Manager's own time is auto-approved.
+      </Alert>
+
+      {upgrades.length === 0 && <div className="card" style={{ padding: 32, textAlign: 'center', color: 'var(--text-muted)' }}>No upgrade days scheduled yet</div>}
+
+      {upgrades.map(up => {
+        const myTime = (up.engineerTimes||[]).find(e => e.engineerId === currentUser);
+        const pendingApprovals = (up.engineerTimes||[]).filter(e => !e.approved && !isManager);
+        const approvedCount = (up.engineerTimes||[]).filter(e => e.approved).length;
+        return (
+          <div key={up.id} className="card mb-16">
+            {/* Header */}
+            <div className="flex-between mb-12">
+              <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                {isManager && <input type="checkbox" checked={selected.has(up.id)} onChange={() => toggleOne(up.id)} style={{ marginTop: 4 }} />}
+                <div>
+                  <div style={{ fontSize: 15, fontWeight: 600, color: '#fecaca' }}>{up.name}</div>
+                  <div style={{ display: 'flex', gap: 12, marginTop: 3 }}>
+                    <span style={{ fontSize: 12, color: 'var(--text-muted)', fontFamily: 'DM Mono' }}>📅 {up.date}</span>
+                    {up.startTime && <span style={{ fontSize: 12, color: 'var(--text-muted)', fontFamily: 'DM Mono' }}>🕐 Start: {up.startTime}</span>}
+                    <span style={{ fontSize: 12, color: '#6ee7b7' }}>✅ {approvedCount} approved</span>
+                    {isManager && (up.engineerTimes||[]).filter(e => !e.approved).length > 0 &&
+                      <span style={{ fontSize: 12, color: '#fcd34d' }}>⏳ {(up.engineerTimes||[]).filter(e=>!e.approved).length} pending</span>}
+                  </div>
+                  {up.desc && <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 6 }}>{up.desc}</div>}
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                <span style={{ background: '#991b1b55', color: '#fecaca', padding: '3px 8px', borderRadius: 6, fontSize: 11, fontWeight: 600 }}>⬆ Upgrade</span>
+                {isManager && <>
+                  <button className="btn btn-secondary btn-sm" onClick={e => openEdit(up, e)}>✏</button>
+                  <button className="btn btn-danger btn-sm" onClick={e => deleteOne(up.id, e)}>🗑</button>
+                </>}
               </div>
             </div>
-            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-              <span style={{ background: '#991b1b55', color: '#fecaca', padding: '3px 8px', borderRadius: 6, fontSize: 11, fontWeight: 600 }}>⬆ Upgrade</span>
-              {isManager && <>
-                <button className="btn btn-secondary btn-sm" onClick={e => openEdit(up, e)}>✏</button>
-                <button className="btn btn-danger btn-sm" onClick={e => deleteOne(up.id, e)}>🗑</button>
-              </>}
+
+            {/* Attendees */}
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8 }}>
+              Attendees {isManager ? '(click to toggle):' : ':'}
             </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 14 }}>
+              {users.map(u => {
+                const attending = (up.attendees||[]).includes(u.id);
+                const eTime = (up.engineerTimes||[]).find(e => e.engineerId === u.id);
+                return (
+                  <div key={u.id} onClick={() => isManager && toggleAttend(up.id, u.id)}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderRadius: 8,
+                      border: `1px solid ${attending ? 'var(--accent3)' : 'var(--border)'}`,
+                      background: attending ? 'rgba(16,185,129,.1)' : 'var(--bg-card2)',
+                      cursor: isManager ? 'pointer' : 'default'
+                    }}>
+                    <Avatar user={u} size={24} />
+                    <div>
+                      <div style={{ fontSize: 12, color: attending ? '#6ee7b7' : 'var(--text-secondary)' }}>
+                        {u.name.split(' ')[0]}{attending && ' ✓'}
+                      </div>
+                      {eTime && (
+                        <div style={{ fontSize: 10, fontFamily: 'DM Mono', color: eTime.approved ? '#6ee7b7' : '#fcd34d' }}>
+                          {eTime.completedTime} · {eTime.hours}h · {eTime.approved ? '✅ Approved' : '⏳ Pending'}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Engineer: log my completed time */}
+            {(up.attendees||[]).includes(currentUser) && (
+              <div style={{ borderTop: '1px solid var(--border)', paddingTop: 12 }}>
+                {myTime ? (
+                  <div style={{ fontSize: 12, color: myTime.approved ? '#6ee7b7' : '#fcd34d' }}>
+                    {myTime.approved
+                      ? `✅ Your completed time: ${myTime.completedTime} (${myTime.hours}h) — Approved & added to payroll`
+                      : `⏳ Your completed time: ${myTime.completedTime} (${myTime.hours}h) — Awaiting manager approval`}
+                    {!myTime.approved && <button className="btn btn-secondary btn-sm" style={{ marginLeft: 10 }} onClick={() => openComplete(up.id)}>✏ Update</button>}
+                  </div>
+                ) : (
+                  <button className="btn btn-primary btn-sm" onClick={() => openComplete(up.id)}>
+                    🕐 Log My Completed Time
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* Manager: approve/reject pending times */}
+            {isManager && (up.engineerTimes||[]).filter(e => !e.approved).length > 0 && (
+              <div style={{ borderTop: '1px solid var(--border)', paddingTop: 12, marginTop: 8 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: '#fcd34d', marginBottom: 8 }}>⏳ Pending Approval</div>
+                {(up.engineerTimes||[]).filter(e => !e.approved).map(e => {
+                  const eng = users.find(u => u.id === e.engineerId);
+                  return (
+                    <div key={e.engineerId} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, padding: '8px 10px', background: 'rgba(252,211,77,0.08)', borderRadius: 8 }}>
+                      <Avatar user={eng} size={24} />
+                      <div style={{ flex: 1, fontSize: 12 }}>
+                        <strong>{eng?.name}</strong> — finished at <strong>{e.completedTime}</strong> ({e.hours}h)
+                      </div>
+                      <button className="btn btn-success btn-sm" onClick={() => approveTime(up.id, e.engineerId, true)}>✓ Approve</button>
+                      <button className="btn btn-danger btn-sm" onClick={() => approveTime(up.id, e.engineerId, false)}>✗ Reject</button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 10 }}>Attendees (click to toggle):</div>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-            {users.map(u => {
-              const attending = up.attendees?.includes(u.id);
-              return (
-                <div key={u.id} onClick={() => toggleAttend(up.id, u.id)} style={{
-                  display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderRadius: 8,
-                  border: `1px solid ${attending ? 'var(--accent3)' : 'var(--border)'}`,
-                  background: attending ? 'rgba(16,185,129,.1)' : 'var(--bg-card2)', cursor: 'pointer'
-                }}>
-                  <Avatar user={u} size={24} />
-                  <span style={{ fontSize: 12, color: attending ? '#6ee7b7' : 'var(--text-secondary)' }}>{u.name.split(' ')[0]}</span>
-                  {attending && <span style={{ color: '#6ee7b7', fontSize: 12 }}>✓</span>}
-                </div>
-              );
-            })}
-          </div>
-          <div style={{ marginTop: 10, fontSize: 12, color: 'var(--text-muted)' }}>{up.attendees?.length || 0} of {users.length} attending</div>
-        </div>
-      ))}
+        );
+      })}
+
+      {/* Add/Edit modal (manager only) */}
       {showModal && isManager && (
         <Modal title={editId ? 'Edit Upgrade Day' : 'Add Upgrade Day'} onClose={() => setShowModal(false)}>
           <FormGroup label="Date"><input className="input" type="date" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} /></FormGroup>
+          <FormGroup label="Start Time" hint="When the upgrade begins">
+            <input className="input" type="time" value={form.startTime} onChange={e => setForm({ ...form, startTime: e.target.value })} />
+          </FormGroup>
           <FormGroup label="Upgrade Name"><input className="input" placeholder="e.g. Global Q3 System Upgrade" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} /></FormGroup>
-          <FormGroup label="Description"><textarea className="textarea" rows={3} value={form.desc} onChange={e => setForm({ ...form, desc: e.target.value })} /></FormGroup>
+          <FormGroup label="Description (optional)"><textarea className="textarea" rows={3} value={form.desc} onChange={e => setForm({ ...form, desc: e.target.value })} /></FormGroup>
+          {(!form.date || !form.startTime || !form.name) && <Alert type="warning" style={{ marginTop: 8 }}>⚠ Date, start time and name are required.</Alert>}
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
             <button className="btn btn-secondary" onClick={() => setShowModal(false)}>Cancel</button>
-            <button className="btn btn-primary" onClick={save}>{editId ? 'Update' : 'Add'}</button>
+            <button className="btn btn-primary" onClick={save}>{editId ? 'Update' : 'Add Upgrade Day'}</button>
           </div>
+        </Modal>
+      )}
+
+      {/* Log completed time modal */}
+      {showCompleteModal && (
+        <Modal title="Log Completed Time" onClose={() => setShowCompleteModal(false)}>
+          {(() => {
+            const up = upgrades.find(u => u.id === completeForm.upgradeId);
+            return (
+              <>
+                <div style={{ marginBottom: 12, fontSize: 13, color: 'var(--text-secondary)' }}>
+                  <strong>{up?.name}</strong> · Started at <strong>{up?.startTime || 'N/A'}</strong> on <strong>{up?.date}</strong>
+                </div>
+                <FormGroup label="Your Completed Time (when you finished)" hint="HH:MM">
+                  <input className="input" type="time" value={completeForm.completedTime} onChange={e => setCompleteForm({ ...completeForm, completedTime: e.target.value })} />
+                </FormGroup>
+                {completeForm.completedTime && up?.startTime && (() => {
+                  const [sh,sm] = up.startTime.split(':').map(Number);
+                  const [eh,em] = completeForm.completedTime.split(':').map(Number);
+                  let hrs = (eh*60+em - sh*60-sm)/60; if(hrs<0) hrs+=24;
+                  hrs = Math.round(hrs*4)/4;
+                  return <Alert type="info">⏱ Calculated duration: <strong>{hrs}h</strong> — will be submitted for manager approval{isManager ? ' (auto-approved)' : ''}.</Alert>;
+                })()}
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
+                  <button className="btn btn-secondary" onClick={() => setShowCompleteModal(false)}>Cancel</button>
+                  <button className="btn btn-primary" onClick={saveCompletedTime}>Submit</button>
+                </div>
+              </>
+            );
+          })()}
         </Modal>
       )}
     </div>
   );
 }
+
 
 // ── Stress Score (Manager only) ────────────────────────────────────────────
 function StressScore({ users, timesheets, incidents, isManager }) {
@@ -3227,13 +3511,262 @@ function Documents({ documents, setDocuments, isManager }) {
 
 // ── Obsidian Notes ────────────────────────────────────────────────────────
 function Notes({ obsidianNotes, setObsidianNotes, users, currentUser, isManager }) {
-  const [showModal, setShowModal] = useState(false);
-  const [editId, setEditId] = useState(null);
-  const [form, setForm] = useState({ title: '', content: '', visibility: 'PRIVATE', tags: '' });
-  const [search, setSearch] = useState('');
-  const [view, setView] = useState(null);
-  const [selectedEngineer, setSelectedEngineer] = useState(null);
-  const fileRef = useRef(null);
+  const [activeTab, setActiveTab]   = useState('personal');
+  const [showModal, setShowModal]   = useState(false);
+  const [editId, setEditId]         = useState(null);
+  const [form, setForm]             = useState({ title: '', content: '', type: 'personal', tags: '' });
+  const [search, setSearch]         = useState('');
+  const [viewNote, setViewNote]     = useState(null);
+  const importRef                   = useRef(null);
+  const exportRef                   = useRef(null);
+
+  // Personal = only the author can see. Shared = whole team including manager.
+  const personalNotes = obsidianNotes.filter(n => n.type === 'personal' && n.engineerId === currentUser);
+  const sharedNotes   = obsidianNotes.filter(n => n.type === 'shared');
+
+  const visibleNotes  = activeTab === 'personal' ? personalNotes : sharedNotes;
+  const filtered      = visibleNotes.filter(n =>
+    n.title?.toLowerCase().includes(search.toLowerCase()) ||
+    (n.content||'').toLowerCase().includes(search.toLowerCase())
+  );
+
+  const openAdd = () => {
+    setForm({ title: '', content: '', type: activeTab === 'personal' ? 'personal' : 'shared', tags: '' });
+    setEditId(null);
+    setShowModal(true);
+  };
+
+  const openEdit = (note, e) => {
+    e?.stopPropagation();
+    if (note.engineerId !== currentUser && !isManager) { alert('You can only edit your own notes.'); return; }
+    setForm({ title: note.title, content: note.content||'', type: note.type||'personal', tags: note.tags||'' });
+    setEditId(note.id);
+    setShowModal(true);
+  };
+
+  const save = () => {
+    if (!form.title) return;
+    if (editId) {
+      setObsidianNotes(obsidianNotes.map(n => n.id === editId ? { ...n, ...form, updated: new Date().toISOString().slice(0,10) } : n));
+    } else {
+      setObsidianNotes([...obsidianNotes, {
+        id: 'note-' + Date.now(),
+        engineerId: currentUser,
+        ...form,
+        created: new Date().toISOString().slice(0, 10)
+      }]);
+    }
+    setShowModal(false);
+  };
+
+  const deleteNote = (noteId, e) => {
+    e?.stopPropagation();
+    const note = obsidianNotes.find(n => n.id === noteId);
+    if (!note) return;
+    if (note.engineerId !== currentUser && !isManager) { alert('You can only delete your own notes.'); return; }
+    if (window.confirm('Delete this note?')) {
+      setObsidianNotes(obsidianNotes.filter(n => n.id !== noteId));
+      if (viewNote?.id === noteId) setViewNote(null);
+    }
+  };
+
+  // Import .md files
+  const handleImport = async (e) => {
+    const files = Array.from(e.target.files || []);
+    const imported = [];
+    for (const file of files) {
+      const ext = file.name.split('.').pop().toLowerCase();
+      const text = await file.text();
+      let content = text;
+      if (ext === 'md') {
+        // Convert basic markdown to HTML for the rich editor
+        content = text
+          .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+          .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+          .replace(/^# (.+)$/gm, '<h1>$1</h1>')
+          .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+          .replace(/\*(.+?)\*/g, '<em>$1</em>')
+          .replace(/\n\n/g, '</p><p>')
+          .replace(/\n/g, '<br>');
+        content = '<p>' + content + '</p>';
+      }
+      imported.push({
+        id: 'note-' + Date.now() + Math.random(),
+        engineerId: currentUser,
+        title: file.name.replace(/\.(md|txt)$/, ''),
+        content,
+        type: activeTab === 'personal' ? 'personal' : 'shared',
+        tags: 'imported',
+        created: new Date().toISOString().slice(0, 10),
+        sourceFile: file.name
+      });
+    }
+    if (imported.length > 0) setObsidianNotes([...obsidianNotes, ...imported]);
+    e.target.value = '';
+  };
+
+  // Export visible notes as .md files (zip-like: one file per note)
+  const handleExport = () => {
+    filtered.forEach(note => {
+      const text = (note.content || '').replace(/<[^>]+>/g, '').replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>');
+      const blob = new Blob([`# ${note.title}\n\n${text}`], { type: 'text/markdown' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `${note.title.replace(/[^a-z0-9]/gi,'_')}.md`;
+      a.click();
+    });
+  };
+
+  // Note detail view
+  if (viewNote) {
+    const note = obsidianNotes.find(n => n.id === viewNote);
+    if (!note) { setViewNote(null); return null; }
+    const canEdit = note.engineerId === currentUser || isManager;
+    const author  = users.find(u => u.id === note.engineerId);
+    return (
+      <div>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 16, alignItems: 'center', flexWrap: 'wrap' }}>
+          <button className="btn btn-secondary btn-sm" onClick={() => setViewNote(null)}>← Back</button>
+          {canEdit && <button className="btn btn-secondary btn-sm" onClick={e => { openEdit(note, e); setViewNote(null); }}>✏ Edit</button>}
+          {canEdit && <button className="btn btn-danger btn-sm" onClick={e => { deleteNote(note.id, e); }}>🗑 Delete</button>}
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
+            <Tag label={note.type === 'personal' ? '🔒 Personal' : '🌐 Shared'} type={note.type === 'personal' ? 'red' : 'green'} />
+            <span className="muted-xs">{note.created}</span>
+          </div>
+        </div>
+        <div className="card">
+          <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 10 }}>{note.title}</div>
+          {note.tags && (
+            <div style={{ marginBottom: 12, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {note.tags.split(',').map(t => <Tag key={t} label={t.trim()} type="purple" />)}
+            </div>
+          )}
+          {author && note.type === 'shared' && (
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 14 }}>
+              ✍️ {author.name} · {note.updated ? `Updated ${note.updated}` : `Created ${note.created}`}
+            </div>
+          )}
+          <div style={{ fontSize: 14, lineHeight: 1.85, color: 'var(--text-secondary)' }}
+            dangerouslySetInnerHTML={{ __html: note.content || '' }} />
+        </div>
+      </div>
+    );
+  }
+
+  const TAB_STYLE = (id) => ({
+    padding: '8px 20px', border: 'none', borderBottom: `2px solid ${activeTab === id ? 'var(--accent)' : 'transparent'}`,
+    background: 'transparent', color: activeTab === id ? 'var(--accent)' : 'var(--text-muted)',
+    fontWeight: activeTab === id ? 700 : 400, cursor: 'pointer', fontSize: 14, transition: 'all 0.15s'
+  });
+
+  const NoteCard = ({ note }) => {
+    const author  = users.find(u => u.id === note.engineerId);
+    const canEdit = note.engineerId === currentUser || isManager;
+    const preview = (note.content || '').replace(/<[^>]+>/g, '').slice(0, 120);
+    return (
+      <div className="card card-sm" onClick={() => setViewNote(note.id)} style={{ cursor: 'pointer', transition: 'border-color 0.15s' }}>
+        <div className="flex-between mb-8">
+          <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', flex: 1, paddingRight: 8 }}>
+            {note.type === 'shared' ? '🌐' : '🔒'} {note.title}
+          </div>
+          <div style={{ display: 'flex', gap: 4 }} onClick={e => e.stopPropagation()}>
+            {canEdit && <button className="btn btn-secondary btn-sm" onClick={e => openEdit(note, e)}>✏</button>}
+            {canEdit && <button className="btn btn-danger btn-sm" onClick={e => deleteNote(note.id, e)}>🗑</button>}
+          </div>
+        </div>
+        {note.tags && <div style={{ marginBottom: 6, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+          {note.tags.split(',').filter(Boolean).map(t => <Tag key={t} label={t.trim()} type="purple" />)}
+        </div>}
+        <div className="muted-xs" style={{ lineHeight: 1.5 }}>{preview}{preview.length >= 120 ? '…' : ''}</div>
+        <div style={{ marginTop: 8, display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-muted)' }}>
+          {note.type === 'shared' && author ? <span>✍️ {author.name}</span> : <span />}
+          <span>{note.updated || note.created}</span>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div>
+      <PageHeader title="📝 Notes"
+        sub="Personal notes are private to you · Shared notes are visible to the whole team"
+        actions={<>
+          <button className="btn btn-secondary btn-sm" onClick={() => importRef.current?.click()}>📥 Import</button>
+          <button className="btn btn-secondary btn-sm" onClick={handleExport} disabled={filtered.length === 0}>📤 Export</button>
+          <button className="btn btn-primary" onClick={openAdd}>+ New Note</button>
+        </>} />
+      <input ref={importRef} type="file" multiple accept=".md,.txt" onChange={handleImport} style={{ display: 'none' }} />
+
+      {/* Tab bar */}
+      <div style={{ display: 'flex', borderBottom: '1px solid var(--border)', marginBottom: 16 }}>
+        <button style={TAB_STYLE('personal')} onClick={() => setActiveTab('personal')}>
+          🔒 Personal ({personalNotes.length})
+        </button>
+        <button style={TAB_STYLE('shared')} onClick={() => setActiveTab('shared')}>
+          🌐 Shared ({sharedNotes.length})
+        </button>
+      </div>
+
+      {/* Tab description */}
+      <Alert type="info" style={{ marginBottom: 16 }}>
+        {activeTab === 'personal'
+          ? '🔒 Personal notes are only visible to you. Nobody else can see these, not even the manager.'
+          : '🌐 Shared notes are visible to everyone on the team including the manager. Anyone can add a shared note.'}
+      </Alert>
+
+      {/* Search */}
+      <input className="input" placeholder="🔍 Search notes…" value={search}
+        onChange={e => setSearch(e.target.value)} style={{ marginBottom: 16, width: '100%' }} />
+
+      {/* Notes grid */}
+      {filtered.length === 0
+        ? <div className="card" style={{ padding: 32, textAlign: 'center', color: 'var(--text-muted)' }}>
+            No {activeTab} notes yet. Click <strong>+ New Note</strong> to create one.
+          </div>
+        : <div className="grid-2">
+            {filtered.map(note => <NoteCard key={note.id} note={note} />)}
+          </div>
+      }
+
+      {/* New / Edit modal */}
+      {showModal && (
+        <Modal title={editId ? 'Edit Note' : 'New Note'} onClose={() => setShowModal(false)} wide>
+          <FormGroup label="Title">
+            <input className="input" value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} placeholder="Note title…" autoFocus />
+          </FormGroup>
+          <FormGroup label="Note Type">
+            <div style={{ display: 'flex', gap: 8 }}>
+              {[
+                { val: 'personal', label: '🔒 Personal', sub: 'Only you can see this' },
+                { val: 'shared',   label: '🌐 Shared',   sub: 'Whole team can see this' }
+              ].map(opt => (
+                <div key={opt.val} onClick={() => setForm({ ...form, type: opt.val })}
+                  style={{
+                    flex: 1, padding: '10px 14px', borderRadius: 8, cursor: 'pointer',
+                    border: `2px solid ${form.type === opt.val ? 'var(--accent)' : 'var(--border)'}`,
+                    background: form.type === opt.val ? 'rgba(59,130,246,0.1)' : 'var(--bg-card2)'
+                  }}>
+                  <div style={{ fontWeight: 600, fontSize: 13, color: form.type === opt.val ? 'var(--accent)' : 'var(--text-primary)' }}>{opt.label}</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{opt.sub}</div>
+                </div>
+              ))}
+            </div>
+          </FormGroup>
+          <FormGroup label="Tags" hint="comma separated">
+            <input className="input" placeholder="e.g. important, runbook, learning" value={form.tags} onChange={e => setForm({ ...form, tags: e.target.value })} />
+          </FormGroup>
+          <FormGroup label="Content">
+            <RichEditor value={form.content} onChange={v => setForm(f => ({ ...f, content: v }))} placeholder="Write your note…" rows={10} />
+          </FormGroup>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
+            <button className="btn btn-secondary" onClick={() => setShowModal(false)}>Cancel</button>
+            <button className="btn btn-primary" onClick={save} disabled={!form.title}>{editId ? 'Update Note' : 'Save Note'}</button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
 
   const handleImport = async (e) => {
     const files = e.target.files;
@@ -3303,175 +3836,6 @@ function Notes({ obsidianNotes, setObsidianNotes, users, currentUser, isManager 
     }
   };
 
-  const getEngineersNotes = () => {
-    if (isManager) {
-      const grouped = {};
-      obsidianNotes.forEach(note => {
-        if (!grouped[note.engineerId]) grouped[note.engineerId] = [];
-        grouped[note.engineerId].push(note);
-      });
-      return grouped;
-    } else {
-      return { [currentUser]: obsidianNotes.filter(n => n.engineerId === currentUser) };
-    }
-  };
-
-  const currentUserObj = users.find(u => u.id === currentUser);
-
-  if (view) {
-    const note = obsidianNotes.find(n => n.id === view);
-    if (!note) {
-      setView(null);
-      return null;
-    }
-    const canEdit = note.engineerId === currentUser || isManager;
-    return (
-      <div>
-        <div style={{ display: 'flex', gap: 8, marginBottom: 16, alignItems: 'center' }}>
-          <button className="btn btn-secondary btn-sm" onClick={() => setView(null)}>← Back</button>
-          {canEdit && <button className="btn btn-secondary btn-sm" onClick={() => openEdit(note)}>✏ Edit</button>}
-          {canEdit && <button className="btn btn-danger btn-sm" onClick={e => { deleteOne(note.id, e); setView(null); }}>🗑 Delete</button>}
-          <div style={{ marginLeft: 'auto' }}>
-            <Tag label={note.visibility} type={note.visibility === 'PRIVATE' ? 'red' : 'green'} />
-            <span className="muted-xs" style={{ marginLeft: 8 }}>{note.created}</span>
-          </div>
-        </div>
-        <div className="card">
-          <div className="page-title" style={{ marginBottom: 16 }}>{note.title}</div>
-          {note.tags && <div style={{ marginBottom: 12 }}>{note.tags.split(',').map(t => <Tag key={t} label={t.trim()} type="purple" />)}</div>}
-          <div style={{ fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.8, whiteSpace: 'pre-wrap' }}>
-            {note.content}
-          </div>
-          {isManager && <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--border)', fontSize: 12, color: 'var(--text-muted)' }}>
-            By: {users.find(u => u.id === note.engineerId)?.name} ({note.engineerId})
-          </div>}
-        </div>
-      </div>
-    );
-  }
-
-  if (isManager) {
-    const groupedNotes = getEngineersNotes();
-    return (
-      <div>
-        <PageHeader title="📝 Obsidian Notes" sub="View team notes by engineer" />
-        <div style={{ display: 'grid', gridTemplateColumns: '250px 1fr', gap: 16, marginBottom: 16 }}>
-          <div className="card">
-            <div className="card-title">Team Engineers</div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {Object.keys(groupedNotes).map(engId => {
-                const eng = users.find(u => u.id === engId);
-                const count = groupedNotes[engId].length;
-                return (
-                  <div
-                    key={engId}
-                    onClick={() => setSelectedEngineer(engId)}
-                    style={{
-                      padding: '8px 10px',
-                      background: selectedEngineer === engId ? 'var(--accent)' : 'transparent',
-                      color: selectedEngineer === engId ? '#fff' : 'var(--text-primary)',
-                      borderRadius: 6,
-                      cursor: 'pointer',
-                      fontSize: 13
-                    }}
-                  >
-                    {eng?.name} <span style={{ fontSize: 11, opacity: 0.7 }}>({count})</span>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-          <div>
-            {selectedEngineer ? (
-              <div>
-                <div style={{ marginBottom: 16 }}>
-                  <h3>{users.find(u => u.id === selectedEngineer)?.name}'s Notes</h3>
-                </div>
-                <div className="grid-2">
-                  {groupedNotes[selectedEngineer].map(note => (
-                    <div key={note.id} className="card card-sm" onClick={() => setView(note.id)} style={{ cursor: 'pointer' }}>
-                      <div className="flex-between mb-8">
-                        <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>📝 {note.title}</div>
-                        <Tag label={note.visibility} type={note.visibility === 'PRIVATE' ? 'red' : 'green'} />
-                      </div>
-                      <div className="muted-xs">{note.content.slice(0, 100)}…</div>
-                      <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-muted)' }}>{note.created}</div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <div className="card" style={{ padding: 32, textAlign: 'center', color: 'var(--text-muted)' }}>
-                Select an engineer to view their notes
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // Engineer view
-  const myNotes = obsidianNotes.filter(n => n.engineerId === currentUser);
-  return (
-    <div>
-      <PageHeader title="📝 My Notes" sub="Manage your Obsidian notes"
-        actions={<>
-          <button className="btn btn-secondary btn-sm" onClick={() => fileRef.current?.click()}>📥 Import .md</button>
-          <button className="btn btn-primary" onClick={openAdd}>+ New Note</button>
-        </>} />
-      <input ref={fileRef} type="file" multiple accept=".md" onChange={handleImport} style={{ display: 'none' }} />
-      <input className="input" placeholder="🔍 Search notes…" value={search} onChange={e => setSearch(e.target.value)} style={{ marginBottom: 16, width: '100%' }} />
-
-      <div className="grid-2">
-        {myNotes.filter(n => n.title.toLowerCase().includes(search.toLowerCase())).map(note => (
-          <div key={note.id} className="card card-sm" onClick={() => setView(note.id)} style={{ cursor: 'pointer' }}>
-            <div className="flex-between mb-8">
-              <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>📝 {note.title}</div>
-              <div style={{ display: 'flex', gap: 4 }}>
-                <Tag label={note.visibility} type={note.visibility === 'PRIVATE' ? 'red' : 'green'} />
-                <button className="btn btn-secondary btn-sm" onClick={e => openEdit(note, e)}>✏</button>
-                <button className="btn btn-danger btn-sm" onClick={e => deleteOne(note.id, e)}>🗑</button>
-              </div>
-            </div>
-            <div className="muted-xs">{note.content.slice(0, 100)}…</div>
-            <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-muted)' }}>{note.created}</div>
-          </div>
-        ))}
-      </div>
-
-      {showModal && (
-        <Modal title={editId ? 'Edit Note' : 'New Note'} onClose={() => setShowModal(false)} wide>
-          <FormGroup label="Title">
-            <input className="input" value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} placeholder="Note title" />
-          </FormGroup>
-          <FormGroup label="Visibility">
-            <select className="select" value={form.visibility} onChange={e => setForm({ ...form, visibility: e.target.value })}>
-              <option value="PRIVATE">🔒 Private (Only you can see)</option>
-              <option value="SHAREABLE">🔓 Shareable (Manager can see)</option>
-            </select>
-          </FormGroup>
-          <FormGroup label="Tags" hint="comma separated">
-            <input className="input" placeholder="e.g. important, urgent, learning" value={form.tags} onChange={e => setForm({ ...form, tags: e.target.value })} />
-          </FormGroup>
-          <FormGroup label="Content">
-            <textarea
-              className="input"
-              style={{ minHeight: 300, fontFamily: 'monospace', fontSize: 12 }}
-              value={form.content}
-              onChange={e => setForm({ ...form, content: e.target.value })}
-              placeholder="Write your note in markdown…"
-            />
-          </FormGroup>
-          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
-            <button className="btn btn-secondary" onClick={() => setShowModal(false)}>Cancel</button>
-            <button className="btn btn-primary" onClick={save}>{editId ? 'Update Note' : 'Save Note'}</button>
-          </div>
-        </Modal>
-      )}
-    </div>
-  );
-}
 
 // ── WhatsApp Team Chat ────────────────────────────────────────────────────
 function WhatsAppChat({ whatsappChats, setWhatsappChats, users, currentUser, isManager, driveToken }) {
@@ -4046,20 +4410,24 @@ function WeeklyReports({ users, incidents, timesheets, holidays, isManager }) {
 }
 
 // ── Payroll (Manager only) ─────────────────────────────────────────────────
-function Payroll({ users, timesheets, payconfig, toil, incidents, isManager }) {
+function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, isManager }) {
   if (!isManager) return <Alert type="warning">⚠ Payroll is restricted to managers.</Alert>;
 
   const exportCSV = () => {
-    const rows = [['Trigram','Full Name','Annual Salary','Monthly Net (base)','Standby Hrs','Worked OC Hrs','Incident Hrs','Total OC Pay (£)','TOIL Balance (hrs)']];
+    const exportDate = new Date().toISOString().slice(0, 10);
+    const rows = [['Trigram', 'Full Name', 'Export Date', 'Standby Hrs Worked', 'OC Hrs Worked', 'Incident Hrs', 'TOIL Balance (hrs)', 'Upgrade Hours']];
     users.forEach(u => {
       const p      = payconfig[u.id] || { rate: 40, base: 2500 };
       const annual = p.annual || p.base * 12;
       const hourly = annual / 2080;
       const oc     = calcOncallPay(timesheets[u.id], hourly);
       const tb     = calcTOILBalance(timesheets[u.id], toil, u.id);
-      const tx     = calcUKTax(annual, { pensionPct: p.pensionPct||0, studentLoan: p.studentLoan||false });
       const incHrs = (timesheets[u.id]||[]).filter(e=>e.week&&e.week.startsWith('INC')).reduce((a,e)=>a+(e.weekday_oncall||0)+(e.weekend_oncall||0),0);
-      rows.push([u.id, u.name, `£${annual.toLocaleString()}`, `£${tx.monthly.net.toFixed(0)}`, oc.totalStandbyHours, oc.totalWorkedHours, incHrs, oc.total.toFixed(2), tb.balance]);
+      const upgradeHrs = (upgrades||[]).reduce((sum, up) => {
+        const et = (up.engineerTimes||[]).find(e => e.engineerId === u.id && e.approved);
+        return sum + (et ? et.hours : 0);
+      }, 0);
+      rows.push([u.id, u.name, exportDate, oc.totalStandbyHours, oc.totalWorkedHours, incHrs, tb.balance, upgradeHrs]);
     });
     const csv = rows.map(r => r.map(v => `"${v}"`).join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
@@ -4893,7 +5261,7 @@ export default function App() {
       case 'timesheets': return <Timesheets {...props} />;
       case 'holidays':   return <Holidays {...props} />;
       case 'swaps':      return <ShiftSwaps {...props} />;
-      case 'upgrades':   return <UpgradeDays {...props} />;
+      case 'upgrades':   return <UpgradeDays {...props} timesheets={timesheets} setTimesheets={setTimesheets} />;
       case 'stress':     return <StressScore {...props} />;
       case 'toil':       return <TOIL {...props} />;
       case 'absence':    return <Absence {...props} driveToken={driveToken} />;
@@ -4907,7 +5275,7 @@ export default function App() {
       case 'insights':   return <Insights {...props} />;
       case 'capacity':   return <Capacity {...props} incidents={incidents} />;
       case 'reports':    return <WeeklyReports {...props} />;
-      case 'payroll':    return <Payroll {...props} incidents={incidents} />;
+      case 'payroll':    return <Payroll {...props} incidents={incidents} upgrades={upgrades} />;
       case 'payconfig':  return <PayConfig {...props} />;
       case 'settings':   return <Settings {...props} />;
       case 'myaccount':  return <MyAccount currentUser={currentUser} users={users} setUsers={setUsers} driveToken={driveToken} profilePics={profilePics} setProfilePicsState={setProfilePicsState} />;
