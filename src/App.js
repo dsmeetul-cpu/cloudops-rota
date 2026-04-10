@@ -197,7 +197,22 @@ async function loadRegistryFromDrive(driveToken) {
   return null;
 }
 
-// ── Shift colours per spec ─────────────────────────────────────────────────
+// Sanitise any rota from generateRota — strips Daily from Sat/Sun
+function sanitiseRota(raw) {
+  const out = {};
+  Object.entries(raw || {}).forEach(([uid, days]) => {
+    out[uid] = {};
+    Object.entries(days || {}).forEach(([date, shift]) => {
+      const dow = new Date(date + 'T12:00:00').getDay(); // noon avoids DST
+      if (shift === 'daily' && (dow === 0 || dow === 6)) {
+        out[uid][date] = 'off';
+      } else {
+        out[uid][date] = shift;
+      }
+    });
+  });
+  return out;
+}
 // Daily Shift = Blue | Weekday On-Call = Green | Weekend On-Call = Yellow | Upgrade Days = Red
 const SHIFT_COLORS = {
   daily:   { bg: '#1e40af', label: 'Daily Shift',      text: '#bfdbfe' },
@@ -1422,29 +1437,26 @@ function RotaPage({ users, rota, setRota, holidays, upgrades, swapRequests, setS
   const [startDate, setStartDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [weeks, setWeeks]         = useState(4);
   const [generated, setGenerated] = useState(true);
-  const [editCell, setEditCell]   = useState(null); // { userId, date }
+  const [editCell, setEditCell]   = useState(null);
   const [bulkSelected, setBulkSelected] = useState(new Set());
   const [bulkShift, setBulkShift] = useState('daily');
   const [swapSuggestion, setSwapSuggestion] = useState(null);
+  const [viewMode, setViewMode]   = useState('compact'); // 'compact' | 'hours'
   const DAYS = ['M','T','W','T','F','S','S'];
+
+  // Shift hour definitions
+  const SHIFT_HOURS = {
+    daily:   { start: '10:00', end: '19:00', label: '10am – 7pm',   desc: 'Daily Shift (Mon–Fri)' },
+    evening: { start: '19:00', end: '07:00', label: '7pm – 7am',    desc: 'Weekday Evening OC (Mon–Thu)' },
+    weekend: { start: '19:00', end: '07:00', label: '7pm – 7am',    desc: 'Weekend OC (Fri–Mon)' },
+    upgrade: { start: '00:00', end: '23:59', label: 'All day',       desc: 'Upgrade Day' },
+    holiday: { start: '',      end: '',      label: 'Holiday',        desc: 'Annual Leave' },
+    bankholiday: { start: '', end: '',       label: 'Bank Holiday',   desc: 'Public Holiday' },
+  };
 
   const generate = () => {
     if (!isManager) return;
-    const raw = generateRota(users, startDate, weeks);
-    // Sanitise: Daily shift is Mon-Fri only (0=Sun,6=Sat → remove daily)
-    const sanitised = {};
-    Object.entries(raw).forEach(([uid, days]) => {
-      sanitised[uid] = {};
-      Object.entries(days || {}).forEach(([date, shift]) => {
-        const dow = new Date(date).getDay(); // 0=Sun … 6=Sat
-        if (shift === 'daily' && (dow === 0 || dow === 6)) {
-          sanitised[uid][date] = 'off'; // strip weekend daily
-        } else {
-          sanitised[uid][date] = shift;
-        }
-      });
-    });
-    setRota(sanitised);
+    setRota(sanitiseRota(generateRota(users, startDate, weeks)));
     setGenerated(true);
   };
 
@@ -1621,12 +1633,124 @@ function RotaPage({ users, rota, setRota, holidays, upgrades, swapRequests, setS
         </div>
       )}
       <ShiftLegend />
+      {/* View mode toggle */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 12, alignItems: 'center' }}>
+        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>View:</span>
+        <button className={`btn btn-sm ${viewMode === 'compact' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setViewMode('compact')}>
+          📋 Compact
+        </button>
+        <button className={`btn btn-sm ${viewMode === 'hours' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setViewMode('hours')}>
+          🕐 Hours / Timeline
+        </button>
+        {viewMode === 'hours' && (
+          <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 4 }}>
+            Daily: 10am–7pm · Evening OC: 7pm–7am · Weekend OC: 7pm–7am
+          </span>
+        )}
+      </div>
       {weekStarts.map((ws, wi) => {
         const wdates = Array.from({ length: 7 }, (_, d) => {
           const dt = new Date(ws);
           dt.setDate(ws.getDate() + d);
           return dt;
         });
+        const hourCols = Array.from({ length: 24 }, (_, h) => h);
+
+        const getHourBlock = (shift, hour) => {
+          if (!shift || shift === 'off') return null;
+          if (shift === 'daily')       return (hour >= 10 && hour < 19) ? shift : null;
+          if (shift === 'evening')     return (hour >= 19 || hour < 7)  ? shift : null;
+          if (shift === 'weekend')     return (hour >= 19 || hour < 7)  ? shift : null;
+          if (shift === 'upgrade' || shift === 'holiday' || shift === 'bankholiday') return shift;
+          return null;
+        };
+
+        // ── Hours / Timeline view ──────────────────────────────────────────
+        if (viewMode === 'hours') {
+          return (
+            <div key={wi} className="card mb-12">
+              <div className="card-title" style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10 }}>
+                Week of {ws.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+              </div>
+              {wdates.map((d) => {
+                const ds  = d.toISOString().slice(0, 10);
+                const bh  = UK_BANK_HOLIDAYS.find(b => b.date === ds);
+                const dow = d.getDay();
+                const isWkd = dow === 0 || dow === 6;
+                const dayLabel = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][dow];
+                const activeEngineers = users.filter(u => {
+                  const shift = holidays.find(h => h.userId === u.id && ds >= h.start && ds <= h.end) ? 'holiday'
+                    : bh ? 'bankholiday'
+                    : upgrades.find(up => up.date === ds && up.attendees?.includes(u.id)) ? 'upgrade'
+                    : rota[u.id]?.[ds] || 'off';
+                  return shift !== 'off';
+                });
+                return (
+                  <div key={ds} style={{ marginBottom: 10 }}>
+                    {/* Day header */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 0, marginBottom: 4 }}>
+                      <div style={{ width: 90, fontSize: 11, fontWeight: 700, flexShrink: 0, color: bh ? '#fca5a5' : isWkd ? 'rgba(255,255,255,0.45)' : 'var(--text-secondary)', paddingRight: 8 }}>
+                        {dayLabel} {d.getDate()}{bh ? ' 🔴' : ''}
+                      </div>
+                      {/* 24h axis bar */}
+                      <div style={{ flex: 1, display: 'flex', height: 6, minWidth: 480 }}>
+                        {hourCols.map(h => (
+                          <div key={h} style={{ flex: 1, borderRight: h < 23 ? '1px solid rgba(255,255,255,0.06)' : 'none', background: 'rgba(255,255,255,0.03)' }} />
+                        ))}
+                      </div>
+                    </div>
+                    {/* Per-engineer timeline rows */}
+                    {users.map(u => {
+                      const hol   = holidays.find(h => h.userId === u.id && ds >= h.start && ds <= h.end);
+                      const upg   = upgrades.find(up => up.date === ds && up.attendees?.includes(u.id));
+                      const shift = hol ? 'holiday' : bh ? 'bankholiday' : upg ? 'upgrade' : (rota[u.id]?.[ds] || 'off');
+                      const col   = SHIFT_COLORS[shift] || {};
+                      const hrs   = SHIFT_HOURS[shift];
+                      return (
+                        <div key={u.id} style={{ display: 'flex', alignItems: 'center', gap: 0, marginBottom: 3 }}>
+                          <div style={{ width: 90, display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0, paddingRight: 8 }}>
+                            <Avatar user={u} size={16} />
+                            <span style={{ fontSize: 10, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{u.name.split(' ')[0]}</span>
+                          </div>
+                          <div style={{ flex: 1, display: 'flex', height: 22, borderRadius: 4, overflow: 'hidden', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)', minWidth: 480, position: 'relative' }}>
+                            {hourCols.map(h => {
+                              const active = getHourBlock(shift, h) !== null;
+                              return (
+                                <div key={h}
+                                  title={`${String(h).padStart(2,'0')}:00${active ? ' — ' + (col.label || shift) : ''}`}
+                                  style={{ flex: 1, background: active ? (col.bg || '#1e40af') + 'dd' : 'transparent', borderRight: h < 23 ? '1px solid rgba(0,0,0,0.15)' : 'none' }} />
+                              );
+                            })}
+                            {shift !== 'off' && (
+                              <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
+                                <span style={{ fontSize: 9, fontWeight: 700, color: col.text || '#fff', textShadow: '0 1px 3px rgba(0,0,0,0.7)', letterSpacing: 0.3 }}>
+                                  {col.label} {hrs?.label ? `· ${hrs.label}` : ''}
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {activeEngineers.length === 0 && (
+                      <div style={{ paddingLeft: 90, fontSize: 10, color: 'rgba(255,255,255,0.2)' }}>No shifts</div>
+                    )}
+                  </div>
+                );
+              })}
+              {/* Hour axis labels at bottom */}
+              <div style={{ display: 'flex', marginLeft: 90, marginTop: 4 }}>
+                {hourCols.map(h => (
+                  <div key={h} style={{ flex: 1, textAlign: 'center', fontSize: 7, color: 'rgba(255,255,255,0.25)', fontFamily: 'DM Mono' }}>
+                    {h % 6 === 0 ? String(h).padStart(2,'0') : ''}
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        }
+
+        // ── Compact view (default) ─────────────────────────────────────────
         return (
           <div key={wi} className="card mb-12" style={{ overflowX: 'auto' }}>
             <div className="card-title" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
@@ -1637,9 +1761,19 @@ function RotaPage({ users, rota, setRota, holidays, upgrades, swapRequests, setS
                 <tr>
                   <th style={{ minWidth: 130 }}>Engineer</th>
                   {wdates.map((d, di) => {
-                    const ds = d.toISOString().slice(0, 10);
-                    const bh = UK_BANK_HOLIDAYS.find(b => b.date === ds);
-                    return <th key={di} style={{ textAlign: 'center', fontSize: 10, color: bh ? '#fca5a5' : undefined }}>{DAYS[di]}<br /><span style={{ fontFamily: 'DM Mono', fontSize: 9 }}>{d.getDate()}{bh && '🔴'}</span></th>;
+                    const ds  = d.toISOString().slice(0, 10);
+                    const bh  = UK_BANK_HOLIDAYS.find(b => b.date === ds);
+                    const dow = d.getDay();
+                    const isWkd = dow === 0 || dow === 6;
+                    return (
+                      <th key={di} style={{ textAlign: 'center', fontSize: 10, color: bh ? '#fca5a5' : isWkd ? 'rgba(255,255,255,0.35)' : undefined, background: isWkd ? 'rgba(255,255,255,0.03)' : undefined }}>
+                        {DAYS[di]}<br />
+                        <span style={{ fontFamily: 'DM Mono', fontSize: 9 }}>{d.getDate()}{bh && '🔴'}</span>
+                        <div style={{ fontSize: 8, color: 'rgba(255,255,255,0.2)', fontFamily: 'DM Mono' }}>
+                          {bh ? '' : isWkd ? '19–07' : di < 5 ? '10–19' : '19–07'}
+                        </div>
+                      </th>
+                    );
                   })}
                 </tr>
               </thead>
@@ -1654,37 +1788,43 @@ function RotaPage({ users, rota, setRota, holidays, upgrades, swapRequests, setS
                       const upg  = upgrades.find(up => up.date === ds && up.attendees?.includes(u.id));
                       const s    = hol ? 'holiday' : bh ? 'bankholiday' : upg ? 'upgrade' : (rota[u.id]?.[ds] || 'off');
                       const col  = SHIFT_COLORS[s] || {};
+                      const hrs  = SHIFT_HOURS[s];
                       const key  = `${u.id}::${ds}`;
                       const isBulkSel = bulkSelected.has(key);
                       const isEditing = editCell?.userId === u.id && editCell?.date === ds;
+                      const dow = d.getDay();
+                      const isWkd = dow === 0 || dow === 6;
                       return (
-                        <td key={ds} style={{ textAlign: 'center', padding: '4px' }}>
+                        <td key={ds} style={{ textAlign: 'center', padding: '3px', background: isWkd ? 'rgba(255,255,255,0.02)' : undefined }}>
                           {isEditing && isManager ? (
                             <select autoFocus className="select" style={{ fontSize: 10, padding: '2px 4px', width: 100 }}
                               defaultValue={s} onBlur={e => setCell(u.id, ds, e.target.value)}
                               onChange={e => setCell(u.id, ds, e.target.value)}>
                               <option value="off">Off</option>
-                              <option value="daily">Daily Shift</option>
-                              <option value="evening">Weekday OC</option>
-                              <option value="weekend">Weekend OC</option>
+                              {!isWkd && <option value="daily">Daily (10–19)</option>}
+                              {(dow >= 1 && dow <= 4) && <option value="evening">Eve OC (19–07)</option>}
+                              <option value="weekend">Wknd OC (19–07)</option>
                             </select>
                           ) : (
                             <div
                               onClick={() => isManager && toggleBulk(u.id, ds)}
                               onDoubleClick={() => isManager && setEditCell({ userId: u.id, date: ds })}
-                              title={isManager ? 'Click to select, double-click to edit' : ''}
+                              title={s !== 'off' ? `${col.label || s}${hrs ? ' · ' + hrs.label : ''}` : (isManager ? 'Double-click to assign shift' : '')}
                               style={{
                                 background: col.bg ? col.bg + '55' : 'transparent',
                                 color: col.text || 'var(--text-muted)',
                                 border: isBulkSel ? '2px solid #3b82f6' : col.bg ? `1px solid ${col.bg}88` : '1px solid transparent',
-                                borderRadius: 6, padding: '4px 6px', fontSize: 10, fontWeight: 600,
-                                cursor: isManager ? 'pointer' : 'default', userSelect: 'none',
+                                borderRadius: 6, padding: '3px 4px', fontSize: 9, fontWeight: 600,
+                                cursor: isManager ? 'pointer' : 'default', userSelect: 'none', lineHeight: 1.4, minWidth: 30,
                               }}>
-                              {hol ? '🌴' : bh ? '🔴' : upg ? '⬆' : s === 'off' ? '—' : (col.label?.slice(0,4) || s)}
+                              {hol ? '🌴' : bh ? '🔴' : upg ? '⬆' : s === 'off' ? '—' : col.label?.slice(0,4) || s}
+                              {s !== 'off' && !hol && !bh && !upg && hrs?.label && (
+                                <div style={{ fontSize: 8, opacity: 0.75, fontWeight: 400, marginTop: 1 }}>{hrs.label}</div>
+                              )}
                             </div>
                           )}
                           {isManager && s !== 'off' && !isEditing && (
-                            <button onClick={() => deleteCell(u.id, ds)} style={{ display: 'block', margin: '2px auto 0', background: 'none', border: 'none', color: '#ef4444', fontSize: 9, cursor: 'pointer', padding: 0 }}>✕</button>
+                            <button onClick={() => deleteCell(u.id, ds)} style={{ display: 'block', margin: '1px auto 0', background: 'none', border: 'none', color: '#ef4444', fontSize: 8, cursor: 'pointer', padding: 0 }}>✕</button>
                           )}
                         </td>
                       );
@@ -5416,7 +5556,7 @@ export default function App() {
   const [glossary, setGlossary]       = useState(DEFAULT_GLOSSARY);
   const [contacts, setContacts]       = useState(DEFAULT_CONTACTS);
   const [payconfig, setPayconfig]     = useState(DEFAULT_PAYCONFIG);
-  const [rota, setRota]               = useState(() => generateRota(DEFAULT_USERS, '2026-03-30', 8));
+  const [rota, setRota]               = useState(() => sanitiseRota(generateRota(DEFAULT_USERS, '2026-03-30', 8)));
   const [swapRequests, setSwapRequests] = useState([]);
   const [toil, setToil]               = useState([]);
   const [absences, setAbsences]       = useState([]);
@@ -5462,7 +5602,7 @@ export default function App() {
           if (data.glossary)      setGlossary(data.glossary);
           if (data.contacts)      setContacts(data.contacts);
           if (data.payconfig)     setPayconfig(data.payconfig);
-          if (data.rota)          setRota(data.rota);
+          if (data.rota)          setRota(sanitiseRota(data.rota));
           if (data.swapRequests)  setSwapRequests(data.swapRequests);
           if (data.toil)          setToil(data.toil);
           if (data.absences)      setAbsences(data.absences);
@@ -5516,7 +5656,7 @@ export default function App() {
       if (data.glossary)     setGlossary(data.glossary);
       if (data.contacts)     setContacts(data.contacts);
       if (data.payconfig)    setPayconfig(data.payconfig);
-      if (data.rota)         setRota(data.rota);
+      if (data.rota)         setRota(sanitiseRota(data.rota));
       if (data.swapRequests) setSwapRequests(data.swapRequests);
       if (data.toil)         setToil(data.toil);
       if (data.absences)     setAbsences(data.absences);
@@ -5739,7 +5879,7 @@ export default function App() {
                     if (data.glossary)      setGlossary(data.glossary);
                     if (data.contacts)      setContacts(data.contacts);
                     if (data.payconfig)     setPayconfig(data.payconfig);
-                    if (data.rota)          setRota(data.rota);
+                    if (data.rota)          setRota(sanitiseRota(data.rota));
                     if (data.swapRequests)  setSwapRequests(data.swapRequests);
                     if (data.toil)          setToil(data.toil);
                     if (data.absences)      setAbsences(data.absences);
