@@ -1,6 +1,6 @@
 // src/App.js
 // CloudOps Rota — Full Production Build v2
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 10th April 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · April 2026
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
@@ -5485,7 +5485,6 @@ export default function App() {
       }
     };
     autoConnect();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const connectDrive = async () => {
