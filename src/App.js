@@ -1,6 +1,6 @@
 // src/App.js
 // CloudOps Rota — Full Production Build v2
-// Meetul Bhundia (MBA47) · Cloud Run Operations · April 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 11th April 2026
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
@@ -1913,7 +1913,7 @@ function Incidents({ users, incidents, setIncidents, currentUser, isManager, tim
           </thead>
           <tbody>
             {[...filtered].sort((a, b) => new Date(b.date) - new Date(a.date)).map(i => {
-              const sev = INC_SEVERITIES.find(s => s.value === i.severity) || INC_SEVERITIES[2];
+              const sev = INC_SEVERITIES.find(s => s.value === i.severity) || INC_SEVERITIES[0];
               const eng = assignedUser(i.assigned_to);
               return (
                 <tr key={i.id} style={{ cursor: 'pointer' }} onClick={() => setViewInc(i)}>
@@ -2201,9 +2201,9 @@ function Holidays({ users, holidays, setHolidays, currentUser, isManager }) {
           {selected.size > 0 && <button className="btn btn-danger btn-sm" onClick={deleteBulk}>🗑 Delete {selected.size}</button>}
           <button className="btn btn-primary" onClick={openAdd}>+ Add Holiday</button>
         </>} />
-      <div className="grid-4 mb-16">
-        {users.slice(0, 4).map(u => (
-          <StatCard key={u.id} label={u.name.split(' ')[0]} value={remainingDays(u.id) + ' days left'} sub="Annual leave remaining" accent="#10b981" />
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 16 }}>
+        {users.map(u => (
+          <StatCard key={u.id} label={u.name?.split(' ')[0] || u.id} value={remainingDays(u.id) + ' days'} sub="Annual leave left" accent="#10b981" />
         ))}
       </div>
       <div className="card" style={{ overflowX: 'auto' }}>
@@ -2216,12 +2216,13 @@ function Holidays({ users, holidays, setHolidays, currentUser, isManager }) {
           </thead>
           <tbody>
             {holidays.map(h => {
-              const u = users.find(x => x.id === h.userId);
-              const d = Math.ceil((new Date(h.end) - new Date(h.start)) / 86400000) + 1;
+              const u = users.find(x => x.id === h.userId) || users.find(x => x.id?.toLowerCase() === h.userId?.toLowerCase());
+              const d = h.end ? Math.ceil((new Date(h.end) - new Date(h.start)) / 86400000) + 1 : 1;
+              const displayName = u?.name || h.userId || '—';
               return (
                 <tr key={h.id}>
                   <td><input type="checkbox" checked={selected.has(h.id)} onChange={() => toggleOne(h.id)} /></td>
-                  <td><div style={{ display: 'flex', alignItems: 'center', gap: 8 }}><Avatar user={u || { avatar: '?', color: '#475569' }} size={24} /><span style={{ fontSize: 12 }}>{u?.name}</span></div></td>
+                  <td><div style={{ display: 'flex', alignItems: 'center', gap: 8 }}><Avatar user={u || { avatar: (h.userId||'?').slice(0,2).toUpperCase(), color: '#475569' }} size={24} /><span style={{ fontSize: 12 }}>{displayName}</span></div></td>
                   <td style={{ fontSize: 12 }}>{h.type || 'Annual Leave'}</td>
                   <td style={{ fontFamily: 'DM Mono', fontSize: 12 }}>{h.start}</td>
                   <td style={{ fontFamily: 'DM Mono', fontSize: 12 }}>{h.end}</td>
@@ -5721,9 +5722,36 @@ export default function App() {
             <div style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'DM Mono' }}>
               {new Date().toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}
             </div>
-            {/* Refresh button */}
-            <button title="Refresh page" className="btn btn-secondary btn-sm" style={{ padding: '3px 8px' }}
-              onClick={() => window.location.reload()}>🔄</button>
+            {/* Refresh data from Drive */}
+            {driveToken && (
+              <button title="Refresh data from Google Drive" className="btn btn-secondary btn-sm" style={{ padding: '3px 8px' }}
+                onClick={async () => {
+                  try {
+                    setSyncing(true);
+                    const defaults = { users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, logbook, documents, obsidianNotes, whatsappChats };
+                    const data = await loadAllFromDrive(driveToken, defaults);
+                    if (data.users)         setUsers(data.users);
+                    if (data.holidays)      setHolidays(data.holidays);
+                    if (data.incidents)     setIncidents(data.incidents);
+                    if (data.timesheets)    setTimesheets(data.timesheets);
+                    if (data.upgrades)      setUpgrades(data.upgrades);
+                    if (data.wiki)          setWiki(data.wiki);
+                    if (data.glossary)      setGlossary(data.glossary);
+                    if (data.contacts)      setContacts(data.contacts);
+                    if (data.payconfig)     setPayconfig(data.payconfig);
+                    if (data.rota)          setRota(data.rota);
+                    if (data.swapRequests)  setSwapRequests(data.swapRequests);
+                    if (data.toil)          setToil(data.toil);
+                    if (data.absences)      setAbsences(data.absences);
+                    if (data.logbook)       setLogbook(data.logbook);
+                    if (data.documents)     setDocuments(data.documents);
+                    if (data.obsidianNotes) setObsidianNotes(data.obsidianNotes);
+                    if (data.whatsappChats) setWhatsappChats(data.whatsappChats);
+                    setLastSync(new Date());
+                  } catch(e) { console.warn('Refresh failed:', e); }
+                  finally { setSyncing(false); }
+                }}>🔄</button>
+            )}
             {/* Manual sync to Drive */}
             {driveToken && (
               <button title="Sync all data to Google Drive" className="btn btn-secondary btn-sm" style={{ padding: '3px 8px', fontSize: 11 }}
