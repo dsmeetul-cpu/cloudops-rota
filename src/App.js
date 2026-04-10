@@ -5485,8 +5485,9 @@ export default function App() {
       }
     };
     autoConnect();
-  useEffect(() => { ... }, []);
-  }, []);
+useEffect(() => {
+  // your code
+}, [currentUser, users, whatsappChats]);   // ← add dependencies if needed
 
   const connectDrive = async () => {
     try {
