@@ -5737,7 +5737,7 @@ useEffect(() => {
             <Avatar user={user || { avatar: '?', color: '#475569' }} size={28} />
           </div>
         </div>
-        {/* Manual sync progress bar */}
+              {/* Manual sync progress bar */}
         {manualSyncing && (
           <div style={{ padding: '6px 16px', background: 'rgba(59,130,246,0.1)', borderBottom: '1px solid var(--border)', display: 'flex', gap: 12, alignItems: 'center' }}>
             <span style={{ fontSize: 11, color: 'var(--accent)', minWidth: 180 }}>{syncStatus}</span>
@@ -5752,3 +5752,5 @@ useEffect(() => {
     </div>
   );
 }
+
+export default App;
