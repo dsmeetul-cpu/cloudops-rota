@@ -533,15 +533,15 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDri
 
   const handle = () => {
     const id = uid.trim().toUpperCase();
-    if (!id) { setErr('Please enter your username (tri-gram ID).'); return; }
+    if (!id) { setErr('Please enter your username.'); return; }
     const userExists = users.find(u => u.id === id);
-    if (!userExists) { setErr('Username not found. Check your tri-gram ID — e.g. MBA47, JDO23.'); return; }
+    if (!userExists) { setErr('Username not found. Contact your manager if you need access.'); return; }
     if (checkPassword(id, pw)) {
       setErr('');
       if (id === 'MBA47') { setPending2FA(id); setShow2FA(true); }
       else onLogin(id);
     } else {
-      setErr('Incorrect password. Your default password is your username in lowercase (e.g. mba47). If you changed it and the app isn\'t connected to Drive yet, please wait for the Drive indicator to show green, then try again.');
+      setErr('Incorrect password. If the Drive indicator above is not green, wait a moment for it to connect, then try again. Use Forgot Password if needed.');
     }
   };
 
@@ -553,24 +553,24 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDri
   const handleForgot = () => {
     const id = forgotUid.trim().toUpperCase();
     const userExists = users.find(u => u.id === id);
-    if (!userExists) { setForgotMsg('Username not found. Check your tri-gram ID.'); return; }
+    if (!userExists) { setForgotMsg('Username not found. Please contact your manager.'); return; }
     const reg = updatePasswordInRegistry(id, id.toLowerCase());
     if (driveToken) syncRegistryToDrive(driveToken, reg, users).catch(() => {});
-    setForgotMsg(`Password for ${id} has been reset to "${id.toLowerCase()}". Sign in with that, then change it in My Account.`);
+    setForgotMsg(`Password for ${id} has been reset. Sign in with your username in lowercase, then update it in My Account.`);
   };
 
   if (showHelp) return (
     <div className="login-screen">
-      <div className="login-box" style={{ maxWidth: 520 }}>
+      <div className="login-box" style={{ maxWidth: 500 }}>
         <div className="login-logo">
           <div className="login-logo-icon">CR</div>
           <div className="login-title">Sign-In Help</div>
           <div className="login-sub">CloudOps Rota</div>
         </div>
         <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.9 }}>
-          <p><strong style={{ color: 'var(--text-primary)' }}>🔑 Default password</strong><br />Your password is your username in lowercase. E.g. username <code style={{ background: 'rgba(255,255,255,0.1)', padding: '1px 5px', borderRadius: 4 }}>JDO23</code> → password <code style={{ background: 'rgba(255,255,255,0.1)', padding: '1px 5px', borderRadius: 4 }}>jdo23</code></p>
-          <p><strong style={{ color: 'var(--text-primary)' }}>🌐 Drive connection</strong><br />Google Drive connects automatically in the background when you open the app. Wait for the green dot to appear before signing in if you have a custom password.</p>
-          <p><strong style={{ color: 'var(--text-primary)' }}>❓ Still can't log in?</strong><br />Use <strong>Forgot Password?</strong> to reset to your lowercase ID, or ask the manager (MBA47) to reset it.</p>
+          <p><strong style={{ color: 'var(--text-primary)' }}>🔑 Default password</strong><br />Your initial password is your username in lowercase. You can change it inside the app under My Account.</p>
+          <p><strong style={{ color: 'var(--text-primary)' }}>🌐 Drive connection</strong><br />Google Drive connects automatically when you open the app. Wait for the green indicator before signing in if you have a custom password — it needs Drive to load your credentials.</p>
+          <p><strong style={{ color: 'var(--text-primary)' }}>❓ Still can't log in?</strong><br />Use <strong>Forgot Password?</strong> below, or ask your manager to reset your password in Settings.</p>
         </div>
         <button className="btn btn-primary" style={{ width: '100%', marginTop: 8 }} onClick={() => setShowHelp(false)}>← Back to Sign In</button>
       </div>
@@ -587,9 +587,11 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDri
         </div>
         {forgotMsg
           ? <Alert type="info">ℹ {forgotMsg}</Alert>
-          : <Alert type="info">ℹ Your password will be reset to your lowercase username ID.</Alert>}
-        <FormGroup label="Username (Tri-gram)">
-          <input className="input" placeholder="e.g. MBA47" value={forgotUid} onChange={e => setForgotUid(e.target.value.toUpperCase())} onKeyDown={e => e.key === 'Enter' && handleForgot()} />
+          : <Alert type="info">ℹ Enter your username and your password will be reset to the default.</Alert>}
+        <FormGroup label="Username">
+          <input className="input" placeholder="Your username" value={forgotUid}
+            onChange={e => setForgotUid(e.target.value.toUpperCase())}
+            onKeyDown={e => e.key === 'Enter' && handleForgot()} autoFocus />
         </FormGroup>
         <button className="btn btn-primary" style={{ width: '100%', padding: 11 }} onClick={handleForgot}>Reset Password</button>
         <button className="btn btn-secondary btn-sm" style={{ width: '100%', marginTop: 8 }} onClick={() => { setShowForgot(false); setForgotMsg(''); setForgotUid(''); }}>← Back to Sign In</button>
@@ -606,7 +608,7 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDri
           <div className="login-sub">Cloud Run Operations Team</div>
         </div>
 
-        {/* Drive status — shows automatically, no button needed */}
+        {/* Drive status */}
         <div style={{ marginBottom: 16, padding: '10px 14px', border: '1px solid var(--border)', borderRadius: 8, background: 'rgba(59,130,246,0.05)', display: 'flex', alignItems: 'center', gap: 10 }}>
           {driveToken ? (
             <>
@@ -615,7 +617,7 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDri
             </>
           ) : connectingDrive ? (
             <>
-              <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#f59e0b', animation: 'pulse 1.5s infinite' }} />
+              <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#f59e0b' }} />
               <span style={{ fontSize: 12, color: '#fcd34d' }}>Connecting to Google Drive…</span>
             </>
           ) : (
@@ -623,24 +625,20 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDri
               <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#6b7280' }} />
               <div style={{ flex: 1 }}>
                 <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Drive connecting in background…</div>
-                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>You can still sign in with your default password while it loads.</div>
               </div>
-              <button className="btn btn-secondary btn-sm" onClick={onConnectDrive} style={{ whiteSpace: 'nowrap' }}>
+              <button className="btn btn-secondary btn-sm" onClick={onConnectDrive} style={{ whiteSpace: 'nowrap', fontSize: 11 }}>
                 📁 Connect
               </button>
             </>
           )}
         </div>
 
-        <Alert type="info" style={{ marginBottom: 12 }}>
-          💡 Default password = username in lowercase — e.g. <strong>mba47</strong>
-        </Alert>
         {err && <Alert type="warning" style={{ marginBottom: 12 }}>⚠ {err}</Alert>}
 
         {!show2FA ? (
           <>
-            <FormGroup label="Username (Tri-gram)">
-              <input className="input" placeholder="e.g. MBA47" value={uid}
+            <FormGroup label="Username">
+              <input className="input" placeholder="Enter your username" value={uid}
                 onChange={e => setUid(e.target.value.toUpperCase())}
                 onKeyDown={e => e.key === 'Enter' && handle()} autoFocus />
             </FormGroup>
@@ -674,6 +672,7 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDri
   );
 }
 
+
 // ── Navigation ─────────────────────────────────────────────────────────────
 const NAV = [
   { section: 'Overview', items: [
@@ -694,7 +693,7 @@ const NAV = [
     { id: 'stress',     icon: '📊', label: 'Stress Score',  managerOnly: true },
     { id: 'toil',       icon: '⏳', label: 'TOIL'           },
     { id: 'absence',    icon: '🏥', label: 'Absence / Sick' },
-    { id: 'logbook',    icon: '📓', label: 'Logbook',       managerOnly: true },
+    { id: 'logbook',    icon: '📓', label: 'Logbook'           },
   ]},
   { section: 'Knowledge', items: [
     { id: 'wiki',      icon: '📖', label: 'Wiki'            },
@@ -1357,7 +1356,7 @@ function MyShift({ currentUser, rota, users, swapRequests, setSwapRequests }) {
 }
 
 // ── Calendar ───────────────────────────────────────────────────────────────
-function CalendarView({ users, rota, holidays, upgrades }) {
+function CalendarView({ users, rota, holidays, upgrades, absences }) {
   const [cur, setCur] = useState(new Date());
   const yr = cur.getFullYear(), mo = cur.getMonth();
   const first    = new Date(yr, mo, 1);
@@ -1368,7 +1367,7 @@ function CalendarView({ users, rota, holidays, upgrades }) {
 
   return (
     <div>
-      <PageHeader title="Calendar" sub="Rota, upgrades &amp; bank holidays"
+      <PageHeader title="Calendar" sub="Rota, upgrades, holidays &amp; absences"
         actions={<>
           <button className="btn btn-secondary btn-sm" onClick={() => setCur(new Date(yr, mo - 1, 1))}>← Prev</button>
           <div className="month-label">{MONTHS[mo]} {yr}</div>
@@ -1376,6 +1375,11 @@ function CalendarView({ users, rota, holidays, upgrades }) {
           <button className="btn btn-secondary btn-sm" onClick={() => setCur(new Date(yr, mo + 1, 1))}>Next →</button>
         </>} />
       <ShiftLegend />
+      {/* Extra legend for holidays/absences */}
+      <div style={{ display:'flex', gap:12, marginBottom:10, flexWrap:'wrap', fontSize:11, color:'var(--text-muted)' }}>
+        <span><span style={{ background:'#16534233', border:'1px solid #166534', display:'inline-block', width:10, height:10, borderRadius:2, marginRight:4 }} />Holiday</span>
+        <span><span style={{ background:'#dc267733', border:'1px solid #dc2677', display:'inline-block', width:10, height:10, borderRadius:2, marginRight:4 }} />Sick/Absence</span>
+      </div>
       <div className="cal-grid">
         {['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(d => <div key={d} className="cal-header">{d}</div>)}
         {cells.map((day, i) => {
@@ -1384,16 +1388,26 @@ function CalendarView({ users, rota, holidays, upgrades }) {
           const bh  = UK_BANK_HOLIDAYS.find(b => b.date === ds);
           const upgs = upgrades.filter(u => u.date === ds);
           const oncalls = users.filter(u => rota[u.id]?.[ds] && rota[u.id][ds] !== 'off');
+          const holsToday = (holidays||[]).filter(h => ds >= h.start && ds <= (h.end||h.start));
+          const absToday  = (absences||[]).filter(a => ds >= a.start && ds <= (a.end||a.start));
           const isToday = ds === new Date().toISOString().slice(0, 10);
           return (
             <div key={ds} className={`cal-day${isToday ? ' today' : ''}`}>
               <div className="cal-day-num" style={{ color: bh ? '#fca5a5' : undefined }}>{day}{bh && ' 🔴'}</div>
-              {bh && <div className="cal-event ev-red">{bh.name}</div>}
-              {upgs.map(u => <div key={u.id} className="cal-event" style={{ background: '#991b1b55', color: '#fecaca', border: '1px solid #991b1b88', fontSize: 10, padding: '2px 4px', borderRadius: 4 }}>⬆ {u.name.split(' ').slice(0,2).join(' ')}</div>)}
+              {bh && <div className="cal-event ev-red" style={{ fontSize:9 }}>{bh.name}</div>}
+              {upgs.map(u => <div key={u.id} className="cal-event" style={{ background:'#991b1b55', color:'#fecaca', border:'1px solid #991b1b88', fontSize:9, padding:'1px 3px', borderRadius:3 }}>⬆ {u.name.slice(0,12)}</div>)}
+              {holsToday.map(h => {
+                const u = users.find(x => x.id === h.userId);
+                return <div key={h.id} style={{ background:'#16534233', color:'#6ee7b7', border:'1px solid #166534', fontSize:9, padding:'1px 3px', borderRadius:3, marginTop:1 }}>🌴 {u?.name?.split(' ')[0]||h.userId}</div>;
+              })}
+              {absToday.map(a => {
+                const u = users.find(x => x.id === a.userId);
+                return <div key={a.id} style={{ background:'#dc267733', color:'#f9a8d4', border:'1px solid #dc2677', fontSize:9, padding:'1px 3px', borderRadius:3, marginTop:1 }}>🏥 {u?.name?.split(' ')[0]||a.userId}</div>;
+              })}
               {oncalls.slice(0, 2).map(u => {
                 const s = rota[u.id][ds];
                 const c = SHIFT_COLORS[s] || {};
-                return <div key={u.id} style={{ background: (c.bg || '#1e40af') + '55', color: c.text || '#bfdbfe', border: `1px solid ${(c.bg || '#1e40af')}88`, fontSize: 10, padding: '2px 4px', borderRadius: 4 }}>{u.name.split(' ')[0]}</div>;
+                return <div key={u.id} style={{ background:(c.bg||'#1e40af')+'55', color:c.text||'#bfdbfe', border:`1px solid ${(c.bg||'#1e40af')}88`, fontSize:9, padding:'1px 3px', borderRadius:3, marginTop:1 }}>{u.name.split(' ')[0]}</div>;
               })}
             </div>
           );
@@ -1516,8 +1530,13 @@ function RotaPage({ users, rota, setRota, holidays, upgrades, swapRequests, setS
   };
 
   const pendingSwaps = (swapRequests || []).filter(s => s.status === 'pending');
+  // Snap startDate to the Monday of the chosen week (fixes day offset bug)
   const weekStarts = Array.from({ length: weeks }, (_, w) => {
-    const d = new Date(startDate); d.setDate(d.getDate() + w * 7); return d;
+    const d = new Date(startDate + 'T12:00:00'); // use noon to avoid DST issues
+    const dow = d.getDay(); // 0=Sun,1=Mon…6=Sat
+    const toMon = (dow === 0) ? -6 : 1 - dow; // offset back to Monday
+    d.setDate(d.getDate() + toMon + w * 7);
+    return d;
   });
 
   return (
@@ -1603,7 +1622,11 @@ function RotaPage({ users, rota, setRota, holidays, upgrades, swapRequests, setS
       )}
       <ShiftLegend />
       {weekStarts.map((ws, wi) => {
-        const wdates = Array.from({ length: 7 }, (_, d) => { const dt = new Date(ws); dt.setDate(ws.getDate() + d); return dt; });
+        const wdates = Array.from({ length: 7 }, (_, d) => {
+          const dt = new Date(ws);
+          dt.setDate(ws.getDate() + d);
+          return dt;
+        });
         return (
           <div key={wi} className="card mb-12" style={{ overflowX: 'auto' }}>
             <div className="card-title" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
@@ -3085,19 +3108,44 @@ function Absence({ users, absences, setAbsences, currentUser, isManager, driveTo
 function Logbook({ users, logbook, setLogbook, currentUser, isManager }) {
   const [showModal, setShowModal] = useState(false);
   const [editId, setEditId]       = useState(null);
-  const [filter, setFilter]       = useState('all');
-  const [form, setForm]           = useState({ userId: '', type: 'Appraisal', date: '', summary: '', content: '' });
+  const [filter, setFilter]       = useState(isManager ? 'all' : currentUser);
+  const [viewEntry, setViewEntry] = useState(null);
+  const [form, setForm]           = useState({ userId: currentUser, type: 'Note', date: '', summary: '', content: '', private: false });
   const { selected, toggleOne, toggleAll, clearAll } = useBulkSelect(logbook);
 
-  if (!isManager) return <Alert type="warning">⚠ Logbook is restricted to managers.</Alert>;
+  // Engineers see their own entries + any non-private entries from the team.
+  // Manager sees everything.
+  const TYPES = ['Appraisal','Training','Achievement','Note','1-to-1','Feedback','Incident Report'];
+  const typeColor = { Appraisal:'amber', Training:'green', Achievement:'blue', Note:'purple', '1-to-1':'amber', Feedback:'green', 'Incident Report':'red' };
 
-  const visible = filter === 'all' ? logbook : logbook.filter(l => l.userId === filter);
+  const canSee = (entry) => {
+    if (isManager) return true;
+    if (entry.userId === currentUser) return true;
+    if (!entry.private) return true;
+    return false;
+  };
 
-  const openAdd  = () => { setForm({ userId: users[0]?.id || '', type: 'Appraisal', date: '', summary: '', content: '' }); setEditId(null); setShowModal(true); };
-  const openEdit = (l, e) => { e.stopPropagation(); setForm({ ...l }); setEditId(l.id); setShowModal(true); };
+  const visible = logbook
+    .filter(canSee)
+    .filter(l => filter === 'all' ? true : l.userId === filter)
+    .sort((a, b) => new Date(b.date || b.created) - new Date(a.date || a.created));
+
+  const openAdd  = () => {
+    setForm({ userId: isManager ? (users[0]?.id || currentUser) : currentUser, type: 'Note', date: new Date().toISOString().slice(0,10), summary: '', content: '', private: false });
+    setEditId(null); setShowModal(true);
+  };
+
+  const openEdit = (l, e) => {
+    e?.stopPropagation();
+    const canEdit = l.userId === currentUser || isManager;
+    if (!canEdit) { alert('You can only edit your own entries.'); return; }
+    setForm({ ...l });
+    setEditId(l.id);
+    setShowModal(true);
+  };
 
   const save = () => {
-    if (!form.userId || !form.date) return;
+    if (!form.date) return;
     if (editId) {
       setLogbook(logbook.map(l => l.id === editId ? { ...l, ...form } : l));
     } else {
@@ -3106,79 +3154,164 @@ function Logbook({ users, logbook, setLogbook, currentUser, isManager }) {
     setShowModal(false);
   };
 
-  const deleteOne  = (id, e) => { e.stopPropagation(); if (window.confirm('Delete entry?')) setLogbook(logbook.filter(l => l.id !== id)); };
-  const deleteBulk = () => { if (window.confirm(`Delete ${selected.size}?`)) { setLogbook(logbook.filter(l => !selected.has(l.id))); clearAll(); } };
+  const deleteOne  = (id, e) => {
+    e?.stopPropagation();
+    const entry = logbook.find(l => l.id === id);
+    if (!isManager && entry?.userId !== currentUser) { alert('You can only delete your own entries.'); return; }
+    if (window.confirm('Delete entry?')) setLogbook(logbook.filter(l => l.id !== id));
+  };
+  const deleteBulk = () => {
+    if (!isManager) return;
+    if (window.confirm(`Delete ${selected.size}?`)) { setLogbook(logbook.filter(l => !selected.has(l.id))); clearAll(); }
+  };
 
-  const typeColor = { Appraisal: 'blue', Training: 'green', Achievement: 'amber', Note: 'purple' };
+  // Detail view
+  if (viewEntry) {
+    const l = logbook.find(e => e.id === viewEntry);
+    if (!l) { setViewEntry(null); return null; }
+    const author = users.find(u => u.id === l.userId);
+    const canEdit = l.userId === currentUser || isManager;
+    return (
+      <div>
+        <div style={{ display:'flex', gap:8, marginBottom:16, alignItems:'center', flexWrap:'wrap' }}>
+          <button className="btn btn-secondary btn-sm" onClick={() => setViewEntry(null)}>← Back</button>
+          {canEdit && <button className="btn btn-secondary btn-sm" onClick={e => { openEdit(l, e); setViewEntry(null); }}>✏ Edit</button>}
+          {canEdit && <button className="btn btn-danger btn-sm" onClick={e => { deleteOne(l.id, e); setViewEntry(null); }}>🗑 Delete</button>}
+          <div style={{ marginLeft:'auto', display:'flex', gap:8, alignItems:'center' }}>
+            <Tag label={l.type} type={typeColor[l.type]||'blue'} />
+            {l.private && <Tag label="🔒 Private" type="red" />}
+            <span className="muted-xs">{l.date}</span>
+          </div>
+        </div>
+        <div className="card">
+          <div style={{ display:'flex', gap:12, alignItems:'center', marginBottom:14 }}>
+            <Avatar user={author} size={36} />
+            <div>
+              <div style={{ fontWeight:600, fontSize:15 }}>{author?.name}</div>
+              <div className="muted-xs">{l.date} · {l.type}</div>
+            </div>
+          </div>
+          {l.summary && <div style={{ fontSize:16, fontWeight:600, color:'var(--text-primary)', marginBottom:12 }}>{l.summary}</div>}
+          <div style={{ fontSize:14, lineHeight:1.85, color:'var(--text-secondary)' }} dangerouslySetInnerHTML={{ __html: l.content || '<em>No content</em>' }} />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div>
-      <PageHeader title="Logbook" sub="Record appraisals, training &amp; achievements"
+      <PageHeader title="📓 Logbook"
+        sub={isManager ? 'Record &amp; review appraisals, training, notes for all engineers' : 'Your personal logbook — add notes, training records, achievements'}
         actions={<>
-          {selected.size > 0 && <button className="btn btn-danger btn-sm" onClick={deleteBulk}>🗑 Delete {selected.size}</button>}
+          {isManager && selected.size > 0 && <button className="btn btn-danger btn-sm" onClick={deleteBulk}>🗑 Delete {selected.size}</button>}
           <button className="btn btn-primary" onClick={openAdd}>+ Add Entry</button>
         </>} />
-      <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
-        <select className="select" value={filter} onChange={e => setFilter(e.target.value)}>
-          <option value="all">All Engineers</option>
-          {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
-        </select>
-        {selected.size > 0 && <span className="muted-xs">{selected.size} selected</span>}
+
+      {!isManager && (
+        <Alert type="info" style={{ marginBottom:16 }}>
+          📓 Add your own training, achievements, notes and feedback. Private entries are only visible to you and the manager. Non-private entries are visible to the whole team.
+        </Alert>
+      )}
+
+      {/* Stats row */}
+      <div className="grid-4 mb-16">
+        <StatCard label="Total Entries" value={visible.length} sub="Visible to you" accent="#3b82f6" icon="📋" />
+        <StatCard label="My Entries" value={logbook.filter(l => l.userId === currentUser).length} sub="Your records" accent="#10b981" icon="✍️" />
+        <StatCard label="Achievements" value={logbook.filter(l => l.type === 'Achievement' && canSee(l)).length} sub="Team total" accent="#f59e0b" icon="🏆" />
+        <StatCard label="Training" value={logbook.filter(l => l.type === 'Training' && canSee(l)).length} sub="Team total" accent="#818cf8" icon="📚" />
       </div>
+
+      <div style={{ display:'flex', gap:8, marginBottom:16, flexWrap:'wrap', alignItems:'center' }}>
+        {isManager && (
+          <select className="select" value={filter} onChange={e => setFilter(e.target.value)}>
+            <option value="all">All Engineers</option>
+            {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+          </select>
+        )}
+        <select className="select" value={filter === currentUser && !isManager ? 'mine' : 'all'} onChange={e => {
+          if (!isManager) setFilter(e.target.value === 'mine' ? currentUser : 'all');
+        }} style={{ display: isManager ? 'none' : 'block' }}>
+          <option value="mine">My Entries</option>
+          <option value="all">All (Team)</option>
+        </select>
+        {isManager && selected.size > 0 && <span className="muted-xs">{selected.size} selected</span>}
+      </div>
+
+      {visible.length === 0 && (
+        <div className="card" style={{ padding:32, textAlign:'center', color:'var(--text-muted)' }}>
+          No logbook entries yet. Click <strong>+ Add Entry</strong> to create one.
+        </div>
+      )}
+
       {visible.map(l => {
         const u = users.find(x => x.id === l.userId);
+        const canEdit = l.userId === currentUser || isManager;
         return (
-          <div key={l.id} className="card mb-12">
+          <div key={l.id} className="card mb-12" onClick={() => setViewEntry(l.id)} style={{ cursor:'pointer', transition:'border-color .15s' }}>
             <div className="flex-between mb-8">
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                <input type="checkbox" checked={selected.has(l.id)} onChange={() => toggleOne(l.id)} />
+              <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+                {isManager && <input type="checkbox" checked={selected.has(l.id)} onChange={e => { e.stopPropagation(); toggleOne(l.id); }} onClick={e => e.stopPropagation()} />}
                 <Avatar user={u} size={28} />
                 <div>
                   <div className="name-sm">{u?.name}</div>
                   <div className="muted-xs">{l.date}</div>
                 </div>
               </div>
-              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                <Tag label={l.type} type={typeColor[l.type] || 'blue'} />
-                <button className="btn btn-secondary btn-sm" onClick={e => openEdit(l, e)}>✏</button>
-                <button className="btn btn-danger btn-sm" onClick={e => deleteOne(l.id, e)}>🗑</button>
+              <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+                <Tag label={l.type} type={typeColor[l.type]||'blue'} />
+                {l.private && <Tag label="🔒 Private" type="red" />}
+                {canEdit && <button className="btn btn-secondary btn-sm" onClick={e => { e.stopPropagation(); openEdit(l, e); }}>✏</button>}
+                {canEdit && <button className="btn btn-danger btn-sm" onClick={e => { e.stopPropagation(); deleteOne(l.id, e); }}>🗑</button>}
               </div>
             </div>
-            {l.summary && <div style={{ fontWeight: 500, fontSize: 13, color: 'var(--text-primary)', marginBottom: 6 }}>{l.summary}</div>}
-            <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.7 }} dangerouslySetInnerHTML={{ __html: l.content }} />
+            {l.summary && <div style={{ fontWeight:500, fontSize:13, color:'var(--text-primary)', marginBottom:6 }}>{l.summary}</div>}
+            <div style={{ fontSize:12, color:'var(--text-muted)', lineHeight:1.6 }}
+              dangerouslySetInnerHTML={{ __html: (l.content||'').replace(/<[^>]+>/g,'').slice(0,200) + (l.content?.length > 200 ? '…' : '') }} />
           </div>
         );
       })}
-      {visible.length === 0 && <Alert>No logbook entries yet.</Alert>}
+
       {showModal && (
-        <Modal title={editId ? 'Edit Logbook Entry' : 'Add Logbook Entry'} onClose={() => setShowModal(false)} wide>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-            <FormGroup label="Engineer">
-              <select className="select" value={form.userId} onChange={e => setForm({ ...form, userId: e.target.value })}>
-                <option value="">Select engineer…</option>
-                {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
-              </select>
-            </FormGroup>
+        <Modal title={editId ? 'Edit Entry' : 'New Logbook Entry'} onClose={() => setShowModal(false)} wide>
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+            {isManager && (
+              <FormGroup label="Engineer">
+                <select className="select" value={form.userId} onChange={e => setForm({ ...form, userId: e.target.value })}>
+                  {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+                </select>
+              </FormGroup>
+            )}
             <FormGroup label="Type">
               <select className="select" value={form.type} onChange={e => setForm({ ...form, type: e.target.value })}>
-                <option>Appraisal</option><option>Training</option><option>Achievement</option><option>Note</option>
+                {TYPES.map(t => <option key={t}>{t}</option>)}
               </select>
             </FormGroup>
-            <FormGroup label="Date"><input className="input" type="date" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} /></FormGroup>
-            <FormGroup label="Summary"><input className="input" placeholder="Brief summary" value={form.summary} onChange={e => setForm({ ...form, summary: e.target.value })} /></FormGroup>
+            <FormGroup label="Date">
+              <input className="input" type="date" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} />
+            </FormGroup>
+            <FormGroup label="Summary (optional)">
+              <input className="input" placeholder="One-line summary" value={form.summary} onChange={e => setForm({ ...form, summary: e.target.value })} />
+            </FormGroup>
           </div>
           <FormGroup label="Full Notes">
-            <RichEditor value={form.content} onChange={v => setForm({ ...form, content: v })} placeholder="Detailed notes, observations, feedback…" rows={8} />
+            <RichEditor value={form.content} onChange={v => setForm(f => ({ ...f, content: v }))} placeholder="Detailed notes, observations, feedback, training details…" rows={8} />
           </FormGroup>
-          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
+          <FormGroup label="Visibility">
+            <label style={{ display:'flex', gap:8, alignItems:'center', cursor:'pointer', fontSize:13 }}>
+              <input type="checkbox" checked={!!form.private} onChange={e => setForm(f => ({ ...f, private: e.target.checked }))} />
+              🔒 Private — only visible to me and the manager
+            </label>
+          </FormGroup>
+          <div style={{ display:'flex', gap:8, justifyContent:'flex-end', marginTop:12 }}>
             <button className="btn btn-secondary" onClick={() => setShowModal(false)}>Cancel</button>
-            <button className="btn btn-primary" onClick={save}>{editId ? 'Update Entry' : 'Save Entry'}</button>
+            <button className="btn btn-primary" onClick={save} disabled={!form.date}>{editId ? 'Update Entry' : 'Save Entry'}</button>
           </div>
         </Modal>
       )}
     </div>
   );
 }
+
 
 // ── Wiki — Full Page Blog Editor ───────────────────────────────────────────
 function Wiki({ wiki, setWiki }) {
@@ -3902,10 +4035,34 @@ function WhatsAppChat({ whatsappChats, setWhatsappChats, users, currentUser, isM
   const [showCreateChat, setShowCreateChat] = useState(false);
   const [chatForm, setChatForm] = useState({ name: '', members: [] });
   const [saveStatus, setSaveStatus] = useState('');
+  const [loadingChats, setLoadingChats] = useState(false);
   const messagesContainerRef = useRef(null);
   const messagesEndRef = useRef(null);
 
-  // Auto-select first available chat if nothing selected
+  // ── Two-way sync: load chats from Drive JSON on mount / when Drive connects ─
+  useEffect(() => {
+    if (!driveToken) return;
+    const loadChats = async () => {
+      setLoadingChats(true);
+      try {
+        const f = await driveFindFile(driveToken, 'whatsappChats.json');
+        if (f) {
+          const data = await driveReadJson(driveToken, f.id);
+          if (Array.isArray(data) && data.length > 0) {
+            // Merge: keep any local messages that might be newer
+            setWhatsappChats(prev => {
+              if (data.length >= prev.length) return data; // Drive has more — trust Drive
+              return prev;
+            });
+          }
+        }
+      } catch (e) { console.warn('Chat load from Drive:', e?.message); }
+      finally { setLoadingChats(false); }
+    };
+    loadChats();
+  }, [driveToken]); // re-runs whenever Drive token becomes available
+
+  // Auto-select first available chat
   useEffect(() => {
     if (!selectedChat && whatsappChats.length > 0) {
       setSelectedChat(whatsappChats[0].id);
@@ -3918,6 +4075,26 @@ function WhatsAppChat({ whatsappChats, setWhatsappChats, users, currentUser, isM
       messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
     }
   }, [selectedChat, whatsappChats.length, whatsappChats.map?.(c => (c.messages||[]).length).join(',')]);
+
+  // Manual refresh from Drive
+  const refreshFromDrive = async () => {
+    if (!driveToken) { setSaveStatus('⚠ Drive not connected'); return; }
+    setLoadingChats(true);
+    setSaveStatus('⏳ Loading chats from Drive…');
+    try {
+      const f = await driveFindFile(driveToken, 'whatsappChats.json');
+      if (f) {
+        const data = await driveReadJson(driveToken, f.id);
+        if (Array.isArray(data)) {
+          setWhatsappChats(data);
+          if (data.length > 0 && !selectedChat) setSelectedChat(data[0].id);
+          setSaveStatus(`✅ Loaded ${data.length} chat(s) from Drive`);
+        } else { setSaveStatus('⚠ No chats found in Drive'); }
+      } else { setSaveStatus('⚠ No chat data found in Drive yet'); }
+    } catch (e) { setSaveStatus('❌ Load failed: ' + (e?.message || e)); }
+    setLoadingChats(false);
+    setTimeout(() => setSaveStatus(''), 4000);
+  };
 
   const createChat = () => {
     if (!chatForm.name || chatForm.members.length === 0) return;
@@ -4038,8 +4215,9 @@ function WhatsAppChat({ whatsappChats, setWhatsappChats, users, currentUser, isM
     <div>
       <PageHeader title="💬 Team Chat" sub="Team collaboration & messaging — auto-saved to Google Doc"
         actions={<>
-          {saveStatus && <span style={{ fontSize:11, color: saveStatus.startsWith('✅') ? '#6ee7b7' : saveStatus.startsWith('⚠') ? '#fcd34d' : 'var(--accent)' }}>{saveStatus}</span>}
-          {isManager && <button className="btn btn-secondary btn-sm" onClick={syncToGoogleDoc}>📄 Sync to Google Doc</button>}
+          {saveStatus && <span style={{ fontSize:11, color: saveStatus.startsWith('✅') ? '#6ee7b7' : saveStatus.startsWith('⚠') || saveStatus.startsWith('❌') ? '#fcd34d' : 'var(--accent)' }}>{saveStatus}</span>}
+          <button className="btn btn-secondary btn-sm" onClick={refreshFromDrive} disabled={loadingChats} title="Reload chats from Google Drive">{loadingChats ? '⏳' : '🔄 Refresh'}</button>
+          {isManager && <button className="btn btn-secondary btn-sm" onClick={syncToGoogleDoc}>📄 Sync to Doc</button>}
           {isManager && <button className="btn btn-primary" onClick={() => setShowCreateChat(true)}>+ New Group</button>}
         </>} />
 
@@ -4934,21 +5112,49 @@ function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks, dri
     setShowLink(false); setLinkForm({ label: '', expiry: '', password: '' });
   };
 
+  const [sheetOpenMsg, setSheetOpenMsg] = useState('');
+  const [pushMsg, setPushMsg] = useState('');
+
   const syncFromSheet = async () => {
-    if (!driveToken) { setSheetMsg('Connect Google Drive first.'); return; }
-    setSheetSyncing(true); setSheetMsg('');
+    if (!driveToken) { setSheetMsg('⚠ Connect Google Drive first.'); return; }
+    setSheetSyncing(true); setSheetMsg('⏳ Syncing users from Google Sheet…');
     try {
       await syncUsersFromSheet(driveToken, getRegistry(), users, setUsers);
-      setSheetMsg('✅ Users synced from Google Sheet.');
-    } catch (e) { setSheetMsg('❌ Sync failed: ' + e.message); }
+      setSheetMsg('✅ Users synced from Google Sheet successfully.');
+    } catch (e) { setSheetMsg('❌ Sync failed: ' + (e.message || e)); }
     setSheetSyncing(false);
-    setTimeout(() => setSheetMsg(''), 4000);
+    setTimeout(() => setSheetMsg(''), 6000);
   };
 
-  const openSheet = () => {
+  const openSheet = async () => {
     const reg = getRegistry();
-    if (reg.sheets_id) window.open(`https://docs.google.com/spreadsheets/d/${reg.sheets_id}`, '_blank');
-    else alert('No sheet yet. Save a user change first to generate the sheet.');
+    if (reg.sheets_id) {
+      const url = `https://docs.google.com/spreadsheets/d/${reg.sheets_id}`;
+      window.open(url, '_blank');
+      setSheetOpenMsg('✅ Opened Google Sheet in a new tab.');
+    } else if (driveToken) {
+      setSheetOpenMsg('⏳ Creating sheet…');
+      try {
+        const sheetId = await syncUsersToSheet(driveToken, getRegistry(), users);
+        if (sheetId) {
+          window.open(`https://docs.google.com/spreadsheets/d/${sheetId}`, '_blank');
+          setSheetOpenMsg('✅ Sheet created and opened in a new tab.');
+        }
+      } catch (e) { setSheetOpenMsg('❌ Could not create sheet: ' + (e.message || e)); }
+    } else {
+      setSheetOpenMsg('⚠ No sheet yet. Connect Google Drive and push to sheet first.');
+    }
+    setTimeout(() => setSheetOpenMsg(''), 6000);
+  };
+
+  const pushToSheet = async () => {
+    if (!driveToken) { setPushMsg('⚠ Connect Google Drive first.'); return; }
+    setPushMsg('⏳ Pushing users to Google Sheet…');
+    try {
+      await syncRegistryToDrive(driveToken, getRegistry(), users);
+      setPushMsg('✅ Users pushed to Google Sheet successfully.');
+    } catch (e) { setPushMsg('❌ Push failed: ' + (e.message || e)); }
+    setTimeout(() => setPushMsg(''), 6000);
   };
 
   // ── Shared field renderer ────────────────────────────────────────────────
@@ -4999,9 +5205,11 @@ function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks, dri
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <button className="btn btn-secondary btn-sm" onClick={openSheet}>📊 Open Google Sheet</button>
           <button className="btn btn-secondary btn-sm" onClick={syncFromSheet} disabled={sheetSyncing}>{sheetSyncing ? '⏳ Syncing…' : '⬇ Sync from Sheet'}</button>
-          {driveToken && <button className="btn btn-secondary btn-sm" onClick={() => syncRegistryToDrive(driveToken, getRegistry(), users)}>⬆ Push to Sheet</button>}
+          <button className="btn btn-secondary btn-sm" onClick={pushToSheet}>⬆ Push to Sheet</button>
         </div>
-        {sheetMsg && <Alert type="info" style={{ marginTop: 8 }}>{sheetMsg}</Alert>}
+        {sheetOpenMsg && <Alert type={sheetOpenMsg.startsWith('✅') ? 'info' : 'warning'} style={{ marginTop: 8 }}>{sheetOpenMsg}</Alert>}
+        {sheetMsg && <Alert type={sheetMsg.startsWith('✅') ? 'info' : sheetMsg.startsWith('❌') ? 'warning' : 'info'} style={{ marginTop: 8 }}>{sheetMsg}</Alert>}
+        {pushMsg && <Alert type={pushMsg.startsWith('✅') ? 'info' : 'warning'} style={{ marginTop: 8 }}>{pushMsg}</Alert>}
       </div>
 
       {/* Team Members */}
@@ -5223,13 +5431,16 @@ export default function App() {
   const [driveReady, setDriveReady]         = useState(false); // true once initial Drive load done
 
   // ── Auto-connect Google Drive on app load ─────────────────────────────────
-  // Silently attempts to connect using any existing Google session.
-  // Engineers just see the login form; Drive connects in the background.
+  // Uses a silent token request (prompt:none) so users never see a Google popup.
+  // If silent auth fails (no active session) the indicator shows grey and they
+  // can manually click "Connect" which triggers the interactive flow.
   useEffect(() => {
     const autoConnect = async () => {
       try {
         await gapiLoad();
-        const token = await initGoogleAuth(GOOGLE_CLIENT_ID);
+        // initGoogleAuth must pass prompt:'none' for silent re-auth.
+        // If the user has no active Google session this throws — we catch it silently.
+        const token = await initGoogleAuth(GOOGLE_CLIENT_ID, { prompt: 'none' });
         if (token) {
           setDriveToken(token);
           setSyncing(true);
@@ -5257,13 +5468,17 @@ export default function App() {
           if (data.logbook)       setLogbook(data.logbook);
           if (data.documents)     setDocuments(data.documents);
           if (data.obsidianNotes) setObsidianNotes(data.obsidianNotes);
-          if (data.whatsappChats) setWhatsappChats(data.whatsappChats);
+          // Team Chat: load from Drive JSON (whatsappChats.json) for two-way sync
+          if (data.whatsappChats && Array.isArray(data.whatsappChats)) setWhatsappChats(data.whatsappChats);
           setLastSync(new Date());
           setDriveReady(true);
         }
       } catch (e) {
-        // Silent fail — Drive not connected yet (user not signed in to Google)
-        console.warn('Auto Drive connect failed (user may not be signed in):', e?.message || e);
+        // Silent fail — no active Google session or prompt:none not supported
+        // User can manually click Connect to trigger the interactive flow
+        if (e?.error !== 'interaction_required' && e?.error !== 'login_required') {
+          console.warn('Auto Drive connect:', e?.message || e);
+        }
       } finally {
         setSyncing(false);
         setConnectingDrive(false);
@@ -5347,6 +5562,27 @@ export default function App() {
   useEffect(() => { save('obsidianNotes', obsidianNotes); },[obsidianNotes, driveToken]);
   useEffect(() => { save('whatsappChats', whatsappChats); },[whatsappChats, driveToken]);
 
+  const [manualSyncing, setManualSyncing] = useState(false);
+  const [syncProgress, setSyncProgress]   = useState(0);
+  const [syncStatus, setSyncStatus]       = useState('');
+
+  const syncAllToDrive = async () => {
+    if (!driveToken) { alert('Connect Google Drive first.'); return; }
+    setManualSyncing(true); setSyncProgress(0); setSyncStatus('Starting sync…');
+    const keys = ['users','holidays','incidents','timesheets','upgrades','wiki','glossary','contacts','payconfig','rota','swapRequests','toil','absences','logbook','documents','obsidianNotes','whatsappChats'];
+    const vals  = [users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, logbook, documents, obsidianNotes, whatsappChats];
+    for (let i = 0; i < keys.length; i++) {
+      setSyncStatus(`Saving ${keys[i]}…`);
+      setSyncProgress(Math.round(((i + 1) / keys.length) * 100));
+      try { await driveWrite(driveToken, keys[i], vals[i]); } catch (e) { console.warn('sync fail', keys[i], e); }
+    }
+    try { await syncRegistryToDrive(driveToken, getRegistry(), users); } catch (_) {}
+    setLastSync(new Date());
+    setSyncProgress(100);
+    setSyncStatus('✅ All data synced to Google Drive');
+    setTimeout(() => { setManualSyncing(false); setSyncStatus(''); setSyncProgress(0); }, 3000);
+  };
+
   const login = (uid) => {
     setCurrentUser(uid);
     setLoggedIn(true);
@@ -5379,7 +5615,7 @@ export default function App() {
       case 'dashboard':  return isManager ? <Dashboard {...props} /> : <Alert type="warning">⚠ Dashboard restricted to managers.</Alert>;
       case 'oncall':     return <OnCall {...props} />;
       case 'myshift':    return <MyShift {...props} />;
-      case 'calendar':   return <CalendarView {...props} />;
+      case 'calendar':   return <CalendarView {...props} absences={absences} />;
       case 'rota':       return <RotaPage {...props} />;
       case 'incidents':  return <Incidents {...props} timesheets={timesheets} setTimesheets={setTimesheets} />;
       case 'timesheets': return <Timesheets {...props} />;
@@ -5437,47 +5673,43 @@ export default function App() {
             </div>
           </div>
         )}
-        {NAV.map(sec => (
-          <div key={sec.section}>
-            {sidebarOpen && <div className="nav-section">{sec.section}</div>}
-            {sec.items.filter(i => !i.managerOnly || isManager).map(item => (
-              <div key={item.id} className={`nav-item${page === item.id ? ' active' : ''}`} onClick={() => setPage(item.id)} title={item.label}>
-                <span className="nav-icon">{item.icon}</span>
-                {sidebarOpen && <span>{item.label}</span>}
-                {item.badge && openInc > 0 && <span className="badge">{openInc}</span>}
-                {item.id === 'swaps' && pendingSwaps > 0 && <span className="badge">{pendingSwaps}</span>}
-              </div>
-            ))}
-          </div>
-        ))}
-        <div style={{ marginTop: 'auto', padding: 12, borderTop: '1px solid var(--border)' }}>
+        <div style={{ overflowY: 'auto', flex: 1 }}>
+          {NAV.map(sec => (
+            <div key={sec.section}>
+              {sidebarOpen && <div className="nav-section" style={{ fontSize: 9, padding: '4px 12px 2px', letterSpacing: 1 }}>{sec.section}</div>}
+              {sec.items.filter(i => !i.managerOnly || isManager).map(item => (
+                <div key={item.id}
+                  className={`nav-item${page === item.id ? ' active' : ''}`}
+                  onClick={() => setPage(item.id)}
+                  title={item.label}
+                  style={{ padding: sidebarOpen ? '5px 12px' : '6px', minHeight: 30 }}>
+                  <span className="nav-icon" style={{ fontSize: 14 }}>{item.icon}</span>
+                  {sidebarOpen && <span style={{ fontSize: 12 }}>{item.label}</span>}
+                  {item.badge && openInc > 0 && <span className="badge">{openInc}</span>}
+                  {item.id === 'swaps' && pendingSwaps > 0 && <span className="badge">{pendingSwaps}</span>}
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+        <div style={{ padding: '8px 10px', borderTop: '1px solid var(--border)', flexShrink: 0 }}>
           {driveToken ? (
             sidebarOpen && (
-              <div className="gd-status">
+              <div className="gd-status" style={{ marginBottom: 6 }}>
                 <div className="dot-live" />
-                <span style={{ fontSize: 11 }}>
+                <span style={{ fontSize: 10 }}>
                   {syncing ? 'Syncing…' : `Synced ${lastSync ? lastSync.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : ''}`}
                 </span>
               </div>
             )
           ) : (
-            sidebarOpen ? (
-              <div style={{ marginBottom: 8 }}>
-                <div style={{ fontSize: 11, color: '#fcd34d', marginBottom: 4 }}>
-                  {connectingDrive ? '⏳ Connecting to Drive…' : '⚠ Drive not connected'}
-                </div>
-                {!connectingDrive && (
-                  <button className="btn btn-secondary btn-sm" style={{ width: '100%' }} onClick={connectDrive}>
-                    📁 Reconnect Drive
-                  </button>
-                )}
-              </div>
-            ) : (
-              <button className="btn btn-secondary btn-sm" title="Reconnect Drive" onClick={connectDrive}>📁</button>
-            )
+            <div style={{ marginBottom: 6 }}>
+              <div style={{ fontSize: 10, color: '#fcd34d' }}>{connectingDrive ? '⏳ Connecting…' : '⚠ Drive offline'}</div>
+              {!connectingDrive && <button className="btn btn-secondary btn-sm" style={{ width: '100%', marginTop: 3, fontSize: 10 }} onClick={connectDrive}>📁 Reconnect</button>}
+            </div>
           )}
-          <button className="btn btn-secondary btn-sm" style={{ width: '100%', marginTop: 8 }} onClick={() => setLoggedIn(false)}>
-            {sidebarOpen ? 'Sign Out' : '⎋'}
+          <button className="btn btn-secondary btn-sm" style={{ width: '100%', fontSize: 11, padding: '4px 8px' }} onClick={() => { setLoggedIn(false); }}>
+            {sidebarOpen ? '⎋ Sign Out' : '⎋'}
           </button>
         </div>
       </div>
@@ -5486,14 +5718,34 @@ export default function App() {
           <button className="btn btn-secondary btn-sm" onClick={() => setSidebarOpen(!sidebarOpen)} style={{ padding: '4px 10px' }}>{sidebarOpen ? '◀' : '▶'}</button>
           <div className="topbar-title">{pageTitles[page] || page}</div>
           <input className="topbar-search" placeholder="Search…" value={searchQ} onChange={e => setSearchQ(e.target.value)} />
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)', fontFamily: 'DM Mono' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'DM Mono' }}>
               {new Date().toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}
             </div>
+            {/* Refresh button */}
+            <button title="Refresh page" className="btn btn-secondary btn-sm" style={{ padding: '3px 8px' }}
+              onClick={() => window.location.reload()}>🔄</button>
+            {/* Manual sync to Drive */}
+            {driveToken && (
+              <button title="Sync all data to Google Drive" className="btn btn-secondary btn-sm" style={{ padding: '3px 8px', fontSize: 11 }}
+                onClick={syncAllToDrive} disabled={manualSyncing}>
+                {manualSyncing ? '⏳' : '☁'}
+              </button>
+            )}
             {openInc > 0 && <div style={{ background: '#ef4444', color: '#fff', borderRadius: 12, padding: '2px 8px', fontSize: 11, fontWeight: 600 }}>🚨 {openInc}</div>}
-            <Avatar user={user || { avatar: '?', color: '#475569' }} size={30} />
+            <Avatar user={user || { avatar: '?', color: '#475569' }} size={28} />
           </div>
         </div>
+        {/* Manual sync progress bar */}
+        {manualSyncing && (
+          <div style={{ padding: '6px 16px', background: 'rgba(59,130,246,0.1)', borderBottom: '1px solid var(--border)', display: 'flex', gap: 12, alignItems: 'center' }}>
+            <span style={{ fontSize: 11, color: 'var(--accent)', minWidth: 180 }}>{syncStatus}</span>
+            <div style={{ flex: 1, height: 6, background: 'rgba(255,255,255,0.1)', borderRadius: 3, overflow: 'hidden' }}>
+              <div style={{ height: '100%', width: `${syncProgress}%`, background: 'var(--accent)', borderRadius: 3, transition: 'width 0.3s' }} />
+            </div>
+            <span style={{ fontSize: 11, fontFamily: 'DM Mono', color: 'var(--text-muted)' }}>{syncProgress}%</span>
+          </div>
+        )}
         <div className="content">{renderPage()}</div>
       </div>
     </div>
