@@ -1456,7 +1456,24 @@ function RotaPage({ users, rota, setRota, holidays, upgrades, swapRequests, setS
 
   const generate = () => {
     if (!isManager) return;
-    setRota(sanitiseRota(generateRota(users, startDate, weeks)));
+    const generated = sanitiseRota(generateRota(users, startDate, weeks));
+    // Merge: for each user+date, keep existing manual entry if one exists.
+    // Only fill in dates that are currently 'off' / not set.
+    setRota(prev => {
+      const merged = { ...generated };
+      users.forEach(u => {
+        const existing = prev[u.id] || {};
+        const genDates = generated[u.id] || {};
+        merged[u.id] = { ...genDates };
+        Object.entries(existing).forEach(([date, shift]) => {
+          if (shift && shift !== 'off') {
+            // Manual entry wins — keep it regardless of what generate produced
+            merged[u.id][date] = shift;
+          }
+        });
+      });
+      return merged;
+    });
     setGenerated(true);
   };
 
@@ -1566,7 +1583,19 @@ function RotaPage({ users, rota, setRota, holidays, upgrades, swapRequests, setS
                 {[2,4,6,8,12,16,24,26,52].map(w => <option key={w} value={w}>{w} week{w>=52?' (1 year)':w>=26?' (6 months)':w>=12?' (3 months)':''}</option>)}
               </select>
             </FormGroup>
-            <button className="btn btn-primary" onClick={generate}>🔄 Generate Rota</button>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <button className="btn btn-primary" onClick={generate}>🔄 Generate Rota</button>
+              <div style={{ fontSize: 9, color: 'rgba(255,255,255,0.35)', textAlign: 'center' }}>🔒 Keeps manual entries</div>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <button className="btn btn-secondary" onClick={() => {
+                if (window.confirm('⚠️  Regenerate from scratch? All manually-set shifts will be overwritten.')) {
+                  setRota(sanitiseRota(generateRota(users, startDate, weeks)));
+                  setGenerated(true);
+                }
+              }}>↺ Force Regenerate</button>
+              <div style={{ fontSize: 9, color: 'rgba(255,80,80,0.5)', textAlign: 'center' }}>⚠ Overwrites all shifts</div>
+            </div>
             <button className="btn btn-danger" onClick={() => {
               if (window.confirm('⚠️  Clear all rota entries? This cannot be undone.')) {
                 setRota({});
@@ -5261,7 +5290,7 @@ function PayConfig({ users, payconfig, setPayconfig, isManager }) {
 
 // ── Settings (Manager only, all settings here) ─────────────────────────────
 function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks, driveToken, profilePics, setProfilePicsState, rota, setRota }) {
-  const BLANK_FORM = { name: '', role: 'Engineer', mobile_number: '', google_email: '', profile_picture: '', avatar: '', color: '' };
+  const BLANK_FORM = { name: '', trigram: '', role: 'Engineer', mobile_number: '', google_email: '', profile_picture: '', avatar: '', color: '' };
   const [showAdd, setShowAdd]         = useState(false);
   const [showLink, setShowLink]       = useState(false);
   const [editingUserId, setEditingUserId] = useState(null);
@@ -5322,13 +5351,54 @@ function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks, dri
 
   // ── Edit / save user ─────────────────────────────────────────────────────
   const saveEdit = async (userId) => {
-    const updatedUsers = users.map(u => u.id === userId ? { ...u, ...editForm } : u);
+    const newId = (editForm.trigram || userId).toUpperCase().trim();
+    const idChanged = newId !== userId && newId.length >= 3;
+
+    // Build the updated user object (id may change if trigram edited)
+    const updatedUser = { ...users.find(u => u.id === userId), ...editForm, id: idChanged ? newId : userId };
+    delete updatedUser.trigram; // trigram is UI-only; id is the real field
+    const updatedUsers = users.map(u => u.id === userId ? updatedUser : u);
     setUsers(updatedUsers);
+
+    if (idChanged) {
+      // Remap rota entries to new id
+      setRota(prev => {
+        const next = { ...prev };
+        if (next[userId]) { next[newId] = next[userId]; delete next[userId]; }
+        return next;
+      });
+      // Remap holidays
+      setHolidays(prev => prev.map(h => h.userId === userId ? { ...h, userId: newId } : h));
+      // Remap timesheets
+      setTimesheets(prev => {
+        const next = { ...prev };
+        if (next[userId]) { next[newId] = next[userId]; delete next[userId]; }
+        return next;
+      });
+      // Remap toil
+      setToil(prev => {
+        const next = { ...prev };
+        if (next[userId]) { next[newId] = next[userId]; delete next[userId]; }
+        return next;
+      });
+      // Remap profile pics
+      setProfilePics(prev => {
+        const next = { ...prev };
+        if (next[userId]) { next[newId] = next[userId]; delete next[userId]; }
+        return next;
+      });
+      setProfilePicsState(prev => {
+        const next = { ...prev };
+        if (next[userId]) { next[newId] = next[userId]; delete next[userId]; }
+        return next;
+      });
+    }
+
     if (driveToken) {
       await syncRegistryToDrive(driveToken, getRegistry(), updatedUsers);
-      // Save profile pic to Drive if changed
       if (editForm.profile_picture && editForm.profile_picture.startsWith('data:')) {
-        const pics = { ...getProfilePics(), [userId]: editForm.profile_picture };
+        const targetId = idChanged ? newId : userId;
+        const pics = { ...getProfilePics(), [targetId]: editForm.profile_picture };
         setProfilePics(pics); setProfilePicsState(pics);
         await driveWriteJson(driveToken, 'profile_pictures.json', pics);
       }
@@ -5406,7 +5476,22 @@ function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks, dri
   // ── Shared field renderer ────────────────────────────────────────────────
   const UserFields = ({ fv, setFv, uid, isEdit }) => (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-      {!isEdit && <input className="input" placeholder="Full Name *" value={fv.name||''} onChange={e => setFv(f => ({...f, name: e.target.value}))} />}
+      {/* Name — always shown; label differs for add vs edit */}
+      <div>
+        {isEdit && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 3 }}>Full Name</div>}
+        <input className="input" placeholder="Full Name *" value={fv.name||''} onChange={e => setFv(f => ({...f, name: e.target.value}))} />
+      </div>
+      {/* Trigram / ID — only shown in edit mode */}
+      {isEdit && (
+        <div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 3 }}>
+            Trigram ID <span style={{ color: 'rgba(255,200,50,0.8)' }}>⚠ Changing this remaps all rota, holidays &amp; timesheets</span>
+          </div>
+          <input className="input" placeholder="e.g. MBA47" maxLength={8}
+            value={fv.trigram||''} onChange={e => setFv(f => ({...f, trigram: e.target.value.toUpperCase()}))}
+            style={{ fontFamily: 'DM Mono', letterSpacing: 1 }} />
+        </div>
+      )}
       <select className="select" value={fv.role||'Engineer'} onChange={e => setFv(f => ({...f, role: e.target.value}))}>
         <option>Engineer</option><option>Manager</option>
       </select>
@@ -5467,7 +5552,10 @@ function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks, dri
           <div key={u.id}>
             {editingUserId === u.id ? (
               <div style={{ padding: '14px 0', borderBottom: '1px solid rgba(30,58,95,.4)' }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 10 }}>Editing: {u.name} ({u.id})</div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 10 }}>
+                  ✎ Editing: {editForm.name || u.name}
+                  <span style={{ fontFamily: 'DM Mono', fontSize: 11, color: 'var(--text-muted)', marginLeft: 8 }}>({u.id})</span>
+                </div>
                 <UserFields fv={editForm} setFv={setEditForm} uid={u.id} isEdit />
                 <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
                   <button className="btn btn-primary btn-sm" style={{ flex: 1 }} onClick={() => saveEdit(u.id)}>✓ Save</button>
@@ -5488,7 +5576,7 @@ function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks, dri
                 </div>
                 <Tag label={u.role} type={u.role === 'Manager' ? 'amber' : 'blue'} />
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                  <button className="btn btn-secondary btn-sm" onClick={() => { setEditForm({ name: u.name, role: u.role||'Engineer', mobile_number: u.mobile_number||'', google_email: u.google_email||'', profile_picture: u.profile_picture||'', avatar: u.avatar||'', color: u.color||'' }); setEditingUserId(u.id); }}>✎ Edit</button>
+                  <button className="btn btn-secondary btn-sm" onClick={() => { setEditForm({ name: u.name, trigram: u.id, role: u.role||'Engineer', mobile_number: u.mobile_number||'', google_email: u.google_email||'', profile_picture: u.profile_picture||'', avatar: u.avatar||'', color: u.color||'' }); setEditingUserId(u.id); }}>✎ Edit</button>
                   <button className="btn btn-secondary btn-sm" onClick={() => resetPassword(u.id)} title="Reset password to default (lowercase ID)">🔑 Reset PW</button>
                   <button className="btn btn-danger btn-sm" onClick={() => deleteUser(u.id)}>🗑</button>
                 </div>
