@@ -5571,6 +5571,17 @@ export default function App() {
   const [profilePics, setProfilePicsState] = useState({});
   const [driveReady, setDriveReady]         = useState(false); // true once initial Drive load done
 
+  // ── Guards against premature writes ───────────────────────────────────────
+  // driveDataLoaded: flips to true only AFTER Drive data has been read into state.
+  // Until then all save() useEffects are suppressed so we never overwrite Drive
+  // with the hardcoded DEFAULT_* values that initialise state on first render.
+  const driveDataLoaded = useRef(false);
+
+  // ── Post-login load progress bar ──────────────────────────────────────────
+  const [loadingAfterLogin, setLoadingAfterLogin] = useState(false);
+  const [loadProgress, setLoadProgress]           = useState(0);
+  const [loadStatus, setLoadStatus]               = useState('');
+
   // ── Auto-connect Google Drive on app load ─────────────────────────────────
   // Uses a silent token request (prompt:none) so users never see a Google popup.
   // If silent auth fails (no active session) the indicator shows grey and they
@@ -5612,7 +5623,11 @@ export default function App() {
           // Team Chat: load from Drive JSON (whatsappChats.json) for two-way sync
           if (data.whatsappChats && Array.isArray(data.whatsappChats)) setWhatsappChats(data.whatsappChats);
           setLastSync(new Date());
+          driveDataLoaded.current = true;  // ← unlock saves AFTER data is in state
           setDriveReady(true);
+        } else {
+          // No token from silent auth — allow saves with current (default) data
+          driveDataLoaded.current = true;
         }
       } catch (e) {
         // Silent fail — no active Google session or prompt:none not supported
@@ -5620,6 +5635,7 @@ export default function App() {
         if (e?.error !== 'interaction_required' && e?.error !== 'login_required') {
           console.warn('Auto Drive connect:', e?.message || e);
         }
+        driveDataLoaded.current = true; // unblock saves even on error
       } finally {
         setSyncing(false);
         setConnectingDrive(false);
@@ -5636,7 +5652,13 @@ export default function App() {
       setDriveToken(token);
       setSyncing(true);
 
+      // Show progress bar during load
+      setLoadingAfterLogin(true);
+      setLoadProgress(5);
+      setLoadStatus('Connecting to Google Drive…');
+
       // Always load the auth registry + profile pictures first (all users need this)
+      setLoadProgress(15); setLoadStatus('Loading user registry…');
       const [reg, pics] = await Promise.all([
         loadRegistryFromDrive(token),
         loadProfilePictures(token)
@@ -5644,31 +5666,46 @@ export default function App() {
       if (reg) setRegistry(reg);
       if (pics) { setProfilePics(pics); setProfilePicsState(pics); }
 
-      // Load all app data from Drive
+      // Load all app data from Drive with progress steps
+      setLoadProgress(30); setLoadStatus('Loading rota & schedules…');
       const defaults = { users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, logbook, documents, obsidianNotes, whatsappChats };
       const data = await loadAllFromDrive(token, defaults);
-      if (data.users)        setUsers(data.users);
-      if (data.holidays)     setHolidays(data.holidays);
-      if (data.incidents)    setIncidents(data.incidents);
-      if (data.timesheets)   setTimesheets(data.timesheets);
-      if (data.upgrades)     setUpgrades(data.upgrades);
-      if (data.wiki)         setWiki(data.wiki);
-      if (data.glossary)     setGlossary(data.glossary);
-      if (data.contacts)     setContacts(data.contacts);
-      if (data.payconfig)    setPayconfig(data.payconfig);
-      if (data.rota)         setRota(sanitiseRota(data.rota));
-      if (data.swapRequests) setSwapRequests(data.swapRequests);
-      if (data.toil)         setToil(data.toil);
-      if (data.absences)     setAbsences(data.absences);
-      if (data.logbook)      setLogbook(data.logbook);
-      if (data.documents)    setDocuments(data.documents);
+
+      setLoadProgress(65); setLoadStatus('Applying team data…');
+      if (data.users)         setUsers(data.users);
+      if (data.holidays)      setHolidays(data.holidays);
+      if (data.incidents)     setIncidents(data.incidents);
+      if (data.timesheets)    setTimesheets(data.timesheets);
+      if (data.upgrades)      setUpgrades(data.upgrades);
+      if (data.wiki)          setWiki(data.wiki);
+      if (data.glossary)      setGlossary(data.glossary);
+      if (data.contacts)      setContacts(data.contacts);
+      if (data.payconfig)     setPayconfig(data.payconfig);
+      if (data.rota)          setRota(sanitiseRota(data.rota));
+      if (data.swapRequests)  setSwapRequests(data.swapRequests);
+      if (data.toil)          setToil(data.toil);
+      if (data.absences)      setAbsences(data.absences);
+      if (data.logbook)       setLogbook(data.logbook);
+      if (data.documents)     setDocuments(data.documents);
       if (data.obsidianNotes) setObsidianNotes(data.obsidianNotes);
       if (data.whatsappChats) setWhatsappChats(data.whatsappChats);
+
+      setLoadProgress(95); setLoadStatus('Finalising…');
       setLastSync(new Date());
+      driveDataLoaded.current = true;  // ← unlock saves AFTER data is in state
+      setDriveReady(true);
+
+      setLoadProgress(100); setLoadStatus('✅ All data loaded from Google Drive');
+      setTimeout(() => { setLoadingAfterLogin(false); setLoadProgress(0); setLoadStatus(''); }, 1500);
+
       setSyncing(false);
       setConnectingDrive(false);
-    } catch (e) { console.error('Drive connect error:', e); setSyncing(false); setConnectingDrive(false);
-      // Show friendly message if Drive is inaccessible
+    } catch (e) {
+      console.error('Drive connect error:', e);
+      setSyncing(false);
+      setConnectingDrive(false);
+      driveDataLoaded.current = true; // unblock saves even on error
+      setLoadingAfterLogin(false);
       if (currentUser === 'MBA47') {
         console.warn('Drive connect failed:', e?.message || e);
       }
@@ -5677,6 +5714,7 @@ export default function App() {
 
   const save = useCallback(async (key, data) => {
     if (!driveToken) return;
+    if (!driveDataLoaded.current) return;  // ← never overwrite Drive with defaults on first render
     try {
       await driveWrite(driveToken, key, data);
       setLastSync(new Date());
@@ -5723,17 +5761,107 @@ export default function App() {
     setTimeout(() => { setManualSyncing(false); setSyncStatus(''); setSyncProgress(0); }, 3000);
   };
 
-  const login = (uid) => {
+  const login = async (uid) => {
     setCurrentUser(uid);
-    setLoggedIn(true);
     setPage(uid === 'MBA47' ? 'dashboard' : 'oncall');
-    // If Drive isn't connected yet (e.g. user signed in before auto-connect finished), try now
-    if (!driveToken) {
-      setTimeout(() => connectDrive().catch(() => {}), 300);
+
+    if (driveReady) {
+      // Drive data already loaded (silent auto-connect succeeded before login)
+      setLoggedIn(true);
+      return;
     }
+
+    // Drive not yet ready — show progress bar and load data before entering app
+    setLoadingAfterLogin(true);
+    setLoadProgress(5);
+    setLoadStatus('Signing in…');
+    try {
+      await gapiLoad();
+      setLoadProgress(12); setLoadStatus('Connecting to Google Drive…');
+      const token = await initGoogleAuth(GOOGLE_CLIENT_ID, { prompt: 'none' }).catch(() =>
+        initGoogleAuth(GOOGLE_CLIENT_ID)
+      );
+      if (token) {
+        setDriveToken(token);
+        setLoadProgress(20); setLoadStatus('Loading user registry…');
+        const [reg, pics] = await Promise.all([
+          loadRegistryFromDrive(token),
+          loadProfilePictures(token)
+        ]);
+        if (reg) setRegistry(reg);
+        if (pics) { setProfilePics(pics); setProfilePicsState(pics); }
+
+        setLoadProgress(40); setLoadStatus('Loading rota & schedules…');
+        const defaults = { users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, logbook, documents, obsidianNotes, whatsappChats };
+        const data = await loadAllFromDrive(token, defaults);
+
+        setLoadProgress(75); setLoadStatus('Applying team data…');
+        if (data.users)         setUsers(data.users);
+        if (data.holidays)      setHolidays(data.holidays);
+        if (data.incidents)     setIncidents(data.incidents);
+        if (data.timesheets)    setTimesheets(data.timesheets);
+        if (data.upgrades)      setUpgrades(data.upgrades);
+        if (data.wiki)          setWiki(data.wiki);
+        if (data.glossary)      setGlossary(data.glossary);
+        if (data.contacts)      setContacts(data.contacts);
+        if (data.payconfig)     setPayconfig(data.payconfig);
+        if (data.rota)          setRota(sanitiseRota(data.rota));
+        if (data.swapRequests)  setSwapRequests(data.swapRequests);
+        if (data.toil)          setToil(data.toil);
+        if (data.absences)      setAbsences(data.absences);
+        if (data.logbook)       setLogbook(data.logbook);
+        if (data.documents)     setDocuments(data.documents);
+        if (data.obsidianNotes) setObsidianNotes(data.obsidianNotes);
+        if (data.whatsappChats) setWhatsappChats(data.whatsappChats);
+        setLastSync(new Date());
+        driveDataLoaded.current = true;
+        setDriveReady(true);
+        setLoadProgress(100); setLoadStatus('✅ Ready');
+        await new Promise(r => setTimeout(r, 800));
+      } else {
+        // No Drive token — still let user in, saves will be blocked until manual connect
+        driveDataLoaded.current = true;
+        setLoadProgress(100); setLoadStatus('⚠️ Drive not connected — data may not be saved');
+        await new Promise(r => setTimeout(r, 1200));
+      }
+    } catch (e) {
+      console.warn('Login Drive load failed:', e?.message || e);
+      driveDataLoaded.current = true;
+      setLoadProgress(100); setLoadStatus('⚠️ Could not load Drive data');
+      await new Promise(r => setTimeout(r, 1200));
+    }
+    setLoadingAfterLogin(false);
+    setLoadProgress(0);
+    setLoadStatus('');
+    setLoggedIn(true);
   };
 
-  if (!loggedIn) return <LoginScreen onLogin={login} driveToken={driveToken} onConnectDrive={connectDrive} users={users} connectingDrive={connectingDrive} driveReady={driveReady} />;
+  if (!loggedIn) return (
+    <>
+      {loadingAfterLogin && (
+        <div style={{
+          position: 'fixed', inset: 0, background: 'rgba(10,14,26,0.92)',
+          display: 'flex', flexDirection: 'column', alignItems: 'center',
+          justifyContent: 'center', zIndex: 9999, gap: 24
+        }}>
+          <div style={{ fontSize: 28, fontWeight: 700, color: '#fff', letterSpacing: '-0.5px' }}>
+            ☁️ Loading from Google Drive
+          </div>
+          <div style={{ width: 360, background: 'rgba(255,255,255,0.1)', borderRadius: 12, overflow: 'hidden', height: 14 }}>
+            <div style={{
+              height: '100%', borderRadius: 12,
+              background: 'linear-gradient(90deg, #3b82f6, #06b6d4)',
+              width: loadProgress + '%',
+              transition: 'width 0.4s ease'
+            }} />
+          </div>
+          <div style={{ fontSize: 14, color: '#94a3b8', marginTop: -8 }}>{loadStatus}</div>
+          <div style={{ fontSize: 12, color: '#475569' }}>{loadProgress}% complete</div>
+        </div>
+      )}
+      <LoginScreen onLogin={login} driveToken={driveToken} onConnectDrive={connectDrive} users={users} connectingDrive={connectingDrive} driveReady={driveReady} />
+    </>
+  );
 
   const openInc   = incidents.filter(i => i.status === 'Investigating').length;
   const pendingSwaps = swapRequests.filter(s => s.status === 'pending').length;
