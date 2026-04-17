@@ -1,6 +1,6 @@
 // src/App.js
 // CloudOps Rota — Full Production Build v2
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 11th April 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 17th April 2026
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
@@ -3082,27 +3082,89 @@ const ONCALL_WORKED_MULTIPLIER = 1.5;
 const TOIL_MAX_CARRYOVER_HOURS = 40; // 5 days per UK WTR
 const TOIL_ACCRUAL_RATE = 1.0;       // 1:1 per UK WTR
 
-function calcOncallPay(timesheetEntries, hourlyRate, upgradeHrs = 0, bankHolHrs = 0) {
-  // Each entry may have: standby_wd, worked_wd, standby_we, worked_we (hours)
+// ── calcOncallPay ──────────────────────────────────────────────────────────
+// Derives standby/worked hours directly from the ROTA (single source of truth)
+// rather than relying on timesheet fields which may be incomplete.
+//
+// Shift hour rules:
+//   daily       10:00–19:00  = 9h worked  (Mon–Fri)
+//   evening     19:00–07:00  = 12h standby (Mon–Thu)
+//   weekend     Fri19:00–Mon07:00 = 60h standby total (split across 3 nights)
+//   bankholiday 09:00–07:00  = 22h standby
+//   upgrade     approved hours at 1.5x worked rate
+//
+// Incident hours come from timesheets entries flagged with week starting "INC".
+function calcOncallPay(timesheetEntries, hourlyRate, upgradeHrs = 0, bankHolHrs = 0,
+                       rotaForUser = {}, holidays = [], bankHolidays = [], startDs = null, endDs = null) {
+
+  // ── Derive hours from rota entries ───────────────────────────────────────
   let standbyWD = 0, workedWD = 0, standbyWE = 0, workedWE = 0;
-  (timesheetEntries || []).forEach(e => {
-    standbyWD += e.standby_wd || 0;
-    workedWD  += e.worked_wd  || 0;
-    standbyWE += e.standby_we || 0;
-    workedWE  += e.worked_we  || 0;
+
+  Object.entries(rotaForUser).forEach(([date, shift]) => {
+    if (startDs && date < startDs) return;
+    if (endDs   && date > endDs)   return;
+    if (!shift || shift === 'off') return;
+
+    // Skip bank holidays — counted separately below
+    const isBH = bankHolidays.some(b => b.date === date);
+    if (isBH) return;
+
+    const isHol = holidays.some(h => h.userId !== undefined
+      ? (date >= h.start && date <= h.end) : false);
+    if (isHol) return;
+
+    const dow = new Date(date).getDay(); // 0=Sun,1=Mon…6=Sat
+    const isWeekend = dow === 0 || dow === 5 || dow === 6; // Fri/Sat/Sun = weekend OC
+
+    if (shift === 'daily') {
+      workedWD += 9; // 10:00–19:00
+    } else if (shift === 'evening') {
+      // Weekday OC: 19:00–07:00 = 12h standby per night
+      standbyWD += 12;
+    } else if (shift === 'weekend') {
+      // Weekend OC: each day contributes standby hours
+      // Fri: 5h (19:00–24:00), Sat: 24h, Sun: 24h, Mon morning handled as carry-over
+      // Simpler: each weekend rota entry represents one day's portion
+      if (dow === 5) standbyWE += 5;      // Fri 19:00–24:00
+      else if (dow === 6) standbyWE += 24; // Sat full day
+      else if (dow === 0) standbyWE += 24; // Sun full day
+      else if (dow === 1) standbyWE += 7;  // Mon 00:00–07:00
+      else standbyWE += 12; // fallback
+    }
   });
-  const standbyPay  = (standbyWD + standbyWE) * ONCALL_STANDBY_RATE;
+
+  // Bank holiday hours (22h standby each, passed in as count of days)
+  const bhStandby = bankHolHrs * 22;
+
+  // Incident hours from timesheets (entries with week starting "INC")
+  let incidentHrs = 0;
+  (timesheetEntries || []).filter(e => e.week && e.week.startsWith('INC')).forEach(e => {
+    const hrs = (e.weekday_oncall || 0) + (e.weekend_oncall || 0) + (e.worked_wd || 0) + (e.worked_we || 0);
+    incidentHrs += hrs;
+    // Route to the right bucket
+    const d = new Date(e.week?.replace('INC-','') || Date.now()).getDay();
+    if (d === 0 || d === 5 || d === 6) workedWE += (e.weekday_oncall||0)+(e.weekend_oncall||0);
+    else workedWD += (e.weekday_oncall||0)+(e.weekend_oncall||0);
+  });
+
+  const standbyPay  = (standbyWD + standbyWE + bhStandby) * ONCALL_STANDBY_RATE;
   const workedPay   = (workedWD + workedWE) * hourlyRate * ONCALL_WORKED_MULTIPLIER;
   const upgradePay  = upgradeHrs * hourlyRate * ONCALL_WORKED_MULTIPLIER;
-  const bankHolPay  = bankHolHrs * ONCALL_STANDBY_RATE; // BH standby rate
-  const totalOncallHours = standbyWD + workedWD + standbyWE + workedWE + upgradeHrs + bankHolHrs;
+  const bankHolPay  = bhStandby * ONCALL_STANDBY_RATE;
+  const totalOncallHours = standbyWD + workedWD + standbyWE + workedWE + upgradeHrs + bhStandby;
+
   return {
-    standbyWD, workedWD, standbyWE, workedWE, upgradeHrs, bankHolHrs,
+    standbyWD: Math.round(standbyWD * 10) / 10,
+    workedWD:  Math.round(workedWD  * 10) / 10,
+    standbyWE: Math.round(standbyWE * 10) / 10,
+    workedWE:  Math.round(workedWE  * 10) / 10,
+    upgradeHrs, bankHolHrs,
+    incidentHrs: Math.round(incidentHrs * 10) / 10,
     standbyPay, workedPay, upgradePay, bankHolPay,
-    total: standbyPay + workedPay + upgradePay + bankHolPay,
-    totalOncallHours,
-    totalStandbyHours: standbyWD + standbyWE + bankHolHrs,
-    totalWorkedHours:  workedWD + workedWE + upgradeHrs,
+    total: standbyPay + workedPay + upgradePay,
+    totalOncallHours: Math.round(totalOncallHours * 10) / 10,
+    totalStandbyHours: Math.round((standbyWD + standbyWE + bhStandby) * 10) / 10,
+    totalWorkedHours:  Math.round((workedWD + workedWE + upgradeHrs) * 10) / 10,
   };
 }
 
@@ -4986,11 +5048,23 @@ function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, rota
     const annual = p.annual || p.base * 12;
     const hourly = annual / 2080;
 
-    // Filter timesheet entries to date range if provided
+    // Filter timesheet entries to date range
     const ts = (timesheets[u.id] || []).filter(e => {
       if (!startDs || !endDs) return true;
-      return e.weekStart >= startDs && e.weekStart <= endDs;
+      const w = e.weekStart || e.week || '';
+      return w >= startDs && w <= endDs;
     });
+
+    // Rota entries for this user filtered to date range
+    const rotaForUser = Object.fromEntries(
+      Object.entries(rota?.[u.id] || {}).filter(([date]) => {
+        if (!startDs || !endDs) return true;
+        return date >= startDs && date <= endDs;
+      })
+    );
+
+    // Holidays for this user
+    const userHols = (holidays || []).filter(h => h.userId === u.id);
 
     // Upgrade hours (approved only) in range
     const upgradeHrs = (upgrades || []).filter(up => {
@@ -5001,22 +5075,19 @@ function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, rota
       return sum + (et ? et.hours : 0);
     }, 0);
 
-    // Bank holiday on-call hours from rota in range
-    const UK_BH = (typeof UK_BANK_HOLIDAYS !== 'undefined') ? UK_BANK_HOLIDAYS : [];
-    const bankHolHrs = UK_BH.filter(bh => {
-      if (!startDs || !endDs) return true;
-      return bh.date >= startDs && bh.date <= endDs;
-    }).reduce((sum, bh) => {
+    // Count bank holiday OC days in range (where rota has this user assigned)
+    const bhList = (typeof UK_BANK_HOLIDAYS !== 'undefined') ? UK_BANK_HOLIDAYS : [];
+    const bankHolDays = bhList.filter(bh => {
+      if (startDs && bh.date < startDs) return false;
+      if (endDs   && bh.date > endDs)   return false;
       const s = rota?.[u.id]?.[bh.date];
-      return sum + (s && s !== 'off' ? 22 : 0); // Bank Hol OC = 9am–7am = 22hrs standby
-    }, 0);
+      return s && s !== 'off';
+    });
+    const bankHolHrs = bankHolDays.length; // passed as count — calcOncallPay multiplies by 22
 
-    // Incident hours in range
-    const incHrs = ts.filter(e => e.week && e.week.startsWith('INC'))
-      .reduce((a, e) => a + (e.weekday_oncall || 0) + (e.weekend_oncall || 0), 0);
-
-    const oc = calcOncallPay(ts, hourly, upgradeHrs, bankHolHrs);
+    const oc = calcOncallPay(ts, hourly, upgradeHrs, bankHolHrs, rotaForUser, userHols, bhList, startDs, endDs);
     const tb = calcTOILBalance(timesheets[u.id], toil, u.id);
+    const incHrs = oc.incidentHrs || 0;
     return { p, annual, hourly, oc, tb, incHrs, upgradeHrs, bankHolHrs };
   };
 
@@ -5946,22 +6017,22 @@ export default function App() {
           if (pics) { setProfilePics(pics); setProfilePicsState(pics); }
           const defaults = { users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, logbook, documents, obsidianNotes, whatsappChats };
           const data = await loadAllFromDrive(token, defaults);
-          if (data.users)         setUsers(data.users);
-          if (data.holidays)      setHolidays(data.holidays);
-          if (data.incidents)     setIncidents(data.incidents);
-          if (data.timesheets)    setTimesheets(data.timesheets);
-          if (data.upgrades)      setUpgrades(data.upgrades);
-          if (data.wiki)          setWiki(data.wiki);
-          if (data.glossary)      setGlossary(data.glossary);
-          if (data.contacts)      setContacts(data.contacts);
-          if (data.payconfig)     setPayconfig(data.payconfig);
-          if (data.rota)          setRota(sanitiseRota(data.rota));
-          if (data.swapRequests)  setSwapRequests(data.swapRequests);
-          if (data.toil)          setToil(data.toil);
-          if (data.absences)      setAbsences(data.absences);
-          if (data.logbook)       setLogbook(data.logbook);
-          if (data.documents)     setDocuments(data.documents);
-          if (data.obsidianNotes) setObsidianNotes(data.obsidianNotes);
+          if (data.users != null) setUsers(data.users);
+          if (data.holidays != null) setHolidays(data.holidays);
+          if (data.incidents != null) setIncidents(data.incidents);
+          if (data.timesheets != null) setTimesheets(data.timesheets);
+          if (data.upgrades != null) setUpgrades(data.upgrades);
+          if (data.wiki != null) setWiki(data.wiki);
+          if (data.glossary != null) setGlossary(data.glossary);
+          if (data.contacts != null) setContacts(data.contacts);
+          if (data.payconfig != null) setPayconfig(data.payconfig);
+          if (data.rota != null) setRota(sanitiseRota(data.rota));
+          if (data.swapRequests != null) setSwapRequests(data.swapRequests);
+          if (data.toil != null) setToil(data.toil);
+          if (data.absences != null) setAbsences(data.absences);
+          if (data.logbook != null) setLogbook(data.logbook);
+          if (data.documents != null) setDocuments(data.documents);
+          if (data.obsidianNotes != null) setObsidianNotes(data.obsidianNotes);
           // Team Chat: load from Drive JSON (whatsappChats.json) for two-way sync
           if (data.whatsappChats && Array.isArray(data.whatsappChats)) setWhatsappChats(data.whatsappChats);
           setLastSync(new Date());
@@ -6014,23 +6085,23 @@ export default function App() {
       const data = await loadAllFromDrive(token, defaults);
 
       setLoadProgress(65); setLoadStatus('Applying team data…');
-      if (data.users)         setUsers(data.users);
-      if (data.holidays)      setHolidays(data.holidays);
-      if (data.incidents)     setIncidents(data.incidents);
-      if (data.timesheets)    setTimesheets(data.timesheets);
-      if (data.upgrades)      setUpgrades(data.upgrades);
-      if (data.wiki)          setWiki(data.wiki);
-      if (data.glossary)      setGlossary(data.glossary);
-      if (data.contacts)      setContacts(data.contacts);
-      if (data.payconfig)     setPayconfig(data.payconfig);
-      if (data.rota)          setRota(sanitiseRota(data.rota));
-      if (data.swapRequests)  setSwapRequests(data.swapRequests);
-      if (data.toil)          setToil(data.toil);
-      if (data.absences)      setAbsences(data.absences);
-      if (data.logbook)       setLogbook(data.logbook);
-      if (data.documents)     setDocuments(data.documents);
-      if (data.obsidianNotes) setObsidianNotes(data.obsidianNotes);
-      if (data.whatsappChats) setWhatsappChats(data.whatsappChats);
+      if (data.users != null) setUsers(data.users);
+      if (data.holidays != null) setHolidays(data.holidays);
+      if (data.incidents != null) setIncidents(data.incidents);
+      if (data.timesheets != null) setTimesheets(data.timesheets);
+      if (data.upgrades != null) setUpgrades(data.upgrades);
+      if (data.wiki != null) setWiki(data.wiki);
+      if (data.glossary != null) setGlossary(data.glossary);
+      if (data.contacts != null) setContacts(data.contacts);
+      if (data.payconfig != null) setPayconfig(data.payconfig);
+      if (data.rota != null) setRota(sanitiseRota(data.rota));
+      if (data.swapRequests != null) setSwapRequests(data.swapRequests);
+      if (data.toil != null) setToil(data.toil);
+      if (data.absences != null) setAbsences(data.absences);
+      if (data.logbook != null) setLogbook(data.logbook);
+      if (data.documents != null) setDocuments(data.documents);
+      if (data.obsidianNotes != null) setObsidianNotes(data.obsidianNotes);
+      if (data.whatsappChats != null) setWhatsappChats(data.whatsappChats);
 
       setLoadProgress(95); setLoadStatus('Finalising…');
       setLastSync(new Date());
@@ -6138,23 +6209,23 @@ export default function App() {
         const data = await loadAllFromDrive(token, defaults);
 
         setLoadProgress(75); setLoadStatus('Applying team data…');
-        if (data.users)         setUsers(data.users);
-        if (data.holidays)      setHolidays(data.holidays);
-        if (data.incidents)     setIncidents(data.incidents);
-        if (data.timesheets)    setTimesheets(data.timesheets);
-        if (data.upgrades)      setUpgrades(data.upgrades);
-        if (data.wiki)          setWiki(data.wiki);
-        if (data.glossary)      setGlossary(data.glossary);
-        if (data.contacts)      setContacts(data.contacts);
-        if (data.payconfig)     setPayconfig(data.payconfig);
-        if (data.rota)          setRota(sanitiseRota(data.rota));
-        if (data.swapRequests)  setSwapRequests(data.swapRequests);
-        if (data.toil)          setToil(data.toil);
-        if (data.absences)      setAbsences(data.absences);
-        if (data.logbook)       setLogbook(data.logbook);
-        if (data.documents)     setDocuments(data.documents);
-        if (data.obsidianNotes) setObsidianNotes(data.obsidianNotes);
-        if (data.whatsappChats) setWhatsappChats(data.whatsappChats);
+        if (data.users != null) setUsers(data.users);
+        if (data.holidays != null) setHolidays(data.holidays);
+        if (data.incidents != null) setIncidents(data.incidents);
+        if (data.timesheets != null) setTimesheets(data.timesheets);
+        if (data.upgrades != null) setUpgrades(data.upgrades);
+        if (data.wiki != null) setWiki(data.wiki);
+        if (data.glossary != null) setGlossary(data.glossary);
+        if (data.contacts != null) setContacts(data.contacts);
+        if (data.payconfig != null) setPayconfig(data.payconfig);
+        if (data.rota != null) setRota(sanitiseRota(data.rota));
+        if (data.swapRequests != null) setSwapRequests(data.swapRequests);
+        if (data.toil != null) setToil(data.toil);
+        if (data.absences != null) setAbsences(data.absences);
+        if (data.logbook != null) setLogbook(data.logbook);
+        if (data.documents != null) setDocuments(data.documents);
+        if (data.obsidianNotes != null) setObsidianNotes(data.obsidianNotes);
+        if (data.whatsappChats != null) setWhatsappChats(data.whatsappChats);
         setLastSync(new Date());
         driveDataLoaded.current = true;
         setDriveReady(true);
@@ -6340,23 +6411,24 @@ export default function App() {
                     setSyncing(true);
                     const defaults = { users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, logbook, documents, obsidianNotes, whatsappChats };
                     const data = await loadAllFromDrive(driveToken, defaults);
-                    if (data.users)         setUsers(data.users);
-                    if (data.holidays)      setHolidays(data.holidays);
-                    if (data.incidents)     setIncidents(data.incidents);
-                    if (data.timesheets)    setTimesheets(data.timesheets);
-                    if (data.upgrades)      setUpgrades(data.upgrades);
-                    if (data.wiki)          setWiki(data.wiki);
-                    if (data.glossary)      setGlossary(data.glossary);
-                    if (data.contacts)      setContacts(data.contacts);
-                    if (data.payconfig)     setPayconfig(data.payconfig);
-                    if (data.rota)          setRota(sanitiseRota(data.rota));
-                    if (data.swapRequests)  setSwapRequests(data.swapRequests);
-                    if (data.toil)          setToil(data.toil);
-                    if (data.absences)      setAbsences(data.absences);
-                    if (data.logbook)       setLogbook(data.logbook);
-                    if (data.documents)     setDocuments(data.documents);
-                    if (data.obsidianNotes) setObsidianNotes(data.obsidianNotes);
-                    if (data.whatsappChats) setWhatsappChats(data.whatsappChats);
+                    const has = (v) => v !== null && v !== undefined;
+                    if (has(data.users))         setUsers(data.users);
+                    if (has(data.holidays))      setHolidays(data.holidays);
+                    if (has(data.incidents))     setIncidents(data.incidents);
+                    if (has(data.timesheets))    setTimesheets(data.timesheets);
+                    if (has(data.upgrades))      setUpgrades(data.upgrades);
+                    if (has(data.wiki))          setWiki(data.wiki);
+                    if (has(data.glossary))      setGlossary(data.glossary);
+                    if (has(data.contacts))      setContacts(data.contacts);
+                    if (has(data.payconfig))     setPayconfig(data.payconfig);
+                    if (has(data.rota))          setRota(sanitiseRota(data.rota));
+                    if (has(data.swapRequests))  setSwapRequests(data.swapRequests);
+                    if (has(data.toil))          setToil(data.toil);
+                    if (has(data.absences))      setAbsences(data.absences);
+                    if (has(data.logbook))       setLogbook(data.logbook);
+                    if (has(data.documents))     setDocuments(data.documents);
+                    if (has(data.obsidianNotes)) setObsidianNotes(data.obsidianNotes);
+                    if (has(data.whatsappChats)) setWhatsappChats(data.whatsappChats);
                     setLastSync(new Date());
                   } catch(e) { console.warn('Refresh failed:', e); }
                   finally { setSyncing(false); }
