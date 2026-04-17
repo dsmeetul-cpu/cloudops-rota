@@ -1453,12 +1453,12 @@ function RotaPage({ users, rota, setRota, holidays, upgrades, swapRequests, setS
 
   // Shift hour definitions
   const SHIFT_HOURS = {
-    daily:   { start: '10:00', end: '19:00', label: '10am – 7pm',   desc: 'Daily Shift (Mon–Fri)' },
-    evening: { start: '19:00', end: '07:00', label: '7pm – 7am',    desc: 'Weekday Evening OC (Mon–Thu)' },
-    weekend: { start: '19:00', end: '07:00', label: '7pm – 7am',    desc: 'Weekend OC (Fri–Mon)' },
-    upgrade: { start: '00:00', end: '23:59', label: 'All day',       desc: 'Upgrade Day' },
-    holiday: { start: '',      end: '',      label: 'Holiday',        desc: 'Annual Leave' },
-    bankholiday: { start: '', end: '',       label: 'Bank Holiday',   desc: 'Public Holiday' },
+    daily:       { start: '10:00', end: '19:00', label: '10am – 7pm',   desc: 'Daily Shift (Mon–Fri)',             standbyHrs: 0,  workedHrs: 9  },
+    evening:     { start: '19:00', end: '07:00', label: '7pm – 7am',    desc: 'Weekday On-Call (Mon–Thu)',         standbyHrs: 12, workedHrs: 0  },
+    weekend:     { start: '19:00', end: '07:00', label: '7pm – 7am',    desc: 'Weekend On-Call (Fri 7pm–Mon 7am)', standbyHrs: 60, workedHrs: 0  },
+    bankholiday: { start: '09:00', end: '07:00', label: '9am – 7am',    desc: 'Bank Holiday On-Call',              standbyHrs: 22, workedHrs: 0  },
+    upgrade:     { start: '00:00', end: '23:59', label: 'All day',       desc: 'Upgrade Day',                      standbyHrs: 0,  workedHrs: 8  },
+    holiday:     { start: '',      end: '',       label: 'Holiday',       desc: 'Annual Leave',                     standbyHrs: 0,  workedHrs: 0  },
   };
 
   const generate = () => {
@@ -3082,7 +3082,7 @@ const ONCALL_WORKED_MULTIPLIER = 1.5;
 const TOIL_MAX_CARRYOVER_HOURS = 40; // 5 days per UK WTR
 const TOIL_ACCRUAL_RATE = 1.0;       // 1:1 per UK WTR
 
-function calcOncallPay(timesheetEntries, hourlyRate) {
+function calcOncallPay(timesheetEntries, hourlyRate, upgradeHrs = 0, bankHolHrs = 0) {
   // Each entry may have: standby_wd, worked_wd, standby_we, worked_we (hours)
   let standbyWD = 0, workedWD = 0, standbyWE = 0, workedWE = 0;
   (timesheetEntries || []).forEach(e => {
@@ -3091,12 +3091,19 @@ function calcOncallPay(timesheetEntries, hourlyRate) {
     standbyWE += e.standby_we || 0;
     workedWE  += e.worked_we  || 0;
   });
-  const standbyPay = (standbyWD + standbyWE) * ONCALL_STANDBY_RATE;
-  const workedPay  = (workedWD + workedWE) * hourlyRate * ONCALL_WORKED_MULTIPLIER;
-  const totalOncallHours = standbyWD + workedWD + standbyWE + workedWE;
-  return { standbyWD, workedWD, standbyWE, workedWE, standbyPay, workedPay,
-    total: standbyPay + workedPay, totalOncallHours,
-    totalStandbyHours: standbyWD + standbyWE, totalWorkedHours: workedWD + workedWE };
+  const standbyPay  = (standbyWD + standbyWE) * ONCALL_STANDBY_RATE;
+  const workedPay   = (workedWD + workedWE) * hourlyRate * ONCALL_WORKED_MULTIPLIER;
+  const upgradePay  = upgradeHrs * hourlyRate * ONCALL_WORKED_MULTIPLIER;
+  const bankHolPay  = bankHolHrs * ONCALL_STANDBY_RATE; // BH standby rate
+  const totalOncallHours = standbyWD + workedWD + standbyWE + workedWE + upgradeHrs + bankHolHrs;
+  return {
+    standbyWD, workedWD, standbyWE, workedWE, upgradeHrs, bankHolHrs,
+    standbyPay, workedPay, upgradePay, bankHolPay,
+    total: standbyPay + workedPay + upgradePay + bankHolPay,
+    totalOncallHours,
+    totalStandbyHours: standbyWD + standbyWE + bankHolHrs,
+    totalWorkedHours:  workedWD + workedWE + upgradeHrs,
+  };
 }
 
 function calcTOILBalance(timesheetEntries, toilEntries, userId) {
@@ -4965,93 +4972,215 @@ function WeeklyReports({ users, incidents, timesheets, holidays, isManager }) {
 }
 
 // ── Payroll (Manager only) ─────────────────────────────────────────────────
-function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, isManager }) {
+function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, rota, isManager }) {
   if (!isManager) return <Alert type="warning">⚠ Payroll is restricted to managers.</Alert>;
 
-  const exportCSV = () => {
-    const exportDate = new Date().toISOString().slice(0, 10);
-    const rows = [['Trigram', 'Full Name', 'Export Date', 'Standby Hrs Worked', 'OC Hrs Worked', 'Incident Hrs', 'TOIL Balance (hrs)', 'Upgrade Hours']];
-    users.forEach(u => {
-      const p      = payconfig[u.id] || { rate: 40, base: 2500 };
-      const annual = p.annual || p.base * 12;
-      const hourly = annual / 2080;
-      const oc     = calcOncallPay(timesheets[u.id], hourly);
-      const tb     = calcTOILBalance(timesheets[u.id], toil, u.id);
-      const incHrs = (timesheets[u.id]||[]).filter(e=>e.week&&e.week.startsWith('INC')).reduce((a,e)=>a+(e.weekday_oncall||0)+(e.weekend_oncall||0),0);
-      const upgradeHrs = (upgrades||[]).reduce((sum, up) => {
-        const et = (up.engineerTimes||[]).find(e => e.engineerId === u.id && e.approved);
-        return sum + (et ? et.hours : 0);
-      }, 0);
-      rows.push([u.id, u.name, exportDate, oc.totalStandbyHours, oc.totalWorkedHours, incHrs, tb.balance, upgradeHrs]);
+  const [showExport, setShowExport] = React.useState(false);
+  const [exportStart, setExportStart] = React.useState('');
+  const [exportEnd,   setExportEnd]   = React.useState('');
+  const [exporting,   setExporting]   = React.useState(false);
+
+  // ── Per-user helpers ──────────────────────────────────────────────────────
+  const getUserData = (u, startDs, endDs) => {
+    const p      = payconfig[u.id] || { base: 2500 };
+    const annual = p.annual || p.base * 12;
+    const hourly = annual / 2080;
+
+    // Filter timesheet entries to date range if provided
+    const ts = (timesheets[u.id] || []).filter(e => {
+      if (!startDs || !endDs) return true;
+      return e.weekStart >= startDs && e.weekStart <= endDs;
     });
-    const csv = rows.map(r => r.map(v => `"${v}"`).join(',')).join('\n');
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
-    a.download = `cloudops-payroll-${new Date().toISOString().slice(0,10)}.csv`; a.click();
+
+    // Upgrade hours (approved only) in range
+    const upgradeHrs = (upgrades || []).filter(up => {
+      if (!startDs || !endDs) return true;
+      return up.date >= startDs && up.date <= endDs;
+    }).reduce((sum, up) => {
+      const et = (up.engineerTimes || []).find(e => e.engineerId === u.id && e.approved);
+      return sum + (et ? et.hours : 0);
+    }, 0);
+
+    // Bank holiday on-call hours from rota in range
+    const UK_BH = (typeof UK_BANK_HOLIDAYS !== 'undefined') ? UK_BANK_HOLIDAYS : [];
+    const bankHolHrs = UK_BH.filter(bh => {
+      if (!startDs || !endDs) return true;
+      return bh.date >= startDs && bh.date <= endDs;
+    }).reduce((sum, bh) => {
+      const s = rota?.[u.id]?.[bh.date];
+      return sum + (s && s !== 'off' ? 22 : 0); // Bank Hol OC = 9am–7am = 22hrs standby
+    }, 0);
+
+    // Incident hours in range
+    const incHrs = ts.filter(e => e.week && e.week.startsWith('INC'))
+      .reduce((a, e) => a + (e.weekday_oncall || 0) + (e.weekend_oncall || 0), 0);
+
+    const oc = calcOncallPay(ts, hourly, upgradeHrs, bankHolHrs);
+    const tb = calcTOILBalance(timesheets[u.id], toil, u.id);
+    return { p, annual, hourly, oc, tb, incHrs, upgradeHrs, bankHolHrs };
   };
 
-  // Summary stats
-  const totalPayroll = users.reduce((sum, u) => {
-    const p = payconfig[u.id] || { base: 2500 };
-    return sum + (p.annual || p.base * 12);
-  }, 0);
-  const totalOCPay = users.reduce((sum, u) => {
-    const p = payconfig[u.id] || { base: 2500 };
-    const hourly = (p.annual || p.base*12) / 2080;
-    return sum + calcOncallPay(timesheets[u.id], hourly).total;
-  }, 0);
-  const totalIncidentHrs = Object.values(timesheets).flatMap(t=>t||[]).filter(e=>e.week&&e.week.startsWith('INC')).reduce((a,e)=>a+(e.weekday_oncall||0)+(e.weekend_oncall||0),0);
+  // ── Excel export ──────────────────────────────────────────────────────────
+  const doExportExcel = async () => {
+    setExporting(true);
+    try {
+      // Build data rows
+      const rangeLabel = (exportStart && exportEnd)
+        ? `${exportStart} to ${exportEnd}`
+        : 'All time';
+
+      const rows = [[
+        'Trigram', 'Full Name', 'Export Date', 'Period',
+        'Annual Salary (£)', 'Hourly Rate (£)',
+        'Standby WD (h)', 'Worked WD (h)',
+        'Standby WE (h)', 'Worked WE (h)',
+        'Incident Hrs', 'Upgrade Hrs', 'Bank Holiday Hrs',
+        'Standby Pay (£)', 'Worked Pay (£)', 'Upgrade Pay (£)', 'Bank Hol Pay (£)',
+        'Total OC Pay (£)', 'TOIL Balance (h)',
+      ]];
+
+      const exportDate = new Date().toISOString().slice(0, 10);
+      users.forEach(u => {
+        const { annual, hourly, oc, tb, incHrs, upgradeHrs, bankHolHrs } = getUserData(u, exportStart, exportEnd);
+        rows.push([
+          u.id, u.name, exportDate, rangeLabel,
+          annual.toFixed(2), hourly.toFixed(4),
+          oc.standbyWD, oc.workedWD,
+          oc.standbyWE, oc.workedWE,
+          incHrs, upgradeHrs, bankHolHrs,
+          oc.standbyPay.toFixed(2), oc.workedPay.toFixed(2),
+          oc.upgradePay.toFixed(2), oc.bankHolPay.toFixed(2),
+          oc.total.toFixed(2), tb.balance,
+        ]);
+      });
+
+      // Totals row
+      const totals = ['TOTAL', '', exportDate, rangeLabel, '', ''];
+      for (let col = 6; col <= 17; col++) {
+        totals.push(rows.slice(1).reduce((s, r) => s + (parseFloat(r[col]) || 0), 0).toFixed(col >= 13 ? 2 : 0));
+      }
+      totals.push('');
+      rows.push(totals);
+
+      // Build simple XLSX-compatible CSV with BOM for Excel
+      const BOM = '\uFEFF';
+      const csv = BOM + rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `cloudops-payroll-${exportStart||'all'}-${exportEnd||'time'}.csv`;
+      a.click();
+      setShowExport(false);
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  // ── Summary stats (all time) ──────────────────────────────────────────────
+  const totalPayroll    = users.reduce((s, u) => { const p = payconfig[u.id]||{base:2500}; return s + (p.annual||p.base*12); }, 0);
+  const totalOCPay      = users.reduce((s, u) => { const { oc } = getUserData(u); return s + oc.total; }, 0);
+  const totalIncidentHrs = users.reduce((s, u) => { const { incHrs } = getUserData(u); return s + incHrs; }, 0);
+  const totalUpgradeHrs  = users.reduce((s, u) => { const { upgradeHrs } = getUserData(u); return s + upgradeHrs; }, 0);
 
   return (
     <div>
       <PageHeader title="Payroll" sub="On-call pay, TOIL, tax and take-home — manager only"
-        actions={<button className="btn btn-primary" onClick={exportCSV}>📥 Export CSV</button>} />
+        actions={<button className="btn btn-primary" onClick={() => setShowExport(true)}>📥 Export to Excel</button>} />
+
+      {/* Export date-range modal */}
+      {showExport && (
+        <Modal title="Export Payroll to Excel" onClose={() => setShowExport(false)}>
+          <div style={{ display:'flex', flexDirection:'column', gap:16, padding:'8px 0' }}>
+            <Alert type="info">Select the week/date range to export. Leave blank to export all data.</Alert>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+              <div>
+                <div style={{ fontSize:12, color:'var(--text-muted)', marginBottom:6 }}>From (start of week)</div>
+                <input type="date" className="input" value={exportStart} onChange={e => setExportStart(e.target.value)} />
+              </div>
+              <div>
+                <div style={{ fontSize:12, color:'var(--text-muted)', marginBottom:6 }}>To (end of week)</div>
+                <input type="date" className="input" value={exportEnd} onChange={e => setExportEnd(e.target.value)} />
+              </div>
+            </div>
+            {/* Quick range shortcuts */}
+            <div>
+              <div style={{ fontSize:11, color:'var(--text-muted)', marginBottom:6 }}>Quick ranges</div>
+              <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+                {[
+                  ['This month', () => { const n=new Date(); const y=n.getFullYear(),m=String(n.getMonth()+1).padStart(2,'0'); setExportStart(`${y}-${m}-01`); setExportEnd(new Date(y,n.getMonth()+1,0).toISOString().slice(0,10)); }],
+                  ['Last month', () => { const n=new Date(); const d=new Date(n.getFullYear(),n.getMonth(),0); const s=new Date(d.getFullYear(),d.getMonth(),1); setExportStart(s.toISOString().slice(0,10)); setExportEnd(d.toISOString().slice(0,10)); }],
+                  ['Last 4 weeks', () => { const e=new Date(); const s=new Date(); s.setDate(e.getDate()-28); setExportStart(s.toISOString().slice(0,10)); setExportEnd(e.toISOString().slice(0,10)); }],
+                  ['This year', () => { const y=new Date().getFullYear(); setExportStart(`${y}-01-01`); setExportEnd(`${y}-12-31`); }],
+                  ['All time', () => { setExportStart(''); setExportEnd(''); }],
+                ].map(([label, fn]) => (
+                  <button key={label} className="btn btn-secondary btn-sm" onClick={fn}>{label}</button>
+                ))}
+              </div>
+            </div>
+            {(exportStart || exportEnd) && (
+              <div style={{ fontSize:12, color:'var(--text-secondary)', background:'rgba(59,130,246,0.1)', borderRadius:8, padding:'8px 12px' }}>
+                📅 Exporting: <strong>{exportStart || 'start'}</strong> → <strong>{exportEnd || 'end'}</strong>
+                &nbsp;· {users.length} engineers
+              </div>
+            )}
+            <div style={{ display:'flex', gap:8, justifyContent:'flex-end', marginTop:4 }}>
+              <button className="btn btn-secondary" onClick={() => setShowExport(false)}>Cancel</button>
+              <button className="btn btn-primary" onClick={doExportExcel} disabled={exporting}>
+                {exporting ? '⏳ Exporting…' : '📥 Download Excel'}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
 
       {/* Summary KPIs */}
       <div className="grid-4 mb-16">
-        <StatCard label="Total Payroll" value={`£${Math.round(totalPayroll/1000)}k/yr`} sub="Base salaries combined" accent="#3b82f6" icon="💷" />
-        <StatCard label="Total OC Pay" value={`£${Math.round(totalOCPay)}`} sub="All engineers" accent="#10b981" icon="🌙" />
-        <StatCard label="Incident Hours" value={`${totalIncidentHrs}h`} sub="Auto-logged from incidents" accent="#f59e0b" icon="🚨" />
-        <StatCard label="Engineers" value={users.length} sub="On payroll" accent="#818cf8" icon="👥" />
+        <StatCard label="Total Payroll"    value={`£${Math.round(totalPayroll/1000)}k/yr`}  sub="Base salaries combined"       accent="#3b82f6" icon="💷" />
+        <StatCard label="Total OC Pay"     value={`£${Math.round(totalOCPay)}`}              sub="All engineers (inc. upgrades)" accent="#10b981" icon="🌙" />
+        <StatCard label="Incident Hours"   value={`${totalIncidentHrs}h`}                    sub="Auto-logged from incidents"    accent="#f59e0b" icon="🚨" />
+        <StatCard label="Upgrade Hours"    value={`${totalUpgradeHrs}h`}                     sub="Approved upgrade days"         accent="#818cf8" icon="⬆" />
       </div>
 
-      {/* On-call pay table */}
-      <div className="card mb-16" style={{ overflowX: 'auto' }}>
-        <div className="card-title">On-Call Pay Summary (standby + worked + incident hours)</div>
-        <table style={{ minWidth: 900 }}>
+      {/* On-call pay summary table */}
+      <div className="card mb-16" style={{ overflowX:'auto' }}>
+        <div className="card-title">On-Call Pay Summary — standby · worked · incidents · upgrades · bank holidays</div>
+        <table style={{ minWidth:1100 }}>
           <thead>
             <tr>
               <th>Engineer</th>
               <th>Annual Salary</th>
-              <th>Standby WD (h)</th><th>Worked WD (h)</th>
-              <th>Standby WE (h)</th><th>Worked WE (h)</th>
-              <th style={{ color: '#f59e0b' }}>Incident Hrs</th>
-              <th style={{ color: '#93c5fd' }}>Standby Pay</th>
-              <th style={{ color: '#fcd34d' }}>Worked Pay</th>
-              <th style={{ color: '#6ee7b7' }}>Total OC Pay</th>
-              <th>TOIL Balance</th>
+              <th style={{ color:'#93c5fd' }}>Standby WD</th>
+              <th style={{ color:'#93c5fd' }}>Worked WD</th>
+              <th style={{ color:'#a78bfa' }}>Standby WE</th>
+              <th style={{ color:'#a78bfa' }}>Worked WE</th>
+              <th style={{ color:'#f59e0b' }}>Incidents</th>
+              <th style={{ color:'#818cf8' }}>Upgrades</th>
+              <th style={{ color:'#fca5a5' }}>Bank Hol</th>
+              <th style={{ color:'#93c5fd' }}>Standby Pay</th>
+              <th style={{ color:'#fcd34d' }}>Worked Pay</th>
+              <th style={{ color:'#818cf8' }}>Upgrade Pay</th>
+              <th style={{ color:'#6ee7b7', fontWeight:800 }}>Total OC Pay</th>
+              <th>TOIL</th>
             </tr>
           </thead>
           <tbody>
             {users.map(u => {
-              const p      = payconfig[u.id] || { rate: 40, base: 2500 };
-              const annual = p.annual || p.base * 12;
-              const hourly = annual / 2080;
-              const oc     = calcOncallPay(timesheets[u.id], hourly);
-              const tb     = calcTOILBalance(timesheets[u.id], toil, u.id);
-              const incHrs = (timesheets[u.id]||[]).filter(e=>e.week&&e.week.startsWith('INC')).reduce((a,e)=>a+(e.weekday_oncall||0)+(e.weekend_oncall||0),0);
+              const { annual, hourly, oc, tb, incHrs, upgradeHrs, bankHolHrs } = getUserData(u);
               return (
                 <tr key={u.id}>
                   <td><div style={{ display:'flex', gap:8, alignItems:'center' }}><Avatar user={u} size={24} /><div><div style={{ fontSize:12 }}>{u.name}</div><div style={{ fontSize:10, color:'var(--text-muted)', fontFamily:'DM Mono' }}>{u.id} · £{hourly.toFixed(2)}/hr</div></div></div></td>
                   <td style={{ fontFamily:'DM Mono', fontSize:12, color:'var(--text-secondary)' }}>£{annual.toLocaleString()}</td>
-                  <td style={{ fontFamily:'DM Mono', fontSize:12 }}>{oc.standbyWD}h</td>
-                  <td style={{ fontFamily:'DM Mono', fontSize:12 }}>{oc.workedWD}h</td>
-                  <td style={{ fontFamily:'DM Mono', fontSize:12 }}>{oc.standbyWE}h</td>
-                  <td style={{ fontFamily:'DM Mono', fontSize:12 }}>{oc.workedWE}h</td>
-                  <td style={{ fontFamily:'DM Mono', fontSize:12, color: incHrs>0?'#f59e0b':'var(--text-muted)' }}>{incHrs>0?`${incHrs}h`:'—'}</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#93c5fd' }}>{oc.standbyWD}h</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#93c5fd' }}>{oc.workedWD}h</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#a78bfa' }}>{oc.standbyWE}h</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#a78bfa' }}>{oc.workedWE}h</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:incHrs>0?'#f59e0b':'var(--text-muted)' }}>{incHrs>0?`${incHrs}h`:'—'}</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:upgradeHrs>0?'#818cf8':'var(--text-muted)' }}>{upgradeHrs>0?`${upgradeHrs}h`:'—'}</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:bankHolHrs>0?'#fca5a5':'var(--text-muted)' }}>{bankHolHrs>0?`${bankHolHrs}h`:'—'}</td>
                   <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#93c5fd' }}>£{oc.standbyPay.toFixed(2)}</td>
                   <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#fcd34d' }}>£{oc.workedPay.toFixed(2)}</td>
-                  <td style={{ fontFamily:'DM Mono', fontSize:12, fontWeight:700, color:'#6ee7b7' }}>£{oc.total.toFixed(2)}</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#818cf8' }}>£{(oc.upgradePay||0).toFixed(2)}</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12, fontWeight:800, color:'#6ee7b7' }}>£{oc.total.toFixed(2)}</td>
                   <td style={{ fontFamily:'DM Mono', fontSize:12, color:tb.balance>0?'#6ee7b7':'#fca5a5' }}>{tb.balance}h</td>
                 </tr>
               );
@@ -5059,7 +5188,8 @@ function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, isMa
           </tbody>
         </table>
         <div style={{ marginTop:10, fontSize:11, color:'var(--text-muted)' }}>
-          Standby: £{ONCALL_STANDBY_RATE}/hr flat · Worked: {ONCALL_WORKED_MULTIPLIER}x hourly · TOIL: UK WTR 1:1 · max {TOIL_MAX_CARRYOVER_HOURS}h · 🚨 Incident hours auto-logged from Incidents page
+          Daily: 10am–7pm · Weekday OC: 7pm–7am · Weekend OC: Fri 7pm–Mon 7am · Bank Hol OC: 9am–7am ·
+          Standby: £{ONCALL_STANDBY_RATE}/hr · Worked: {ONCALL_WORKED_MULTIPLIER}x hourly · Upgrades: {ONCALL_WORKED_MULTIPLIER}x hourly
         </div>
       </div>
 
@@ -5067,13 +5197,9 @@ function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, isMa
       <div className="card-title" style={{ marginBottom:12 }}>💷 Take-Home Breakdown (base + OC, after UK tax 2025-26)</div>
       <div className="grid-2 mb-16">
         {users.map(u => {
-          const p      = payconfig[u.id] || { base: 2500 };
-          const annual = p.annual || p.base * 12;
-          const hourly = annual / 2080;
-          const oc     = calcOncallPay(timesheets[u.id], hourly);
-          const annualOC   = oc.total * 12;
+          const { p, annual, hourly, oc, tb, incHrs } = getUserData(u);
+          const annualOC = oc.total * 12;
           const tx = calcUKTax(annual + annualOC, { pensionPct:p.pensionPct||0, studentLoan:p.studentLoan||false });
-          const incHrs = (timesheets[u.id]||[]).filter(e=>e.week&&e.week.startsWith('INC')).reduce((a,e)=>a+(e.weekday_oncall||0)+(e.weekend_oncall||0),0);
           return (
             <div key={u.id} className="card">
               <div style={{ display:'flex', gap:10, alignItems:'center', marginBottom:10 }}>
@@ -5082,38 +5208,18 @@ function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, isMa
                   <div style={{ fontSize:13, fontWeight:600 }}>{u.name}</div>
                   <div style={{ fontSize:11, color:'var(--text-muted)' }}>
                     £{annual.toLocaleString()}/yr base · Eff. rate: {(tx.effectiveRate*100).toFixed(1)}%
-                    {incHrs>0 && <span style={{ color:'#f59e0b', marginLeft:6 }}>· 🚨 {incHrs}h incident hrs</span>}
+                    {incHrs>0 && <span style={{ color:'#f59e0b', marginLeft:6 }}>· 🚨 {incHrs}h incident</span>}
                   </div>
                 </div>
               </div>
-              {/* Tax breakdown summary */}
               <div style={{ background:'rgba(30,64,175,0.1)', borderRadius:8, padding:'8px 12px', marginBottom:10, fontSize:11 }}>
-                <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
-                  <span style={{ color:'var(--text-muted)' }}>Annual gross (inc. OC)</span>
-                  <span style={{ fontFamily:'DM Mono' }}>£{Math.round(tx.annualGross).toLocaleString()}</span>
-                </div>
-                <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
-                  <span style={{ color:'#fca5a5' }}>Income Tax</span>
-                  <span style={{ fontFamily:'DM Mono', color:'#fca5a5' }}>-£{Math.round(tx.incomeTax).toLocaleString()}</span>
-                </div>
-                <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
-                  <span style={{ color:'#fcd34d' }}>National Insurance</span>
-                  <span style={{ fontFamily:'DM Mono', color:'#fcd34d' }}>-£{Math.round(tx.ni).toLocaleString()}</span>
-                </div>
-                {(p.pensionPct||0) > 0 && <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
-                  <span style={{ color:'#93c5fd' }}>Pension ({p.pensionPct}%)</span>
-                  <span style={{ fontFamily:'DM Mono', color:'#93c5fd' }}>-£{Math.round(tx.pension).toLocaleString()}</span>
-                </div>}
-                {p.studentLoan && <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
-                  <span style={{ color:'#c4b5fd' }}>Student Loan Plan 2</span>
-                  <span style={{ fontFamily:'DM Mono', color:'#c4b5fd' }}>-£{Math.round(tx.slRepay).toLocaleString()}</span>
-                </div>}
-                <div style={{ display:'flex', justifyContent:'space-between', borderTop:'1px solid var(--border)', paddingTop:4, marginTop:4 }}>
-                  <span style={{ fontWeight:600 }}>Annual take-home</span>
-                  <span style={{ fontFamily:'DM Mono', fontWeight:700, color:'#6ee7b7' }}>£{Math.round(tx.annualNet).toLocaleString()}</span>
-                </div>
+                <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}><span style={{ color:'var(--text-muted)' }}>Annual gross (inc. OC)</span><span style={{ fontFamily:'DM Mono' }}>£{Math.round(tx.annualGross).toLocaleString()}</span></div>
+                <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}><span style={{ color:'#fca5a5' }}>Income Tax</span><span style={{ fontFamily:'DM Mono', color:'#fca5a5' }}>-£{Math.round(tx.incomeTax).toLocaleString()}</span></div>
+                <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}><span style={{ color:'#fcd34d' }}>National Insurance</span><span style={{ fontFamily:'DM Mono', color:'#fcd34d' }}>-£{Math.round(tx.ni).toLocaleString()}</span></div>
+                {(p.pensionPct||0)>0 && <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}><span style={{ color:'#93c5fd' }}>Pension ({p.pensionPct}%)</span><span style={{ fontFamily:'DM Mono', color:'#93c5fd' }}>-£{Math.round(tx.pension).toLocaleString()}</span></div>}
+                {p.studentLoan && <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}><span style={{ color:'#c4b5fd' }}>Student Loan Plan 2</span><span style={{ fontFamily:'DM Mono', color:'#c4b5fd' }}>-£{Math.round(tx.slRepay).toLocaleString()}</span></div>}
+                <div style={{ display:'flex', justifyContent:'space-between', borderTop:'1px solid var(--border)', paddingTop:4, marginTop:4 }}><span style={{ fontWeight:600 }}>Annual take-home</span><span style={{ fontFamily:'DM Mono', fontWeight:700, color:'#6ee7b7' }}>£{Math.round(tx.annualNet).toLocaleString()}</span></div>
               </div>
-              {/* Period grid */}
               <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:6, fontSize:11 }}>
                 {[['Monthly','monthly'],['Weekly','weekly'],['Daily','daily'],['Hourly','hourly']].map(([label,key]) => (
                   <div key={key} style={{ background:'rgba(30,64,175,0.15)', borderRadius:6, padding:'6px 8px', textAlign:'center' }}>
@@ -6139,7 +6245,7 @@ export default function App() {
       case 'insights':   return <Insights {...props} />;
       case 'capacity':   return <Capacity {...props} incidents={incidents} />;
       case 'reports':    return <WeeklyReports {...props} />;
-      case 'payroll':    return <Payroll {...props} incidents={incidents} upgrades={upgrades} />;
+      case 'payroll':    return <Payroll {...props} incidents={incidents} upgrades={upgrades} rota={rota} />;
       case 'payconfig':  return <PayConfig {...props} />;
       case 'settings':   return <Settings {...props} />;
       case 'myaccount':  return <MyAccount currentUser={currentUser} users={users} setUsers={setUsers} driveToken={driveToken} profilePics={profilePics} setProfilePicsState={setProfilePicsState} />;
