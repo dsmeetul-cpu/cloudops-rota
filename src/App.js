@@ -1443,6 +1443,13 @@ function RotaPage({ users, rota, setRota, holidays, upgrades, swapRequests, setS
   const [swapSuggestion, setSwapSuggestion] = useState(null);
   const [viewMode, setViewMode]   = useState('compact'); // 'compact' | 'hours'
   const DAYS = ['M','T','W','T','F','S','S'];
+  // lockedCells: Set of "userId::date" strings — protected from Clear/Generate/Force Regenerate
+  const [lockedCells, setLockedCells] = useState(new Set());
+  const toggleLock  = (userId, date) => {
+    const key = `${userId}::${date}`;
+    setLockedCells(prev => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n; });
+  };
+  const isLocked = (userId, date) => lockedCells.has(`${userId}::${date}`);
 
   // Shift hour definitions
   const SHIFT_HOURS = {
@@ -1470,8 +1477,7 @@ function RotaPage({ users, rota, setRota, holidays, upgrades, swapRequests, setS
             // Manual entry wins — keep it regardless of what generate produced
             merged[u.id][date] = shift;
           }
-        });
-      });
+        });      });
       return merged;
     });
     setGenerated(true);
@@ -1589,16 +1595,35 @@ function RotaPage({ users, rota, setRota, holidays, upgrades, swapRequests, setS
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
               <button className="btn btn-secondary" onClick={() => {
-                if (window.confirm('⚠️  Regenerate from scratch? All manually-set shifts will be overwritten.')) {
-                  setRota(sanitiseRota(generateRota(users, startDate, weeks)));
+                if (window.confirm('⚠️  Regenerate from scratch? Locked cells will be preserved, all others overwritten.')) {
+                  const fresh = sanitiseRota(generateRota(users, startDate, weeks));
+                  setRota(prev => {
+                    const merged = { ...fresh };
+                    users.forEach(u => {
+                      merged[u.id] = { ...(fresh[u.id] || {}) };
+                      Object.entries(prev[u.id] || {}).forEach(([date, shift]) => {
+                        if (isLocked(u.id, date)) merged[u.id][date] = shift; // locked wins
+                      });
+                    });
+                    return merged;
+                  });
                   setGenerated(true);
                 }
               }}>↺ Force Regenerate</button>
               <div style={{ fontSize: 9, color: 'rgba(255,80,80,0.5)', textAlign: 'center' }}>⚠ Overwrites all shifts</div>
             </div>
             <button className="btn btn-danger" onClick={() => {
-              if (window.confirm('⚠️  Clear all rota entries? This cannot be undone.')) {
-                setRota({});
+              if (window.confirm('⚠️  Clear all rota entries? Locked cells will be preserved.')) {
+                setRota(prev => {
+                  const next = {};
+                  users.forEach(u => {
+                    next[u.id] = {};
+                    Object.entries(prev[u.id] || {}).forEach(([date, shift]) => {
+                      if (isLocked(u.id, date)) next[u.id][date] = shift; // keep locked
+                    });
+                  });
+                  return next;
+                });
               }
             }}>🗑 Clear Rota</button>
             <button className="btn btn-secondary" onClick={checkConflicts}>🔍 Check Conflicts</button>
@@ -1958,7 +1983,15 @@ function RotaPage({ users, rota, setRota, holidays, upgrades, swapRequests, setS
                             </>
                           )}
                           {isManager && s !== 'off' && !isEditing && (
-                            <button onClick={() => deleteCell(u.id, ds)} style={{ display: 'block', margin: '1px auto 0', background: 'none', border: 'none', color: '#ef4444', fontSize: 8, cursor: 'pointer', padding: 0 }}>✕</button>
+                            <div style={{ display: 'flex', justifyContent: 'center', gap: 3, marginTop: 2 }}>
+                              <button
+                                onClick={e => { e.stopPropagation(); toggleLock(u.id, ds); }}
+                                title={isLocked(u.id, ds) ? 'Unlock this cell' : 'Lock to protect from Clear/Generate'}
+                                style={{ background: 'none', border: 'none', fontSize: 9, cursor: 'pointer', padding: 0, color: isLocked(u.id, ds) ? '#f59e0b' : 'rgba(255,255,255,0.25)', lineHeight: 1 }}>
+                                {isLocked(u.id, ds) ? '🔒' : '🔓'}
+                              </button>
+                              <button onClick={() => deleteCell(u.id, ds)} style={{ background: 'none', border: 'none', color: '#ef4444', fontSize: 8, cursor: 'pointer', padding: 0 }}>✕</button>
+                            </div>
                           )}
                         </td>
                       );
@@ -5325,7 +5358,14 @@ function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks, dri
   // ── Add engineer ─────────────────────────────────────────────────────────
   const add = async () => {
     if (!form.name) return;
-    const id    = generateTrigramId(form.name, users);
+    // Use manually typed trigram if provided (and not already taken), otherwise auto-generate
+    let id;
+    if (form.trigram && form.trigram.trim().length >= 2) {
+      const candidate = form.trigram.trim().toUpperCase();
+      id = users.find(u => u.id === candidate) ? generateTrigramId(form.name, users) : candidate;
+    } else {
+      id = generateTrigramId(form.name, users);
+    }
     const color = form.color || TRICOLORS[users.length % TRICOLORS.length];
     const avatar = form.avatar || form.name.split(' ').map(x => x[0]).join('').slice(0, 2).toUpperCase();
     const newUser = { id, name: form.name, role: form.role, tri: id.slice(0,3), avatar, color,
@@ -5476,25 +5516,28 @@ function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks, dri
   // ── Shared field renderer ────────────────────────────────────────────────
   const UserFields = ({ fv, setFv, uid, isEdit }) => (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-      {/* Name — always shown; label differs for add vs edit */}
+      {/* Full Name — always shown */}
       <div>
-        {isEdit && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 3 }}>Full Name</div>}
-        <input className="input" placeholder="Full Name *" value={fv.name||''} onChange={e => setFv(f => ({...f, name: e.target.value}))} />
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 3 }}>Full Name *</div>
+        <input className="input" placeholder="e.g. Mahir Osman" value={fv.name||''} onChange={e => setFv(f => ({...f, name: e.target.value}))} />
       </div>
-      {/* Trigram / ID — only shown in edit mode */}
-      {isEdit && (
-        <div>
-          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 3 }}>
-            Trigram ID <span style={{ color: 'rgba(255,200,50,0.8)' }}>⚠ Changing this remaps all rota, holidays &amp; timesheets</span>
-          </div>
-          <input className="input" placeholder="e.g. MBA47" maxLength={8}
-            value={fv.trigram||''} onChange={e => setFv(f => ({...f, trigram: e.target.value.toUpperCase()}))}
-            style={{ fontFamily: 'DM Mono', letterSpacing: 1 }} />
+      {/* Trigram / ID — shown in both Add and Edit mode */}
+      <div>
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 3 }}>
+          Trigram ID {isEdit
+            ? <span style={{ color: 'rgba(255,200,50,0.8)' }}>⚠ Changing remaps all rota, holidays &amp; timesheets</span>
+            : <span style={{ color: 'rgba(255,255,255,0.3)' }}>(optional — auto-generated from name if blank)</span>}
         </div>
-      )}
-      <select className="select" value={fv.role||'Engineer'} onChange={e => setFv(f => ({...f, role: e.target.value}))}>
-        <option>Engineer</option><option>Manager</option>
-      </select>
+        <input className="input" placeholder={isEdit ? 'e.g. MAH01' : 'Auto-generated if blank'} maxLength={8}
+          value={fv.trigram||''} onChange={e => setFv(f => ({...f, trigram: e.target.value.toUpperCase()}))}
+          style={{ fontFamily: 'DM Mono', letterSpacing: 1 }} />
+      </div>
+      <div>
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 3 }}>Role</div>
+        <select className="select" value={fv.role||'Engineer'} onChange={e => setFv(f => ({...f, role: e.target.value}))}>
+          <option>Engineer</option><option>Manager</option>
+        </select>
+      </div>
       <input className="input" type="email" placeholder="Google Email" value={fv.google_email||''} onChange={e => setFv(f => ({...f, google_email: e.target.value}))} />
       <input className="input" type="tel" placeholder="Mobile Number" value={fv.mobile_number||''} onChange={e => setFv(f => ({...f, mobile_number: e.target.value}))} />
       <input className="input" placeholder="Avatar Initials (e.g. MB)" maxLength={3} value={fv.avatar||''} onChange={e => setFv(f => ({...f, avatar: e.target.value.toUpperCase()}))} />
