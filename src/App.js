@@ -1,6 +1,6 @@
 // src/App.js
 // CloudOps Rota — Full Production Build v2
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 17th April 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 11th April 2026
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
@@ -5034,7 +5034,7 @@ function WeeklyReports({ users, incidents, timesheets, holidays, isManager }) {
 }
 
 // ── Payroll (Manager only) ─────────────────────────────────────────────────
-function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, rota, isManager }) {
+function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, rota, holidays, isManager }) {
   if (!isManager) return <Alert type="warning">⚠ Payroll is restricted to managers.</Alert>;
 
   const [showExport, setShowExport] = React.useState(false);
@@ -5042,14 +5042,24 @@ function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, rota
   const [exportEnd,   setExportEnd]   = React.useState('');
   const [exporting,   setExporting]   = React.useState(false);
 
+  // Safe defaults so nothing crashes if props arrive undefined
+  const safeUsers     = users     || [];
+  const safeTS        = timesheets|| {};
+  const safePay       = payconfig || {};
+  const safeToil      = toil      || [];
+  const safeUpgrades  = upgrades  || [];
+  const safeRota      = rota      || {};
+  const safeHolidays  = holidays  || [];
+  const bhList        = (typeof UK_BANK_HOLIDAYS !== 'undefined') ? UK_BANK_HOLIDAYS : [];
+
   // ── Per-user helpers ──────────────────────────────────────────────────────
   const getUserData = (u, startDs, endDs) => {
-    const p      = payconfig[u.id] || { base: 2500 };
+    const p      = safePay[u.id] || { base: 2500 };
     const annual = p.annual || p.base * 12;
     const hourly = annual / 2080;
 
     // Filter timesheet entries to date range
-    const ts = (timesheets[u.id] || []).filter(e => {
+    const ts = (safeTS[u.id] || []).filter(e => {
       if (!startDs || !endDs) return true;
       const w = e.weekStart || e.week || '';
       return w >= startDs && w <= endDs;
@@ -5057,17 +5067,17 @@ function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, rota
 
     // Rota entries for this user filtered to date range
     const rotaForUser = Object.fromEntries(
-      Object.entries(rota?.[u.id] || {}).filter(([date]) => {
+      Object.entries(safeRota[u.id] || {}).filter(([date]) => {
         if (!startDs || !endDs) return true;
         return date >= startDs && date <= endDs;
       })
     );
 
     // Holidays for this user
-    const userHols = (holidays || []).filter(h => h.userId === u.id);
+    const userHols = safeHolidays.filter(h => h.userId === u.id);
 
     // Upgrade hours (approved only) in range
-    const upgradeHrs = (upgrades || []).filter(up => {
+    const upgradeHrs = safeUpgrades.filter(up => {
       if (!startDs || !endDs) return true;
       return up.date >= startDs && up.date <= endDs;
     }).reduce((sum, up) => {
@@ -5076,17 +5086,16 @@ function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, rota
     }, 0);
 
     // Count bank holiday OC days in range (where rota has this user assigned)
-    const bhList = (typeof UK_BANK_HOLIDAYS !== 'undefined') ? UK_BANK_HOLIDAYS : [];
     const bankHolDays = bhList.filter(bh => {
       if (startDs && bh.date < startDs) return false;
       if (endDs   && bh.date > endDs)   return false;
-      const s = rota?.[u.id]?.[bh.date];
+      const s = safeRota[u.id]?.[bh.date];
       return s && s !== 'off';
     });
-    const bankHolHrs = bankHolDays.length; // passed as count — calcOncallPay multiplies by 22
+    const bankHolHrs = bankHolDays.length;
 
     const oc = calcOncallPay(ts, hourly, upgradeHrs, bankHolHrs, rotaForUser, userHols, bhList, startDs, endDs);
-    const tb = calcTOILBalance(timesheets[u.id], toil, u.id);
+    const tb = calcTOILBalance(safeTS[u.id], safeToil, u.id);
     const incHrs = oc.incidentHrs || 0;
     return { p, annual, hourly, oc, tb, incHrs, upgradeHrs, bankHolHrs };
   };
@@ -5111,7 +5120,7 @@ function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, rota
       ]];
 
       const exportDate = new Date().toISOString().slice(0, 10);
-      users.forEach(u => {
+      safeUsers.forEach(u => {
         const { annual, hourly, oc, tb, incHrs, upgradeHrs, bankHolHrs } = getUserData(u, exportStart, exportEnd);
         rows.push([
           u.id, u.name, exportDate, rangeLabel,
@@ -5148,7 +5157,7 @@ function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, rota
   };
 
   // ── Summary stats (all time) ──────────────────────────────────────────────
-  const totalPayroll    = users.reduce((s, u) => { const p = payconfig[u.id]||{base:2500}; return s + (p.annual||p.base*12); }, 0);
+  const totalPayroll    = safeUsers.reduce((s, u) => { const p = safePay[u.id]||{base:2500}; return s + (p.annual||p.base*12); }, 0);
   const totalOCPay      = users.reduce((s, u) => { const { oc } = getUserData(u); return s + oc.total; }, 0);
   const totalIncidentHrs = users.reduce((s, u) => { const { incHrs } = getUserData(u); return s + incHrs; }, 0);
   const totalUpgradeHrs  = users.reduce((s, u) => { const { upgradeHrs } = getUserData(u); return s + upgradeHrs; }, 0);
@@ -5191,7 +5200,7 @@ function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, rota
             {(exportStart || exportEnd) && (
               <div style={{ fontSize:12, color:'var(--text-secondary)', background:'rgba(59,130,246,0.1)', borderRadius:8, padding:'8px 12px' }}>
                 📅 Exporting: <strong>{exportStart || 'start'}</strong> → <strong>{exportEnd || 'end'}</strong>
-                &nbsp;· {users.length} engineers
+                &nbsp;· {safeUsers.length} engineers
               </div>
             )}
             <div style={{ display:'flex', gap:8, justifyContent:'flex-end', marginTop:4 }}>
@@ -5235,7 +5244,7 @@ function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, rota
             </tr>
           </thead>
           <tbody>
-            {users.map(u => {
+            {safeUsers.map(u => {
               const { annual, hourly, oc, tb, incHrs, upgradeHrs, bankHolHrs } = getUserData(u);
               return (
                 <tr key={u.id}>
@@ -5267,7 +5276,7 @@ function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, rota
       {/* Full take-home breakdown per engineer */}
       <div className="card-title" style={{ marginBottom:12 }}>💷 Take-Home Breakdown (base + OC, after UK tax 2025-26)</div>
       <div className="grid-2 mb-16">
-        {users.map(u => {
+        {safeUsers.map(u => {
           const { p, annual, hourly, oc, tb, incHrs } = getUserData(u);
           const annualOC = oc.total * 12;
           const tx = calcUKTax(annual + annualOC, { pensionPct:p.pensionPct||0, studentLoan:p.studentLoan||false });
