@@ -3352,6 +3352,12 @@ function Absence({ users, absences, setAbsences, currentUser, isManager, driveTo
       }));
       if (loaded.length > 0) {
         setAbsences(loaded);
+        // ── CRITICAL FIX: also write back to absences.json so loadAllFromDrive
+        // finds the data on the next page load. Without this, the Sheet and the
+        // JSON file are out of sync and engineers on other machines see nothing.
+        if (driveToken) {
+          driveWriteJson(driveToken, 'absences.json', loaded).catch(() => {});
+        }
         setSheetMsg(`✅ Loaded ${loaded.length} records from Google Sheet.`);
       } else {
         setSheetMsg('Sheet is empty.');
@@ -6016,8 +6022,12 @@ export default function App() {
         // If the user has no active Google session this throws — we catch it silently.
         const token = await initGoogleAuth(GOOGLE_CLIENT_ID, { prompt: 'none' });
         if (token) {
-          setDriveToken(token);
+          // Persist token for next page load (avoids popup while token still valid)
+          try { sessionStorage.setItem('gdrive_token', token); sessionStorage.setItem('gdrive_token_ts', Date.now()); } catch (_) {}
           setSyncing(true);
+          // DO NOT call setDriveToken(token) yet — setting it triggers all save()
+          // useEffects which would immediately write DEFAULT_* to Drive before the
+          // real data has been loaded. Token is set only after data is in state.
           const [reg, pics] = await Promise.all([
             loadRegistryFromDrive(token),
             loadProfilePictures(token)
@@ -6047,17 +6057,21 @@ export default function App() {
           setLastSync(new Date());
           driveDataLoaded.current = true;  // ← unlock saves AFTER data is in state
           setDriveReady(true);
+          setDriveToken(token);  // ← NOW safe: real Drive data is in state
         } else {
-          // No token from silent auth — allow saves with current (default) data
-          driveDataLoaded.current = true;
+          // No token from silent auth — Drive offline, don't enable saves yet.
+          // driveDataLoaded stays false so no defaults are ever written to Drive.
+          // User must manually click Connect to load their real data.
         }
       } catch (e) {
-        // Silent fail — no active Google session or prompt:none not supported
-        // User can manually click Connect to trigger the interactive flow
+        // Silent fail — no active Google session or prompt:none not supported.
+        // DO NOT set driveDataLoaded.current = true here — that would allow the
+        // save useEffects to fire with DEFAULT_* values and OVERWRITE Drive data
+        // the next time the user manually connects.
         if (e?.error !== 'interaction_required' && e?.error !== 'login_required') {
           console.warn('Auto Drive connect:', e?.message || e);
         }
-        driveDataLoaded.current = true; // unblock saves even on error
+        // driveDataLoaded stays false intentionally — saves blocked until Drive loads.
       } finally {
         setSyncing(false);
         setConnectingDrive(false);
@@ -6070,8 +6084,14 @@ export default function App() {
     try {
       setConnectingDrive(true);
       await gapiLoad();
+      // ── IMPORTANT: get the token but DO NOT call setDriveToken yet.
+      // Calling setDriveToken triggers all the save() useEffects immediately.
+      // If we set it before loading Drive data, those effects write DEFAULT_* values
+      // to Drive and overwrite everything the team has saved. We set it only AFTER
+      // all Drive data has been read into state and driveDataLoaded.current = true.
       const token = await initGoogleAuth(GOOGLE_CLIENT_ID);
-      setDriveToken(token);
+      // Persist token for silent re-auth on next page load
+      try { sessionStorage.setItem('gdrive_token', token); sessionStorage.setItem('gdrive_token_ts', Date.now()); } catch (_) {}
       setSyncing(true);
 
       // Show progress bar during load
@@ -6114,8 +6134,13 @@ export default function App() {
 
       setLoadProgress(95); setLoadStatus('Finalising…');
       setLastSync(new Date());
-      driveDataLoaded.current = true;  // ← unlock saves AFTER data is in state
+      // ── Set driveDataLoaded BEFORE setDriveToken so when the token state change
+      // triggers save useEffects they immediately pass the guard and write the
+      // real Drive data (now in state) rather than the defaults.
+      driveDataLoaded.current = true;
       setDriveReady(true);
+      // NOW safe to expose token — saves will fire with the real loaded data
+      setDriveToken(token);
 
       setLoadProgress(100); setLoadStatus('✅ All data loaded from Google Drive');
       setTimeout(() => { setLoadingAfterLogin(false); setLoadProgress(0); setLoadStatus(''); }, 1500);
@@ -6126,7 +6151,8 @@ export default function App() {
       console.error('Drive connect error:', e);
       setSyncing(false);
       setConnectingDrive(false);
-      driveDataLoaded.current = true; // unblock saves even on error
+      // DO NOT set driveDataLoaded.current = true here — the token will be set in
+      // a retry or the user will try again. We must not allow saves with defaults.
       setLoadingAfterLogin(false);
       if (currentUser === 'MBA47') {
         console.warn('Drive connect failed:', e?.message || e);
@@ -6144,23 +6170,45 @@ export default function App() {
   }, [driveToken]);
 
   // Save all data to Drive whenever it changes (only when token present)
-  useEffect(() => { save('users', users); if (isManager && driveToken) syncRegistryToDrive(driveToken, getRegistry(), users).catch(() => {}); }, [users, driveToken]);
-  useEffect(() => { save('holidays', holidays); },         [holidays, driveToken]);
-  useEffect(() => { save('incidents', incidents); },       [incidents, driveToken]);
-  useEffect(() => { save('timesheets', timesheets); },     [timesheets, driveToken]);
-  useEffect(() => { save('upgrades', upgrades); },         [upgrades, driveToken]);
-  useEffect(() => { save('wiki', wiki); },                 [wiki, driveToken]);
-  useEffect(() => { save('glossary', glossary); },         [glossary, driveToken]);
-  useEffect(() => { save('contacts', contacts); },         [contacts, driveToken]);
-  useEffect(() => { save('payconfig', payconfig); },       [payconfig, driveToken]);
-  useEffect(() => { save('rota', rota); },                 [rota, driveToken]);
-  useEffect(() => { save('swapRequests', swapRequests); }, [swapRequests, driveToken]);
-  useEffect(() => { save('toil', toil); },                 [toil, driveToken]);
-  useEffect(() => { save('absences', absences); },         [absences, driveToken]);
-  useEffect(() => { save('logbook', logbook); },           [logbook, driveToken]);
-  useEffect(() => { save('documents', documents); },       [documents, driveToken]);
-  useEffect(() => { save('obsidianNotes', obsidianNotes); },[obsidianNotes, driveToken]);
-  useEffect(() => { save('whatsappChats', whatsappChats); },[whatsappChats, driveToken]);
+  // IMPORTANT: driveToken is intentionally NOT in the dependency arrays.
+  // Including driveToken would cause these effects to fire when the token is first
+  // set (during connectDrive/login), writing DEFAULT_* values to Drive before the
+  // real data has been loaded. The save() function reads driveToken from its own
+  // closure via useCallback([driveToken]) and handles the null-token guard itself.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { save('users', users); if (isManager && driveToken) syncRegistryToDrive(driveToken, getRegistry(), users).catch(() => {}); }, [users]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { save('holidays', holidays); },         [holidays]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { save('incidents', incidents); },       [incidents]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { save('timesheets', timesheets); },     [timesheets]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { save('upgrades', upgrades); },         [upgrades]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { save('wiki', wiki); },                 [wiki]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { save('glossary', glossary); },         [glossary]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { save('contacts', contacts); },         [contacts]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { save('payconfig', payconfig); },       [payconfig]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { save('rota', rota); },                 [rota]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { save('swapRequests', swapRequests); }, [swapRequests]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { save('toil', toil); },                 [toil]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { save('absences', absences); },         [absences]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { save('logbook', logbook); },           [logbook]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { save('documents', documents); },       [documents]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { save('obsidianNotes', obsidianNotes); },[obsidianNotes]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { save('whatsappChats', whatsappChats); },[whatsappChats]);
 
   const [manualSyncing, setManualSyncing] = useState(false);
   const [syncProgress, setSyncProgress]   = useState(0);
@@ -6200,11 +6248,29 @@ export default function App() {
     try {
       await gapiLoad();
       setLoadProgress(12); setLoadStatus('Connecting to Google Drive…');
-      const token = await initGoogleAuth(GOOGLE_CLIENT_ID, { prompt: 'none' }).catch(() =>
-        initGoogleAuth(GOOGLE_CLIENT_ID)
-      );
+
+      // Try sessionStorage-cached token first (avoids popup when token is still valid)
+      let token = null;
+      try {
+        const cached = sessionStorage.getItem('gdrive_token');
+        const ts = parseInt(sessionStorage.getItem('gdrive_token_ts') || '0', 10);
+        // Google tokens last 3600s — use cache only if < 50 min old
+        if (cached && (Date.now() - ts) < 50 * 60 * 1000) token = cached;
+      } catch (_) {}
+
+      if (!token) {
+        // Try silent re-auth first, fall back to interactive only if needed
+        token = await initGoogleAuth(GOOGLE_CLIENT_ID, { prompt: 'none' }).catch(() =>
+          initGoogleAuth(GOOGLE_CLIENT_ID)
+        );
+        try { if (token) { sessionStorage.setItem('gdrive_token', token); sessionStorage.setItem('gdrive_token_ts', Date.now()); } } catch (_) {}
+      }
+
       if (token) {
-        setDriveToken(token);
+        // ── CRITICAL: DO NOT call setDriveToken(token) here yet.
+        // Setting driveToken triggers all save() useEffects which would write
+        // DEFAULT_* values to Drive before we've loaded the real data.
+        // We set it only after all data is loaded and driveDataLoaded.current = true.
         setLoadProgress(20); setLoadStatus('Loading user registry…');
         const [reg, pics] = await Promise.all([
           loadRegistryFromDrive(token),
@@ -6236,20 +6302,22 @@ export default function App() {
         if (data.obsidianNotes != null) setObsidianNotes(data.obsidianNotes);
         if (data.whatsappChats != null) setWhatsappChats(data.whatsappChats);
         setLastSync(new Date());
+        // Mark data loaded BEFORE setting token so saves don't fire with stale state
         driveDataLoaded.current = true;
         setDriveReady(true);
+        setDriveToken(token); // ← safe to expose now: real data is in state
         setLoadProgress(100); setLoadStatus('✅ Ready');
         await new Promise(r => setTimeout(r, 800));
       } else {
-        // No Drive token — still let user in, saves will be blocked until manual connect
-        driveDataLoaded.current = true;
-        setLoadProgress(100); setLoadStatus('⚠️ Drive not connected — data may not be saved');
+        // No Drive token — still let user in but saves stay blocked.
+        // User can manually click Connect inside the app.
+        setLoadProgress(100); setLoadStatus('⚠️ Drive not connected — connect manually inside the app');
         await new Promise(r => setTimeout(r, 1200));
       }
     } catch (e) {
       console.warn('Login Drive load failed:', e?.message || e);
-      driveDataLoaded.current = true;
-      setLoadProgress(100); setLoadStatus('⚠️ Could not load Drive data');
+      // DO NOT set driveDataLoaded.current = true — saves must stay blocked.
+      setLoadProgress(100); setLoadStatus('⚠️ Could not load Drive data — try reconnecting');
       await new Promise(r => setTimeout(r, 1200));
     }
     setLoadingAfterLogin(false);
