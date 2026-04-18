@@ -1,6 +1,6 @@
 // src/App.js
 // CloudOps Rota — Full Production Build v2
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 11th April 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 17th April 2026
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
@@ -6175,39 +6175,22 @@ export default function App() {
   // set (during connectDrive/login), writing DEFAULT_* values to Drive before the
   // real data has been loaded. The save() function reads driveToken from its own
   // closure via useCallback([driveToken]) and handles the null-token guard itself.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { save('users', users); if (isManager && driveToken) syncRegistryToDrive(driveToken, getRegistry(), users).catch(() => {}); }, [users]);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { save('holidays', holidays); },         [holidays]);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { save('incidents', incidents); },       [incidents]);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { save('timesheets', timesheets); },     [timesheets]);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { save('upgrades', upgrades); },         [upgrades]);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { save('wiki', wiki); },                 [wiki]);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { save('glossary', glossary); },         [glossary]);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { save('contacts', contacts); },         [contacts]);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { save('payconfig', payconfig); },       [payconfig]);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { save('rota', rota); },                 [rota]);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { save('swapRequests', swapRequests); }, [swapRequests]);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { save('toil', toil); },                 [toil]);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { save('absences', absences); },         [absences]);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { save('logbook', logbook); },           [logbook]);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { save('documents', documents); },       [documents]);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { save('obsidianNotes', obsidianNotes); },[obsidianNotes]);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { save('whatsappChats', whatsappChats); },[whatsappChats]);
 
   const [manualSyncing, setManualSyncing] = useState(false);
