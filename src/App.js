@@ -1,6 +1,6 @@
 // src/App.js
 // CloudOps Rota — Full Production Build v2
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 17th April 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 18th April 2026
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
@@ -639,7 +639,7 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDri
             <>
               <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#6b7280' }} />
               <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Drive connecting in background…</div>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Click Connect to load team data from Google Drive</div>
               </div>
               <button className="btn btn-secondary btn-sm" onClick={onConnectDrive} style={{ whiteSpace: 'nowrap', fontSize: 11 }}>
                 📁 Connect
@@ -6017,61 +6017,64 @@ export default function App() {
   useEffect(() => {
     const autoConnect = async () => {
       try {
-        await gapiLoad();
-        // initGoogleAuth must pass prompt:'none' for silent re-auth.
-        // If the user has no active Google session this throws — we catch it silently.
-        const token = await initGoogleAuth(GOOGLE_CLIENT_ID, { prompt: 'none' });
-        if (token) {
-          // Persist token for next page load (avoids popup while token still valid)
-          try { sessionStorage.setItem('gdrive_token', token); sessionStorage.setItem('gdrive_token_ts', Date.now()); } catch (_) {}
-          setSyncing(true);
-          // DO NOT call setDriveToken(token) yet — setting it triggers all save()
-          // useEffects which would immediately write DEFAULT_* to Drive before the
-          // real data has been loaded. Token is set only after data is in state.
-          const [reg, pics] = await Promise.all([
-            loadRegistryFromDrive(token),
-            loadProfilePictures(token)
-          ]);
-          if (reg) setRegistry(reg);
-          if (pics) { setProfilePics(pics); setProfilePicsState(pics); }
-          const defaults = { users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, logbook, documents, obsidianNotes, whatsappChats };
-          const data = await loadAllFromDrive(token, defaults);
-          if (data.users != null) setUsers(data.users);
-          if (data.holidays != null) setHolidays(data.holidays);
-          if (data.incidents != null) setIncidents(data.incidents);
-          if (data.timesheets != null) setTimesheets(data.timesheets);
-          if (data.upgrades != null) setUpgrades(data.upgrades);
-          if (data.wiki != null) setWiki(data.wiki);
-          if (data.glossary != null) setGlossary(data.glossary);
-          if (data.contacts != null) setContacts(data.contacts);
-          if (data.payconfig != null) setPayconfig(data.payconfig);
-          if (data.rota != null) setRota(sanitiseRota(data.rota));
-          if (data.swapRequests != null) setSwapRequests(data.swapRequests);
-          if (data.toil != null) setToil(data.toil);
-          if (data.absences != null) setAbsences(data.absences);
-          if (data.logbook != null) setLogbook(data.logbook);
-          if (data.documents != null) setDocuments(data.documents);
-          if (data.obsidianNotes != null) setObsidianNotes(data.obsidianNotes);
-          // Team Chat: load from Drive JSON (whatsappChats.json) for two-way sync
-          if (data.whatsappChats && Array.isArray(data.whatsappChats)) setWhatsappChats(data.whatsappChats);
-          setLastSync(new Date());
-          driveDataLoaded.current = true;  // ← unlock saves AFTER data is in state
-          setDriveReady(true);
-          setDriveToken(token);  // ← NOW safe: real Drive data is in state
-        } else {
-          // No token from silent auth — Drive offline, don't enable saves yet.
-          // driveDataLoaded stays false so no defaults are ever written to Drive.
-          // User must manually click Connect to load their real data.
+        // ── Silent-only auto-connect using sessionStorage cached token ────────
+        // We deliberately do NOT call initGoogleAuth() here even with prompt:'none'
+        // because some browsers still show the Google account chooser popup for
+        // prompt:'none' requests (especially when third-party cookies are restricted).
+        // Rule: the Google popup ONLY ever appears when the user explicitly clicks
+        // the 📁 Connect button. On first load there is no cached token so we do
+        // nothing — the login screen shows the Connect button.
+        let token = null;
+        try {
+          const cached = sessionStorage.getItem('gdrive_token');
+          const ts = parseInt(sessionStorage.getItem('gdrive_token_ts') || '0', 10);
+          if (cached && (Date.now() - ts) < 50 * 60 * 1000) token = cached;
+        } catch (_) {}
+
+        if (!token) {
+          // No valid cached token — stay offline. User connects manually via button.
+          return;
         }
+
+        // Valid cached token — load Drive data silently with no popup at all.
+        await gapiLoad();
+        setSyncing(true);
+        const [reg, pics] = await Promise.all([
+          loadRegistryFromDrive(token),
+          loadProfilePictures(token)
+        ]);
+        if (reg) setRegistry(reg);
+        if (pics) { setProfilePics(pics); setProfilePicsState(pics); }
+        const defaults = { users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, logbook, documents, obsidianNotes, whatsappChats };
+        const data = await loadAllFromDrive(token, defaults);
+        if (data.users != null) setUsers(data.users);
+        if (data.holidays != null) setHolidays(data.holidays);
+        if (data.incidents != null) setIncidents(data.incidents);
+        if (data.timesheets != null) setTimesheets(data.timesheets);
+        if (data.upgrades != null) setUpgrades(data.upgrades);
+        if (data.wiki != null) setWiki(data.wiki);
+        if (data.glossary != null) setGlossary(data.glossary);
+        if (data.contacts != null) setContacts(data.contacts);
+        if (data.payconfig != null) setPayconfig(data.payconfig);
+        if (data.rota != null) setRota(sanitiseRota(data.rota));
+        if (data.swapRequests != null) setSwapRequests(data.swapRequests);
+        if (data.toil != null) setToil(data.toil);
+        if (data.absences != null) setAbsences(data.absences);
+        if (data.logbook != null) setLogbook(data.logbook);
+        if (data.documents != null) setDocuments(data.documents);
+        if (data.obsidianNotes != null) setObsidianNotes(data.obsidianNotes);
+        if (data.whatsappChats && Array.isArray(data.whatsappChats)) setWhatsappChats(data.whatsappChats);
+        setLastSync(new Date());
+        driveDataLoaded.current = true;
+        setDriveReady(true);
+        setDriveToken(token); // ← safe: real data is in state before token is exposed
       } catch (e) {
-        // Silent fail — no active Google session or prompt:none not supported.
-        // DO NOT set driveDataLoaded.current = true here — that would allow the
-        // save useEffects to fire with DEFAULT_* values and OVERWRITE Drive data
-        // the next time the user manually connects.
+        // Token expired or Drive error — clear cache so next login tries fresh auth
+        try { sessionStorage.removeItem('gdrive_token'); sessionStorage.removeItem('gdrive_token_ts'); } catch (_) {}
         if (e?.error !== 'interaction_required' && e?.error !== 'login_required') {
           console.warn('Auto Drive connect:', e?.message || e);
         }
-        // driveDataLoaded stays false intentionally — saves blocked until Drive loads.
+        // driveDataLoaded stays false — saves blocked until Drive properly loads.
       } finally {
         setSyncing(false);
         setConnectingDrive(false);
@@ -6242,11 +6245,15 @@ export default function App() {
       } catch (_) {}
 
       if (!token) {
-        // Try silent re-auth first, fall back to interactive only if needed
-        token = await initGoogleAuth(GOOGLE_CLIENT_ID, { prompt: 'none' }).catch(() =>
-          initGoogleAuth(GOOGLE_CLIENT_ID)
-        );
-        try { if (token) { sessionStorage.setItem('gdrive_token', token); sessionStorage.setItem('gdrive_token_ts', Date.now()); } } catch (_) {}
+        // No cached token and no silent auth attempt — proceed to the app without Drive.
+        // The user will see the "Drive offline" indicator in the sidebar and can click
+        // 📁 Reconnect to trigger the interactive Google popup at their own choice.
+        // This guarantees the Google account chooser NEVER appears uninvited.
+        setLoadProgress(100); setLoadStatus('⚠️ Drive not connected — click Reconnect inside the app');
+        await new Promise(r => setTimeout(r, 1000));
+        setLoadingAfterLogin(false); setLoadProgress(0); setLoadStatus('');
+        setLoggedIn(true);
+        return;
       }
 
       if (token) {
