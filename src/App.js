@@ -1,6 +1,6 @@
 // src/App.js
 // CloudOps Rota — Full Production Build v2
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 11th April 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 20th April 2026
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
@@ -3492,15 +3492,169 @@ function Absence({ users, absences, setAbsences, currentUser, isManager, driveTo
 function Overtime({ users, overtime, setOvertime, currentUser, isManager, driveToken }) {
   const fmtUK = d => d ? new Date(d + 'T12:00:00').toLocaleDateString('en-GB', { day:'2-digit', month:'2-digit', year:'numeric' }) : '—';
   const BLANK = { userId: currentUser, date: '', hours: '', reason: '', notes: '' };
-  const [showModal, setShowModal] = useState(false);
-  const [form, setForm]           = useState(BLANK);
-  const [editId, setEditId]       = useState(null);
-  const [filterUid, setFilterUid] = useState('all');
+  const [showModal, setShowModal]     = useState(false);
+  const [form, setForm]               = useState(BLANK);
+  const [editId, setEditId]           = useState(null);
+  const [filterUid, setFilterUid]     = useState('all');
   const [filterStatus, setFilterStatus] = useState('all');
-  const [msg, setMsg]             = useState('');
+  const [msg, setMsg]                 = useState('');
+  const [sheetSyncing, setSheetSyncing] = useState(false);
+  const [sheetMsg, setSheetMsg]       = useState('');
+
+  const OT_SHEET_NAME = 'CloudOps-Overtime';
 
   const notify = (m, ms = 3000) => { setMsg(m); setTimeout(() => setMsg(''), ms); };
+  const notifySheet = (m, ms = 4000) => { setSheetMsg(m); setTimeout(() => setSheetMsg(''), ms); };
 
+  // ── Google Sheet sync ──────────────────────────────────────────────────────
+  // Finds or creates CloudOps-Overtime sheet, writes all rows.
+  // Also writes overtime.json so loadAllFromDrive picks it up on next load.
+  const syncToSheet = async (updatedOT) => {
+    if (!driveToken) return;
+    setSheetSyncing(true);
+    try {
+      const data = updatedOT || overtime;
+
+      // Find or create the Google Sheet
+      let sheetId = null;
+      const listResp = await fetch(
+        `https://www.googleapis.com/drive/v3/files?q=name%3D'${OT_SHEET_NAME}'+and+trashed%3Dfalse&fields=files(id,name)`,
+        { headers: { Authorization: `Bearer ${driveToken}` } }
+      ).then(r => r.json());
+
+      if (listResp.files && listResp.files.length > 0) {
+        sheetId = listResp.files[0].id;
+      } else {
+        const createResp = await fetch('https://sheets.googleapis.com/v4/spreadsheets', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${driveToken}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            properties: { title: OT_SHEET_NAME },
+            sheets: [{ properties: { title: 'Overtime', sheetId: 0 } }]
+          })
+        }).then(r => r.json());
+        sheetId = createResp.spreadsheetId;
+      }
+
+      // Build rows
+      const header = [
+        'ID', 'Engineer ID', 'Engineer Name', 'Date', 'Hours',
+        'Reason', 'Notes', 'Status', 'Submitted By', 'Submitted At',
+        'Approved By', 'Approved At'
+      ];
+      const rows = [header, ...data.map(o => {
+        const u = users.find(x => x.id === o.userId);
+        const approver = users.find(x => x.id === o.approvedBy);
+        return [
+          o.id,
+          o.userId,
+          u?.name || o.userId,
+          fmtUK(o.date),
+          o.hours,
+          o.reason || '',
+          o.notes || '',
+          o.status,
+          o.submittedBy || '',
+          o.submittedAt ? fmtUK(o.submittedAt.slice(0, 10)) : '',
+          approver?.name || o.approvedBy || '',
+          o.approvedAt ? fmtUK(o.approvedAt.slice(0, 10)) : '',
+        ];
+      })];
+
+      // Write data
+      await fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/Overtime!A1:L${rows.length}?valueInputOption=RAW`,
+        { method: 'PUT', headers: { Authorization: `Bearer ${driveToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ values: rows }) }
+      );
+
+      // Style header row
+      await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}:batchUpdate`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${driveToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requests: [{
+          repeatCell: {
+            range: { sheetId: 0, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 0, endColumnIndex: 12 },
+            cell: { userEnteredFormat: {
+              textFormat: { bold: true, foregroundColor: { red:1, green:1, blue:1 } },
+              backgroundColor: { red: 0.07, green: 0.21, blue: 0.37 }
+            }},
+            fields: 'userEnteredFormat(textFormat,backgroundColor)'
+          }
+        }]})
+      });
+
+      // Also write back to overtime.json so loadAllFromDrive finds it on next load
+      await driveWriteJson(driveToken, 'overtime.json', data).catch(() => {});
+
+      notifySheet(`✅ Synced to Google Sheet "${OT_SHEET_NAME}" — ${new Date().toLocaleTimeString('en-GB', { hour:'2-digit', minute:'2-digit' })}`);
+    } catch (e) {
+      console.error('Overtime sheet sync error:', e);
+      notifySheet('⚠️ Could not sync to Google Sheet — data still saved to Drive JSON.');
+    } finally {
+      setSheetSyncing(false);
+    }
+  };
+
+  // Load from Sheet — reads CloudOps-Overtime and overwrites local state + JSON
+  const loadFromSheet = async () => {
+    if (!driveToken) { notifySheet('⚠️ Not connected to Google Drive.'); return; }
+    setSheetSyncing(true);
+    try {
+      const listResp = await fetch(
+        `https://www.googleapis.com/drive/v3/files?q=name%3D'${OT_SHEET_NAME}'+and+trashed%3Dfalse&fields=files(id,name)`,
+        { headers: { Authorization: `Bearer ${driveToken}` } }
+      ).then(r => r.json());
+
+      if (!listResp.files || listResp.files.length === 0) {
+        notifySheet('No overtime sheet found yet. Log an overtime entry to create it.');
+        setSheetSyncing(false);
+        return;
+      }
+
+      const sheetId = listResp.files[0].id;
+      const dataResp = await fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/Overtime!A2:L1000`,
+        { headers: { Authorization: `Bearer ${driveToken}` } }
+      ).then(r => r.json());
+
+      const rows = dataResp.values || [];
+      // Parse rows back to objects — date stored as UK string dd/mm/yyyy, convert to yyyy-mm-dd
+      const parseUKDate = s => {
+        if (!s) return '';
+        const [d, m, y] = s.split('/');
+        return y && m && d ? `${y}-${m.padStart(2,'0')}-${d.padStart(2,'0')}` : s;
+      };
+      const loaded = rows.filter(r => r[0]).map(r => ({
+        id:          r[0],
+        userId:      r[1],
+        date:        parseUKDate(r[3]),
+        hours:       parseFloat(r[4]) || 0,
+        reason:      r[5] || '',
+        notes:       r[6] || '',
+        status:      r[7] || 'pending',
+        submittedBy: r[8] || '',
+        submittedAt: r[9] ? new Date(parseUKDate(r[9])).toISOString() : '',
+        approvedBy:  r[10] ? users.find(u => u.name === r[10])?.id || r[10] : null,
+        approvedAt:  r[11] ? new Date(parseUKDate(r[11])).toISOString() : null,
+      }));
+
+      if (loaded.length > 0) {
+        setOvertime(loaded);
+        // Write back to overtime.json so next load picks it up without needing Sheet
+        await driveWriteJson(driveToken, 'overtime.json', loaded).catch(() => {});
+        notifySheet(`✅ Loaded ${loaded.length} records from Google Sheet.`);
+      } else {
+        notifySheet('Sheet exists but has no data rows.');
+      }
+    } catch (e) {
+      console.error('Load overtime from sheet error:', e);
+      notifySheet('⚠️ Could not load from Google Sheet.');
+    } finally {
+      setSheetSyncing(false);
+    }
+  };
+
+  // ── CRUD actions — all call syncToSheet after mutating state ──────────────
   const openAdd  = () => { setForm({ ...BLANK, userId: isManager ? (users[0]?.id || currentUser) : currentUser }); setEditId(null); setShowModal(true); };
   const openEdit = (ot, e) => {
     if (!isManager && ot.userId !== currentUser) return;
@@ -3512,8 +3666,6 @@ function Overtime({ users, overtime, setOvertime, currentUser, isManager, driveT
 
   const save = () => {
     if (!form.date || !form.hours || parseFloat(form.hours) <= 0) { notify('⚠️ Date and hours are required.'); return; }
-    const isOwnEntry = form.userId === currentUser;
-    // Manager entries (or manager submitting for themselves) are auto-approved
     const autoApprove = isManager;
     const entry = {
       id: editId || ('ot-' + Date.now()),
@@ -3532,6 +3684,7 @@ function Overtime({ users, overtime, setOvertime, currentUser, isManager, driveT
     setOvertime(updated);
     setShowModal(false);
     notify(autoApprove ? '✅ Overtime logged and auto-approved.' : '✅ Overtime request submitted for manager approval.');
+    syncToSheet(updated);
   };
 
   const approve = (id) => {
@@ -3539,6 +3692,7 @@ function Overtime({ users, overtime, setOvertime, currentUser, isManager, driveT
     const updated = overtime.map(o => o.id === id ? { ...o, status: 'approved', approvedBy: currentUser, approvedAt: new Date().toISOString() } : o);
     setOvertime(updated);
     notify('✅ Overtime approved.');
+    syncToSheet(updated);
   };
 
   const reject = (id) => {
@@ -3546,15 +3700,18 @@ function Overtime({ users, overtime, setOvertime, currentUser, isManager, driveT
     const updated = overtime.map(o => o.id === id ? { ...o, status: 'rejected', approvedBy: currentUser, approvedAt: new Date().toISOString() } : o);
     setOvertime(updated);
     notify('❌ Overtime rejected.');
+    syncToSheet(updated);
   };
 
   const del = (id, e) => {
     if (!isManager) { notify('⚠️ Only the manager can delete entries.'); return; }
     e.stopPropagation();
-    setOvertime(overtime.filter(o => o.id !== id));
+    const updated = overtime.filter(o => o.id !== id);
+    setOvertime(updated);
+    syncToSheet(updated);
   };
 
-  // Filtered view
+  // ── Display helpers ────────────────────────────────────────────────────────
   const visible = overtime.filter(o => {
     if (!isManager && o.userId !== currentUser) return false;
     if (filterUid !== 'all' && o.userId !== filterUid) return false;
@@ -3574,12 +3731,23 @@ function Overtime({ users, overtime, setOvertime, currentUser, isManager, driveT
 
   return (
     <div>
-      <PageHeader title="Overtime" sub="Submit and approve overtime hours — approved hours feed into Payroll"
+      <PageHeader title="Overtime" sub="Submit and approve overtime hours — synced to Google Sheet and Payroll"
         actions={<div style={{ display:'flex', gap:8 }}>
           {isManager && pending.length > 0 && <div style={{ background:'#ef4444', color:'#fff', borderRadius:12, padding:'4px 12px', fontSize:12, fontWeight:600, display:'flex', alignItems:'center' }}>⏳ {pending.length} pending</div>}
+          {isManager && driveToken && <button className="btn btn-secondary btn-sm" onClick={loadFromSheet} disabled={sheetSyncing}>{sheetSyncing ? '⏳' : '📥'} Load from Sheet</button>}
+          {isManager && driveToken && <button className="btn btn-secondary btn-sm" onClick={() => syncToSheet()} disabled={sheetSyncing}>{sheetSyncing ? '⏳ Syncing…' : '📤 Sync to Sheet'}</button>}
           <button className="btn btn-primary" onClick={openAdd}>+ Log Overtime</button>
         </div>} />
 
+      {/* Drive connection warning */}
+      {!driveToken && (
+        <Alert type="warning" style={{ marginBottom:12 }}>
+          ⚠️ Google Drive not connected. Overtime records are saved locally only. Connect Drive to sync to Google Sheet.
+        </Alert>
+      )}
+
+      {/* Sheet sync status */}
+      {sheetMsg && <Alert type={sheetMsg.startsWith('⚠') ? 'warning' : 'info'} style={{ marginBottom:12 }}>{sheetMsg}</Alert>}
       {msg && <Alert type={msg.startsWith('⚠') ? 'warning' : 'info'} style={{ marginBottom:12 }}>{msg}</Alert>}
 
       {/* KPIs */}
