@@ -1,6 +1,6 @@
 // src/App.js
 // CloudOps Rota — Full Production Build v2
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 18th April 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 11th April 2026
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
@@ -708,6 +708,7 @@ const NAV = [
     { id: 'stress',     icon: '📊', label: 'Stress Score',  managerOnly: true },
     { id: 'toil',       icon: '⏳', label: 'TOIL'           },
     { id: 'absence',    icon: '🏥', label: 'Absence / Sick' },
+    { id: 'overtime',   icon: '🕐', label: 'Overtime'          },
     { id: 'logbook',    icon: '📓', label: 'Logbook'           },
   ]},
   { section: 'Knowledge', items: [
@@ -3487,6 +3488,233 @@ function Absence({ users, absences, setAbsences, currentUser, isManager, driveTo
   );
 }
 
+// ── Overtime ───────────────────────────────────────────────────────────────
+function Overtime({ users, overtime, setOvertime, currentUser, isManager, driveToken }) {
+  const fmtUK = d => d ? new Date(d + 'T12:00:00').toLocaleDateString('en-GB', { day:'2-digit', month:'2-digit', year:'numeric' }) : '—';
+  const BLANK = { userId: currentUser, date: '', hours: '', reason: '', notes: '' };
+  const [showModal, setShowModal] = useState(false);
+  const [form, setForm]           = useState(BLANK);
+  const [editId, setEditId]       = useState(null);
+  const [filterUid, setFilterUid] = useState('all');
+  const [filterStatus, setFilterStatus] = useState('all');
+  const [msg, setMsg]             = useState('');
+
+  const notify = (m, ms = 3000) => { setMsg(m); setTimeout(() => setMsg(''), ms); };
+
+  const openAdd  = () => { setForm({ ...BLANK, userId: isManager ? (users[0]?.id || currentUser) : currentUser }); setEditId(null); setShowModal(true); };
+  const openEdit = (ot, e) => {
+    if (!isManager && ot.userId !== currentUser) return;
+    e.stopPropagation();
+    setForm({ userId: ot.userId, date: ot.date, hours: ot.hours, reason: ot.reason || '', notes: ot.notes || '' });
+    setEditId(ot.id);
+    setShowModal(true);
+  };
+
+  const save = () => {
+    if (!form.date || !form.hours || parseFloat(form.hours) <= 0) { notify('⚠️ Date and hours are required.'); return; }
+    const isOwnEntry = form.userId === currentUser;
+    // Manager entries (or manager submitting for themselves) are auto-approved
+    const autoApprove = isManager;
+    const entry = {
+      id: editId || ('ot-' + Date.now()),
+      userId: form.userId,
+      date: form.date,
+      hours: parseFloat(form.hours),
+      reason: form.reason,
+      notes: form.notes,
+      status: autoApprove ? 'approved' : 'pending',
+      submittedAt: editId ? (overtime.find(o => o.id === editId)?.submittedAt || new Date().toISOString()) : new Date().toISOString(),
+      submittedBy: currentUser,
+      approvedBy: autoApprove ? currentUser : null,
+      approvedAt: autoApprove ? new Date().toISOString() : null,
+    };
+    const updated = editId ? overtime.map(o => o.id === editId ? entry : o) : [...overtime, entry];
+    setOvertime(updated);
+    setShowModal(false);
+    notify(autoApprove ? '✅ Overtime logged and auto-approved.' : '✅ Overtime request submitted for manager approval.');
+  };
+
+  const approve = (id) => {
+    if (!isManager) return;
+    const updated = overtime.map(o => o.id === id ? { ...o, status: 'approved', approvedBy: currentUser, approvedAt: new Date().toISOString() } : o);
+    setOvertime(updated);
+    notify('✅ Overtime approved.');
+  };
+
+  const reject = (id) => {
+    if (!isManager) return;
+    const updated = overtime.map(o => o.id === id ? { ...o, status: 'rejected', approvedBy: currentUser, approvedAt: new Date().toISOString() } : o);
+    setOvertime(updated);
+    notify('❌ Overtime rejected.');
+  };
+
+  const del = (id, e) => {
+    if (!isManager) { notify('⚠️ Only the manager can delete entries.'); return; }
+    e.stopPropagation();
+    setOvertime(overtime.filter(o => o.id !== id));
+  };
+
+  // Filtered view
+  const visible = overtime.filter(o => {
+    if (!isManager && o.userId !== currentUser) return false;
+    if (filterUid !== 'all' && o.userId !== filterUid) return false;
+    if (filterStatus !== 'all' && o.status !== filterStatus) return false;
+    return true;
+  }).sort((a, b) => b.date.localeCompare(a.date));
+
+  const pending = overtime.filter(o => o.status === 'pending');
+  const totalApproved = overtime.filter(o => o.status === 'approved').reduce((s, o) => s + o.hours, 0);
+  const myApproved = overtime.filter(o => o.status === 'approved' && o.userId === currentUser).reduce((s, o) => s + o.hours, 0);
+
+  const statusBadge = (s) => ({
+    approved: { bg: '#14532d', color: '#6ee7b7', label: '✅ Approved' },
+    pending:  { bg: '#7c2d12', color: '#fcd34d', label: '⏳ Pending'  },
+    rejected: { bg: '#450a0a', color: '#fca5a5', label: '❌ Rejected' },
+  }[s] || { bg: '#1e293b', color: '#94a3b8', label: s });
+
+  return (
+    <div>
+      <PageHeader title="Overtime" sub="Submit and approve overtime hours — approved hours feed into Payroll"
+        actions={<div style={{ display:'flex', gap:8 }}>
+          {isManager && pending.length > 0 && <div style={{ background:'#ef4444', color:'#fff', borderRadius:12, padding:'4px 12px', fontSize:12, fontWeight:600, display:'flex', alignItems:'center' }}>⏳ {pending.length} pending</div>}
+          <button className="btn btn-primary" onClick={openAdd}>+ Log Overtime</button>
+        </div>} />
+
+      {msg && <Alert type={msg.startsWith('⚠') ? 'warning' : 'info'} style={{ marginBottom:12 }}>{msg}</Alert>}
+
+      {/* KPIs */}
+      <div className="grid-4 mb-16">
+        <StatCard label="My Approved Hours"  value={`${myApproved}h`}    sub="Approved & in payroll"   accent="#10b981" icon="✅" />
+        <StatCard label="Team Total Hours"   value={`${totalApproved}h`} sub="All engineers approved"  accent="#3b82f6" icon="⏱" />
+        <StatCard label="Pending Approval"   value={pending.length}      sub="Awaiting manager review"  accent="#f59e0b" icon="⏳" />
+        <StatCard label="Total Requests"     value={isManager ? overtime.length : overtime.filter(o => o.userId === currentUser).length} sub="All time" accent="#818cf8" icon="📋" />
+      </div>
+
+      {/* Pending approvals panel — manager only */}
+      {isManager && pending.length > 0 && (
+        <div className="card mb-16" style={{ border:'1px solid rgba(251,191,36,0.3)', background:'rgba(251,191,36,0.05)' }}>
+          <div className="card-title" style={{ color:'#fcd34d' }}>⏳ Pending Approvals ({pending.length})</div>
+          {pending.map(o => {
+            const u = users.find(x => x.id === o.userId);
+            return (
+              <div key={o.id} style={{ display:'flex', alignItems:'center', gap:12, padding:'10px 0', borderBottom:'1px solid rgba(30,58,95,.3)' }}>
+                <Avatar user={u || { avatar:'?', color:'#475569' }} size={32} />
+                <div style={{ flex:1 }}>
+                  <div style={{ fontSize:13, fontWeight:500 }}>{u?.name} — <span style={{ fontFamily:'DM Mono' }}>{o.hours}h</span> on <strong>{fmtUK(o.date)}</strong></div>
+                  <div style={{ fontSize:11, color:'var(--text-muted)' }}>{o.reason || 'No reason given'} · Submitted {fmtUK(o.submittedAt?.slice(0,10))}</div>
+                </div>
+                <button className="btn btn-primary btn-sm" onClick={() => approve(o.id)}>✅ Approve</button>
+                <button className="btn btn-danger btn-sm" onClick={() => reject(o.id)}>❌ Reject</button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Filters */}
+      <div className="card mb-16" style={{ display:'flex', gap:12, flexWrap:'wrap', alignItems:'center', padding:'12px 16px' }}>
+        {isManager && (
+          <select className="select" style={{ minWidth:160 }} value={filterUid} onChange={e => setFilterUid(e.target.value)}>
+            <option value="all">All Engineers</option>
+            {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+          </select>
+        )}
+        <select className="select" style={{ minWidth:140 }} value={filterStatus} onChange={e => setFilterStatus(e.target.value)}>
+          <option value="all">All Statuses</option>
+          <option value="pending">Pending</option>
+          <option value="approved">Approved</option>
+          <option value="rejected">Rejected</option>
+        </select>
+        <div style={{ marginLeft:'auto', fontSize:12, color:'var(--text-muted)' }}>{visible.length} record{visible.length !== 1 ? 's' : ''}</div>
+      </div>
+
+      {/* Table */}
+      <div className="card" style={{ overflowX:'auto' }}>
+        {visible.length === 0 ? (
+          <div style={{ textAlign:'center', padding:'32px 0', color:'var(--text-muted)', fontSize:13 }}>
+            No overtime records found.<br />
+            <span style={{ fontSize:12 }}>Click "+ Log Overtime" to submit a request.</span>
+          </div>
+        ) : (
+          <table style={{ minWidth:700 }}>
+            <thead>
+              <tr>
+                <th>Engineer</th>
+                <th>Date</th>
+                <th>Hours</th>
+                <th>Reason</th>
+                <th>Status</th>
+                <th>Approved By</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {visible.map(o => {
+                const u = users.find(x => x.id === o.userId);
+                const badge = statusBadge(o.status);
+                const approver = users.find(x => x.id === o.approvedBy);
+                return (
+                  <tr key={o.id} style={{ cursor:'pointer' }} onClick={e => openEdit(o, e)}>
+                    <td><div style={{ display:'flex', gap:8, alignItems:'center' }}><Avatar user={u || { avatar:'?', color:'#475569' }} size={24} /><span style={{ fontSize:12 }}>{u?.name || o.userId}</span></div></td>
+                    <td style={{ fontFamily:'DM Mono', fontSize:12 }}>{fmtUK(o.date)}</td>
+                    <td style={{ fontFamily:'DM Mono', fontSize:13, fontWeight:700, color:'#6ee7b7' }}>{o.hours}h</td>
+                    <td style={{ fontSize:12, color:'var(--text-secondary)', maxWidth:200 }}>{o.reason || '—'}</td>
+                    <td><span style={{ background:badge.bg, color:badge.color, borderRadius:6, padding:'2px 8px', fontSize:11, fontWeight:600, whiteSpace:'nowrap' }}>{badge.label}</span></td>
+                    <td style={{ fontSize:11, color:'var(--text-muted)' }}>{approver ? approver.name : '—'}{o.approvedAt && <div style={{ fontSize:10 }}>{fmtUK(o.approvedAt?.slice(0,10))}</div>}</td>
+                    <td>
+                      <div style={{ display:'flex', gap:6 }} onClick={e => e.stopPropagation()}>
+                        {isManager && o.status === 'pending' && <>
+                          <button className="btn btn-primary btn-sm" onClick={() => approve(o.id)}>✅</button>
+                          <button className="btn btn-danger btn-sm" onClick={() => reject(o.id)}>❌</button>
+                        </>}
+                        {isManager && <button className="btn btn-danger btn-sm" onClick={e => del(o.id, e)}>🗑</button>}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {showModal && (
+        <Modal title={editId ? 'Edit Overtime' : 'Log Overtime'} onClose={() => setShowModal(false)}>
+          {isManager && (
+            <FormGroup label="Engineer">
+              <select className="select" value={form.userId} onChange={e => setForm({ ...form, userId: e.target.value })}>
+                {users.map(u => <option key={u.id} value={u.id}>{u.name} ({u.id})</option>)}
+              </select>
+            </FormGroup>
+          )}
+          <FormGroup label="Date">
+            <input className="input" type="date" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} />
+          </FormGroup>
+          <FormGroup label="Overtime Hours" hint="e.g. 2.5">
+            <input className="input" type="number" min="0.5" max="24" step="0.5" placeholder="Hours worked" value={form.hours} onChange={e => setForm({ ...form, hours: e.target.value })} />
+          </FormGroup>
+          <FormGroup label="Reason">
+            <input className="input" placeholder="e.g. Emergency deployment, incident response..." value={form.reason} onChange={e => setForm({ ...form, reason: e.target.value })} />
+          </FormGroup>
+          <FormGroup label="Notes (optional)">
+            <textarea className="input" rows={2} placeholder="Additional notes..." value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} style={{ resize:'vertical' }} />
+          </FormGroup>
+          {!isManager && (
+            <Alert type="info">ℹ Your overtime request will be sent to the manager for approval before it appears in payroll.</Alert>
+          )}
+          {isManager && (
+            <Alert type="info">✅ Manager-submitted overtime is auto-approved and immediately included in payroll.</Alert>
+          )}
+          <div style={{ display:'flex', gap:8, justifyContent:'flex-end', marginTop:12 }}>
+            <button className="btn btn-secondary" onClick={() => setShowModal(false)}>Cancel</button>
+            <button className="btn btn-primary" onClick={save}>{editId ? 'Update' : isManager ? 'Log & Approve' : 'Submit Request'}</button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
 // ── Logbook (Manager only) ─────────────────────────────────────────────────
 function Logbook({ users, logbook, setLogbook, currentUser, isManager }) {
   const [showModal, setShowModal] = useState(false);
@@ -5040,7 +5268,7 @@ function WeeklyReports({ users, incidents, timesheets, holidays, isManager }) {
 }
 
 // ── Payroll (Manager only) ─────────────────────────────────────────────────
-function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, rota, holidays, isManager }) {
+function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, rota, holidays, isManager, overtime: overtimeArr }) {
   if (!isManager) return <Alert type="warning">⚠ Payroll is restricted to managers.</Alert>;
 
   const [showExport, setShowExport] = React.useState(false);
@@ -5054,6 +5282,7 @@ function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, rota
   const safePay       = payconfig || {};
   const safeToil      = toil      || [];
   const safeUpgrades  = upgrades  || [];
+  const safeOT        = overtimeArr || [];
   const safeRota      = rota      || {};
   const safeHolidays  = holidays  || [];
   const bhList        = (typeof UK_BANK_HOLIDAYS !== 'undefined') ? UK_BANK_HOLIDAYS : [];
@@ -5100,62 +5329,206 @@ function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, rota
     });
     const bankHolHrs = bankHolDays.length;
 
+    // Approved overtime hours in range
+    const overtimeHrs = safeOT.filter(o =>
+      o.userId === u.id && o.status === 'approved' &&
+      (!startDs || o.date >= startDs) && (!endDs || o.date <= endDs)
+    ).reduce((s, o) => s + (o.hours || 0), 0);
+
     const oc = calcOncallPay(ts, hourly, upgradeHrs, bankHolHrs, rotaForUser, userHols, bhList, startDs, endDs);
     const tb = calcTOILBalance(safeTS[u.id], safeToil, u.id);
     const incHrs = oc.incidentHrs || 0;
-    return { p, annual, hourly, oc, tb, incHrs, upgradeHrs, bankHolHrs };
+    return { p, annual, hourly, oc, tb, incHrs, upgradeHrs, bankHolHrs, overtimeHrs };
   };
 
   // ── Excel export ──────────────────────────────────────────────────────────
   const doExportExcel = async () => {
     setExporting(true);
     try {
-      // Build data rows
+      // Load SheetJS from CDN
+      const loadXLSX = () => new Promise((res, rej) => {
+        if (window.XLSX) { res(window.XLSX); return; }
+        const s = document.createElement('script');
+        s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+        s.onload = () => res(window.XLSX); s.onerror = rej;
+        document.head.appendChild(s);
+      });
+      const XLSX = await loadXLSX();
+
+      const fmtUK = d => d ? new Date(d + 'T12:00:00').toLocaleDateString('en-GB', { day:'2-digit', month:'2-digit', year:'numeric' }) : '';
+      const today = fmtUK(new Date().toISOString().slice(0, 10));
       const rangeLabel = (exportStart && exportEnd)
-        ? `${exportStart} to ${exportEnd}`
+        ? `${fmtUK(exportStart)} – ${fmtUK(exportEnd)}`
         : 'All time';
 
-      const rows = [[
+      // ── SHEET 1: Hours Summary ────────────────────────────────────────────
+      const hdrs = [
         'Trigram', 'Full Name', 'Export Date', 'Period',
-        'Annual Salary (£)', 'Hourly Rate (£)',
         'Standby WD (h)', 'Worked WD (h)',
         'Standby WE (h)', 'Worked WE (h)',
-        'Incident Hrs', 'Upgrade Hrs', 'Bank Holiday Hrs',
-        'Standby Pay (£)', 'Worked Pay (£)', 'Upgrade Pay (£)', 'Bank Hol Pay (£)',
-        'Total OC Pay (£)', 'TOIL Balance (h)',
-      ]];
-
-      const exportDate = new Date().toISOString().slice(0, 10);
-      safeUsers.forEach(u => {
-        const { annual, hourly, oc, tb, incHrs, upgradeHrs, bankHolHrs } = getUserData(u, exportStart, exportEnd);
-        rows.push([
-          u.id, u.name, exportDate, rangeLabel,
-          annual.toFixed(2), hourly.toFixed(4),
+        'Incident Hrs', 'Upgrade Hrs', 'Bank Hol Hrs', 'Overtime Hrs',
+        'TOIL Balance (h)',
+      ];
+      const dataRows = safeUsers.map(u => {
+        const { oc, tb, incHrs, upgradeHrs, bankHolHrs, overtimeHrs } = getUserData(u, exportStart, exportEnd);
+        return [
+          u.id, u.name, today, rangeLabel,
           oc.standbyWD, oc.workedWD,
           oc.standbyWE, oc.workedWE,
-          incHrs, upgradeHrs, bankHolHrs,
-          oc.standbyPay.toFixed(2), oc.workedPay.toFixed(2),
-          oc.upgradePay.toFixed(2), oc.bankHolPay.toFixed(2),
-          oc.total.toFixed(2), tb.balance,
-        ]);
+          incHrs, upgradeHrs, bankHolHrs, overtimeHrs || 0,
+          tb.balance,
+        ];
       });
-
-      // Totals row
-      const totals = ['TOTAL', '', exportDate, rangeLabel, '', ''];
-      for (let col = 6; col <= 17; col++) {
-        totals.push(rows.slice(1).reduce((s, r) => s + (parseFloat(r[col]) || 0), 0).toFixed(col >= 13 ? 2 : 0));
+      // Totals row (cols 4–12 are numeric)
+      const totRow = ['TOTAL', '', today, rangeLabel,
+        ...Array.from({ length: 9 }, (_, i) =>
+          dataRows.reduce((s, r) => s + (parseFloat(r[4 + i]) || 0), 0)
+        ), ''
+      ];
+      const ws1Data = [hdrs, ...dataRows, totRow];
+      const ws1 = XLSX.utils.aoa_to_sheet(ws1Data);
+      // Column widths
+      ws1['!cols'] = [8, 22, 12, 16, 13, 13, 13, 13, 12, 12, 12, 12, 14].map(w => ({ wch: w }));
+      // Style header row bold + coloured (SheetJS free tier: basic cell styles)
+      const range1 = XLSX.utils.decode_range(ws1['!ref']);
+      for (let C = range1.s.c; C <= range1.e.c; C++) {
+        const hdrCell = XLSX.utils.encode_cell({ r: 0, c: C });
+        if (!ws1[hdrCell]) continue;
+        ws1[hdrCell].s = { font: { bold: true, color: { rgb: 'FFFFFF' } }, fill: { fgColor: { rgb: '0F3460' } }, alignment: { horizontal: 'center' } };
       }
-      totals.push('');
-      rows.push(totals);
+      // Style totals row
+      const totRowIdx = ws1Data.length - 1;
+      for (let C = range1.s.c; C <= range1.e.c; C++) {
+        const cell = XLSX.utils.encode_cell({ r: totRowIdx, c: C });
+        if (!ws1[cell]) continue;
+        ws1[cell].s = { font: { bold: true }, fill: { fgColor: { rgb: '1E3A5F' } } };
+      }
+      // Freeze header row
+      ws1['!freeze'] = { xSplit: 0, ySplit: 1 };
 
-      // Build simple XLSX-compatible CSV with BOM for Excel
-      const BOM = '\uFEFF';
-      const csv = BOM + rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
-      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = `cloudops-payroll-${exportStart||'all'}-${exportEnd||'time'}.csv`;
-      a.click();
+      // ── SHEET 2: Dashboard ────────────────────────────────────────────────
+      // Grand totals across all engineers
+      const gt = {
+        standbyWD: dataRows.reduce((s, r) => s + (r[4]||0), 0),
+        workedWD:  dataRows.reduce((s, r) => s + (r[5]||0), 0),
+        standbyWE: dataRows.reduce((s, r) => s + (r[6]||0), 0),
+        workedWE:  dataRows.reduce((s, r) => s + (r[7]||0), 0),
+        incidents: dataRows.reduce((s, r) => s + (r[8]||0), 0),
+        upgrades:  dataRows.reduce((s, r) => s + (r[9]||0), 0),
+        bankHols:  dataRows.reduce((s, r) => s + (r[10]||0), 0),
+        overtime:  dataRows.reduce((s, r) => s + (r[11]||0), 0),
+        totalOT:   safeOT.filter(o => o.status === 'approved').length,
+        pendingOT: safeOT.filter(o => o.status === 'pending').length,
+      };
+      const totalAllHrs = gt.standbyWD + gt.workedWD + gt.standbyWE + gt.workedWE + gt.incidents + gt.upgrades + gt.bankHols + gt.overtime;
+
+      const dash = [];
+      // Title block
+      dash.push(['CLOUDOPS ROTA — HOURS DASHBOARD', '', '', '', '', '']);
+      dash.push([`Period: ${rangeLabel}`, '', `Generated: ${today}`, '', `Engineers: ${safeUsers.length}`, '']);
+      dash.push([]);
+
+      // ── Team Summary KPIs
+      dash.push(['TEAM SUMMARY', 'Hours', '% of Total', '', '', '']);
+      const kpiRows = [
+        ['Standby Weekday',    gt.standbyWD],
+        ['Worked Weekday',     gt.workedWD],
+        ['Standby Weekend',    gt.standbyWE],
+        ['Worked Weekend',     gt.workedWE],
+        ['Incident Hours',     gt.incidents],
+        ['Upgrade Hours',      gt.upgrades],
+        ['Bank Holiday Hours', gt.bankHols],
+        ['Overtime Hours',     gt.overtime],
+        ['TOTAL ALL HOURS',    totalAllHrs],
+      ];
+      kpiRows.forEach(([lbl, val]) => {
+        const pct = totalAllHrs > 0 ? ((val / totalAllHrs) * 100).toFixed(1) + '%' : '0%';
+        dash.push([lbl, val, lbl === 'TOTAL ALL HOURS' ? '100%' : pct, '', '', '']);
+      });
+      dash.push([]);
+
+      // ── Overtime summary
+      dash.push(['OVERTIME SUMMARY', '', '', '', '', '']);
+      dash.push(['Total Approved Overtime Records', gt.totalOT, '', '', '', '']);
+      dash.push(['Total Approved Overtime Hours',   gt.overtime, '', '', '', '']);
+      dash.push(['Records Pending Approval',        gt.pendingOT, '', '', '', '']);
+      dash.push([]);
+
+      // ── Per-engineer breakdown
+      dash.push(['ENGINEER BREAKDOWN', 'Standby WD', 'Worked WD', 'Standby WE', 'Worked WE', 'Incidents', 'Upgrades', 'Bank Hols', 'Overtime', 'TOIL Bal.', 'Total Hrs']);
+      safeUsers.forEach(u => {
+        const { oc, tb, incHrs, upgradeHrs, bankHolHrs, overtimeHrs } = getUserData(u, exportStart, exportEnd);
+        const total = oc.standbyWD + oc.workedWD + oc.standbyWE + oc.workedWE + incHrs + upgradeHrs + bankHolHrs + (overtimeHrs||0);
+        dash.push([u.name, oc.standbyWD, oc.workedWD, oc.standbyWE, oc.workedWE, incHrs, upgradeHrs, bankHolHrs, overtimeHrs||0, tb.balance, total]);
+      });
+      dash.push([]);
+
+      // ── Hours distribution (data for a manual chart)
+      dash.push(['HOURS DISTRIBUTION BY TYPE', '']);
+      dash.push(['Category', 'Hours', 'Engineers with hours']);
+      [
+        ['Standby Weekday',    gt.standbyWD, dataRows.filter(r=>r[4]>0).length],
+        ['Worked Weekday',     gt.workedWD,  dataRows.filter(r=>r[5]>0).length],
+        ['Standby Weekend',    gt.standbyWE, dataRows.filter(r=>r[6]>0).length],
+        ['Worked Weekend',     gt.workedWE,  dataRows.filter(r=>r[7]>0).length],
+        ['Incidents',          gt.incidents, dataRows.filter(r=>r[8]>0).length],
+        ['Upgrades',           gt.upgrades,  dataRows.filter(r=>r[9]>0).length],
+        ['Bank Holidays',      gt.bankHols,  dataRows.filter(r=>r[10]>0).length],
+        ['Overtime',           gt.overtime,  dataRows.filter(r=>r[11]>0).length],
+      ].forEach(row => dash.push(row));
+      dash.push([]);
+
+      // ── Top overtime entries
+      const topOT = [...safeOT]
+        .filter(o => o.status === 'approved')
+        .sort((a, b) => b.hours - a.hours)
+        .slice(0, 15);
+      if (topOT.length > 0) {
+        dash.push(['TOP OVERTIME ENTRIES (APPROVED)', '', '', '', '']);
+        dash.push(['Rank', 'Engineer', 'Date', 'Hours', 'Reason']);
+        topOT.forEach((o, i) => {
+          const u = safeUsers.find(x => x.id === o.userId);
+          dash.push([i + 1, u?.name || o.userId, fmtUK(o.date), o.hours, o.reason || '']);
+        });
+        dash.push([]);
+      }
+
+      // ── Monthly breakdown (group by YYYY-MM)
+      const byMonth = {};
+      dataRows.forEach((r, i) => {
+        const u = safeUsers[i];
+        const allEntries = [
+          ...(safeTS[u.id] || []).map(e => ({ date: e.weekStart || '', type: 'timesheet' })),
+          ...safeOT.filter(o => o.userId === u.id && o.status === 'approved').map(o => ({ date: o.date, hours: o.hours, type: 'overtime' })),
+        ];
+        allEntries.forEach(e => {
+          if (!e.date) return;
+          const mo = e.date.slice(0, 7);
+          if (!byMonth[mo]) byMonth[mo] = { overtime: 0, records: 0 };
+          if (e.type === 'overtime') { byMonth[mo].overtime += (e.hours || 0); byMonth[mo].records++; }
+        });
+      });
+      const monthRows = Object.entries(byMonth).sort(([a], [b]) => a.localeCompare(b));
+      if (monthRows.length > 0) {
+        dash.push(['MONTHLY OVERTIME TREND', '', '']);
+        dash.push(['Month', 'Approved Overtime Hrs', 'Records']);
+        monthRows.forEach(([mo, d]) => {
+          const [y, m] = mo.split('-');
+          const label = new Date(+y, +m - 1, 1).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
+          dash.push([label, d.overtime, d.records]);
+        });
+      }
+
+      const ws2 = XLSX.utils.aoa_to_sheet(dash);
+      ws2['!cols'] = [28, 14, 14, 14, 14, 12, 12, 12, 12, 12, 12].map(w => ({ wch: w }));
+
+      // Build workbook
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws1, 'Hours Summary');
+      XLSX.utils.book_append_sheet(wb, ws2, 'Dashboard & Analysis');
+
+      const fname = `CloudOps-Hours-${(exportStart||'all').replace(/-/g,'')}-${(exportEnd||'time').replace(/-/g,'')}.xlsx`;
+      XLSX.writeFile(wb, fname);
       setShowExport(false);
     } finally {
       setExporting(false);
@@ -5163,10 +5536,11 @@ function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, rota
   };
 
   // ── Summary stats (all time) ──────────────────────────────────────────────
-  const totalPayroll    = safeUsers.reduce((s, u) => { const p = safePay[u.id]||{base:2500}; return s + (p.annual||p.base*12); }, 0);
-  const totalOCPay      = users.reduce((s, u) => { const { oc } = getUserData(u); return s + oc.total; }, 0);
-  const totalIncidentHrs = users.reduce((s, u) => { const { incHrs } = getUserData(u); return s + incHrs; }, 0);
-  const totalUpgradeHrs  = users.reduce((s, u) => { const { upgradeHrs } = getUserData(u); return s + upgradeHrs; }, 0);
+  const totalOCPay       = safeUsers.reduce((s, u) => { const { oc } = getUserData(u); return s + oc.total; }, 0);
+  const totalIncidentHrs = safeUsers.reduce((s, u) => { const { incHrs } = getUserData(u); return s + incHrs; }, 0);
+  const totalUpgradeHrs  = safeUsers.reduce((s, u) => { const { upgradeHrs } = getUserData(u); return s + upgradeHrs; }, 0);
+  const totalOvertimeHrs = safeUsers.reduce((s, u) => { const { overtimeHrs } = getUserData(u); return s + overtimeHrs; }, 0);
+  const pendingOTCount   = safeOT.filter(o => o.status === 'pending').length;
 
   return (
     <div>
@@ -5221,20 +5595,19 @@ function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, rota
 
       {/* Summary KPIs */}
       <div className="grid-4 mb-16">
-        <StatCard label="Total Payroll"    value={`£${Math.round(totalPayroll/1000)}k/yr`}  sub="Base salaries combined"       accent="#3b82f6" icon="💷" />
-        <StatCard label="Total OC Pay"     value={`£${Math.round(totalOCPay)}`}              sub="All engineers (inc. upgrades)" accent="#10b981" icon="🌙" />
         <StatCard label="Incident Hours"   value={`${totalIncidentHrs}h`}                    sub="Auto-logged from incidents"    accent="#f59e0b" icon="🚨" />
         <StatCard label="Upgrade Hours"    value={`${totalUpgradeHrs}h`}                     sub="Approved upgrade days"         accent="#818cf8" icon="⬆" />
+        <StatCard label="Overtime Hours"   value={`${totalOvertimeHrs}h`}                    sub="Approved overtime"             accent="#10b981" icon="🕐" />
+        <StatCard label="Pending OT"       value={pendingOTCount}                             sub="Awaiting approval"             accent="#f59e0b" icon="⏳" />
       </div>
 
-      {/* On-call pay summary table */}
+      {/* On-call hours summary table */}
       <div className="card mb-16" style={{ overflowX:'auto' }}>
-        <div className="card-title">On-Call Pay Summary — standby · worked · incidents · upgrades · bank holidays</div>
-        <table style={{ minWidth:1100 }}>
+        <div className="card-title">On-Call Hours Summary — standby · worked · incidents · upgrades · bank holidays · overtime</div>
+        <table style={{ minWidth:900 }}>
           <thead>
             <tr>
               <th>Engineer</th>
-              <th>Annual Salary</th>
               <th style={{ color:'#93c5fd' }}>Standby WD</th>
               <th style={{ color:'#93c5fd' }}>Worked WD</th>
               <th style={{ color:'#a78bfa' }}>Standby WE</th>
@@ -5242,20 +5615,16 @@ function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, rota
               <th style={{ color:'#f59e0b' }}>Incidents</th>
               <th style={{ color:'#818cf8' }}>Upgrades</th>
               <th style={{ color:'#fca5a5' }}>Bank Hol</th>
-              <th style={{ color:'#93c5fd' }}>Standby Pay</th>
-              <th style={{ color:'#fcd34d' }}>Worked Pay</th>
-              <th style={{ color:'#818cf8' }}>Upgrade Pay</th>
-              <th style={{ color:'#6ee7b7', fontWeight:800 }}>Total OC Pay</th>
-              <th>TOIL</th>
+              <th style={{ color:'#6ee7b7' }}>Overtime</th>
+              <th>TOIL Bal.</th>
             </tr>
           </thead>
           <tbody>
             {safeUsers.map(u => {
-              const { annual, hourly, oc, tb, incHrs, upgradeHrs, bankHolHrs } = getUserData(u);
+              const { oc, tb, incHrs, upgradeHrs, bankHolHrs, overtimeHrs } = getUserData(u);
               return (
                 <tr key={u.id}>
-                  <td><div style={{ display:'flex', gap:8, alignItems:'center' }}><Avatar user={u} size={24} /><div><div style={{ fontSize:12 }}>{u.name}</div><div style={{ fontSize:10, color:'var(--text-muted)', fontFamily:'DM Mono' }}>{u.id} · £{hourly.toFixed(2)}/hr</div></div></div></td>
-                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:'var(--text-secondary)' }}>£{annual.toLocaleString()}</td>
+                  <td><div style={{ display:'flex', gap:8, alignItems:'center' }}><Avatar user={u} size={24} /><div><div style={{ fontSize:12 }}>{u.name}</div><div style={{ fontSize:10, color:'var(--text-muted)', fontFamily:'DM Mono' }}>{u.id}</div></div></div></td>
                   <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#93c5fd' }}>{oc.standbyWD}h</td>
                   <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#93c5fd' }}>{oc.workedWD}h</td>
                   <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#a78bfa' }}>{oc.standbyWE}h</td>
@@ -5263,10 +5632,7 @@ function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, rota
                   <td style={{ fontFamily:'DM Mono', fontSize:12, color:incHrs>0?'#f59e0b':'var(--text-muted)' }}>{incHrs>0?`${incHrs}h`:'—'}</td>
                   <td style={{ fontFamily:'DM Mono', fontSize:12, color:upgradeHrs>0?'#818cf8':'var(--text-muted)' }}>{upgradeHrs>0?`${upgradeHrs}h`:'—'}</td>
                   <td style={{ fontFamily:'DM Mono', fontSize:12, color:bankHolHrs>0?'#fca5a5':'var(--text-muted)' }}>{bankHolHrs>0?`${bankHolHrs}h`:'—'}</td>
-                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#93c5fd' }}>£{oc.standbyPay.toFixed(2)}</td>
-                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#fcd34d' }}>£{oc.workedPay.toFixed(2)}</td>
-                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#818cf8' }}>£{(oc.upgradePay||0).toFixed(2)}</td>
-                  <td style={{ fontFamily:'DM Mono', fontSize:12, fontWeight:800, color:'#6ee7b7' }}>£{oc.total.toFixed(2)}</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:overtimeHrs>0?'#6ee7b7':'var(--text-muted)', fontWeight:overtimeHrs>0?700:400 }}>{overtimeHrs>0?`${overtimeHrs}h`:'—'}</td>
                   <td style={{ fontFamily:'DM Mono', fontSize:12, color:tb.balance>0?'#6ee7b7':'#fca5a5' }}>{tb.balance}h</td>
                 </tr>
               );
@@ -5274,8 +5640,7 @@ function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, rota
           </tbody>
         </table>
         <div style={{ marginTop:10, fontSize:11, color:'var(--text-muted)' }}>
-          Daily: 10am–7pm · Weekday OC: 7pm–7am · Weekend OC: Fri 7pm–Mon 7am · Bank Hol OC: 9am–7am ·
-          Standby: £{ONCALL_STANDBY_RATE}/hr · Worked: {ONCALL_WORKED_MULTIPLIER}x hourly · Upgrades: {ONCALL_WORKED_MULTIPLIER}x hourly
+          Daily: 10am–7pm · Weekday OC: 7pm–7am · Weekend OC: Fri 7pm–Mon 7am · Bank Hol OC: 9am–7am · Overtime: manager-approved only
         </div>
       </div>
 
@@ -5988,6 +6353,7 @@ export default function App() {
   const [swapRequests, setSwapRequests] = useState([]);
   const [toil, setToil]               = useState([]);
   const [absences, setAbsences]       = useState([]);
+  const [overtime, setOvertime]       = useState([]);
   const [logbook, setLogbook]         = useState([]);
   const [documents, setDocuments]     = useState([]);
   const [obsidianNotes, setObsidianNotes] = useState([]);
@@ -6045,7 +6411,7 @@ export default function App() {
         ]);
         if (reg) setRegistry(reg);
         if (pics) { setProfilePics(pics); setProfilePicsState(pics); }
-        const defaults = { users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, logbook, documents, obsidianNotes, whatsappChats };
+        const defaults = { users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, overtime, logbook, documents, obsidianNotes, whatsappChats };
         const data = await loadAllFromDrive(token, defaults);
         if (data.users != null) setUsers(data.users);
         if (data.holidays != null) setHolidays(data.holidays);
@@ -6060,6 +6426,7 @@ export default function App() {
         if (data.swapRequests != null) setSwapRequests(data.swapRequests);
         if (data.toil != null) setToil(data.toil);
         if (data.absences != null) setAbsences(data.absences);
+        if (data.overtime != null) setOvertime(data.overtime);
         if (data.logbook != null) setLogbook(data.logbook);
         if (data.documents != null) setDocuments(data.documents);
         if (data.obsidianNotes != null) setObsidianNotes(data.obsidianNotes);
@@ -6113,7 +6480,7 @@ export default function App() {
 
       // Load all app data from Drive with progress steps
       setLoadProgress(30); setLoadStatus('Loading rota & schedules…');
-      const defaults = { users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, logbook, documents, obsidianNotes, whatsappChats };
+      const defaults = { users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, overtime, logbook, documents, obsidianNotes, whatsappChats };
       const data = await loadAllFromDrive(token, defaults);
 
       setLoadProgress(65); setLoadStatus('Applying team data…');
@@ -6130,6 +6497,7 @@ export default function App() {
       if (data.swapRequests != null) setSwapRequests(data.swapRequests);
       if (data.toil != null) setToil(data.toil);
       if (data.absences != null) setAbsences(data.absences);
+        if (data.overtime != null) setOvertime(data.overtime);
       if (data.logbook != null) setLogbook(data.logbook);
       if (data.documents != null) setDocuments(data.documents);
       if (data.obsidianNotes != null) setObsidianNotes(data.obsidianNotes);
@@ -6191,6 +6559,7 @@ export default function App() {
   useEffect(() => { save('swapRequests', swapRequests); }, [swapRequests]);
   useEffect(() => { save('toil', toil); },                 [toil]);
   useEffect(() => { save('absences', absences); },         [absences]);
+  useEffect(() => { save('overtime', overtime); },         [overtime]);
   useEffect(() => { save('logbook', logbook); },           [logbook]);
   useEffect(() => { save('documents', documents); },       [documents]);
   useEffect(() => { save('obsidianNotes', obsidianNotes); },[obsidianNotes]);
@@ -6203,8 +6572,8 @@ export default function App() {
   const syncAllToDrive = async () => {
     if (!driveToken) { alert('Connect Google Drive first.'); return; }
     setManualSyncing(true); setSyncProgress(0); setSyncStatus('Starting sync…');
-    const keys = ['users','holidays','incidents','timesheets','upgrades','wiki','glossary','contacts','payconfig','rota','swapRequests','toil','absences','logbook','documents','obsidianNotes','whatsappChats'];
-    const vals  = [users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, logbook, documents, obsidianNotes, whatsappChats];
+    const keys = ['users','holidays','incidents','timesheets','upgrades','wiki','glossary','contacts','payconfig','rota','swapRequests','toil','absences','overtime','logbook','documents','obsidianNotes','whatsappChats'];
+    const vals  = [users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, overtime, logbook, documents, obsidianNotes, whatsappChats];
     for (let i = 0; i < keys.length; i++) {
       setSyncStatus(`Saving ${keys[i]}…`);
       setSyncProgress(Math.round(((i + 1) / keys.length) * 100));
@@ -6270,7 +6639,7 @@ export default function App() {
         if (pics) { setProfilePics(pics); setProfilePicsState(pics); }
 
         setLoadProgress(40); setLoadStatus('Loading rota & schedules…');
-        const defaults = { users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, logbook, documents, obsidianNotes, whatsappChats };
+        const defaults = { users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, overtime, logbook, documents, obsidianNotes, whatsappChats };
         const data = await loadAllFromDrive(token, defaults);
 
         setLoadProgress(75); setLoadStatus('Applying team data…');
@@ -6287,6 +6656,7 @@ export default function App() {
         if (data.swapRequests != null) setSwapRequests(data.swapRequests);
         if (data.toil != null) setToil(data.toil);
         if (data.absences != null) setAbsences(data.absences);
+        if (data.overtime != null) setOvertime(data.overtime);
         if (data.logbook != null) setLogbook(data.logbook);
         if (data.documents != null) setDocuments(data.documents);
         if (data.obsidianNotes != null) setObsidianNotes(data.obsidianNotes);
@@ -6352,7 +6722,7 @@ export default function App() {
     upgrades, setUpgrades, wiki, setWiki, glossary, setGlossary,
     contacts, setContacts, payconfig, setPayconfig,
     currentUser, isManager, swapRequests, setSwapRequests,
-    toil, setToil, absences, setAbsences, logbook, setLogbook,
+    toil, setToil, absences, setAbsences, overtime, setOvertime, logbook, setLogbook,
     documents, setDocuments, secureLinks, setSecureLinks,
     obsidianNotes, setObsidianNotes, whatsappChats, setWhatsappChats,
     driveToken, profilePics, setProfilePicsState
@@ -6373,6 +6743,7 @@ export default function App() {
       case 'stress':     return <StressScore {...props} />;
       case 'toil':       return <TOIL {...props} />;
       case 'absence':    return <Absence {...props} driveToken={driveToken} />;
+      case 'overtime':   return <Overtime {...props} overtime={overtime} setOvertime={setOvertime} driveToken={driveToken} />;
       case 'logbook':    return <Logbook {...props} />;
       case 'wiki':       return <Wiki {...props} />;
       case 'glossary':   return <Glossary {...props} />;
@@ -6383,7 +6754,7 @@ export default function App() {
       case 'insights':   return <Insights {...props} />;
       case 'capacity':   return <Capacity {...props} incidents={incidents} />;
       case 'reports':    return <WeeklyReports {...props} />;
-      case 'payroll':    return <Payroll {...props} incidents={incidents} upgrades={upgrades} rota={rota} />;
+      case 'payroll':    return <Payroll {...props} incidents={incidents} upgrades={upgrades} rota={rota} overtime={overtime} />;
       case 'payconfig':  return <PayConfig {...props} />;
       case 'settings':   return <Settings {...props} />;
       case 'myaccount':  return <MyAccount currentUser={currentUser} users={users} setUsers={setUsers} driveToken={driveToken} profilePics={profilePics} setProfilePicsState={setProfilePicsState} />;
@@ -6396,7 +6767,7 @@ export default function App() {
     dashboard: 'Dashboard', oncall: "Who's On Call", myshift: 'My Shift', calendar: 'Calendar',
     rota: 'Rota', incidents: 'Incidents', timesheets: 'Timesheets', holidays: 'Holidays',
     swaps: 'Shift Swaps', upgrades: 'Upgrade Days', stress: 'Stress Score', toil: 'TOIL',
-    absence: 'Absence & Sick', logbook: 'Logbook', wiki: 'Wiki', glossary: 'Glossary',
+    absence: 'Absence & Sick', overtime: 'Overtime', logbook: 'Logbook', wiki: 'Wiki', glossary: 'Glossary',
     contacts: 'Contacts', notes: 'Notes', docs: 'Documents', whatsapp: 'Team Chat', insights: 'Insights', capacity: 'Capacity',
     reports: 'Weekly Reports', payroll: 'Payroll', payconfig: 'Pay Config',
     settings: 'Settings', myaccount: 'My Account'
@@ -6476,7 +6847,7 @@ export default function App() {
                 onClick={async () => {
                   try {
                     setSyncing(true);
-                    const defaults = { users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, logbook, documents, obsidianNotes, whatsappChats };
+                    const defaults = { users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, overtime, logbook, documents, obsidianNotes, whatsappChats };
                     const data = await loadAllFromDrive(driveToken, defaults);
                     const has = (v) => v !== null && v !== undefined;
                     if (has(data.users))         setUsers(data.users);
@@ -6492,6 +6863,7 @@ export default function App() {
                     if (has(data.swapRequests))  setSwapRequests(data.swapRequests);
                     if (has(data.toil))          setToil(data.toil);
                     if (has(data.absences))      setAbsences(data.absences);
+                    if (has(data.overtime))      setOvertime(data.overtime);
                     if (has(data.logbook))       setLogbook(data.logbook);
                     if (has(data.documents))     setDocuments(data.documents);
                     if (has(data.obsidianNotes)) setObsidianNotes(data.obsidianNotes);
