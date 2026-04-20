@@ -1444,13 +1444,20 @@ function RotaPage({ users, rota, setRota, holidays, upgrades, swapRequests, setS
   const [swapSuggestion, setSwapSuggestion] = useState(null);
   const [viewMode, setViewMode]   = useState('compact'); // 'compact' | 'hours'
   const DAYS = ['M','T','W','T','F','S','S'];
-  // lockedCells: Set of "userId::date" strings — protected from Clear/Generate/Force Regenerate
+  // managerUnlocked: global toggle — rota is read-only by default.
+  // Manager must click the 🔒 unlock button in the toolbar to enable editing.
+  const [managerUnlocked, setManagerUnlocked] = useState(false);
+
+  // lockedCells: Set of "userId::date" strings — protected from Clear/Generate
   const [lockedCells, setLockedCells] = useState(new Set());
   const toggleLock  = (userId, date) => {
     const key = `${userId}::${date}`;
     setLockedCells(prev => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n; });
   };
   const isLocked = (userId, date) => lockedCells.has(`${userId}::${date}`);
+
+  // Editing is only allowed when the manager has explicitly unlocked
+  const canEdit = isManager && managerUnlocked;
 
   // Shift hour definitions
   const SHIFT_HOURS = {
@@ -1485,24 +1492,23 @@ function RotaPage({ users, rota, setRota, holidays, upgrades, swapRequests, setS
   };
 
   const setCell = (userId, date, shift) => {
-    if (!isManager) return;
+    if (!canEdit) return;
     const dow = new Date(date).getDay();
     const isWeekend = dow === 0 || dow === 6;
-    // Daily shift is Mon–Fri only; prevent setting it on weekends
     const safeShift = (shift === 'daily' && isWeekend) ? 'weekend' : shift;
     setRota(prev => ({ ...prev, [userId]: { ...(prev[userId] || {}), [date]: safeShift } }));
     setEditCell(null);
   };
 
   const deleteCell = (userId, date) => {
-    if (!isManager) return; // Only managers can delete
+    if (!canEdit) return;
     const next = JSON.parse(JSON.stringify(rota));
     if (next[userId]) delete next[userId][date];
     setRota(next);
   };
 
   const toggleBulk = (userId, date) => {
-    if (!isManager) return; // Only managers can bulk edit
+    if (!canEdit) return;
     const key = `${userId}::${date}`;
     setBulkSelected(prev => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n; });
   };
@@ -1580,7 +1586,27 @@ function RotaPage({ users, rota, setRota, holidays, upgrades, swapRequests, setS
       <PageHeader title="Rota Management" sub={isManager ? 'Generate & manage on-call schedule' : 'View on-call schedule'} />
       {isManager && (
         <div className="card mb-16">
-          <div className="card-title">⚙ Generate & Controls</div>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
+            <div className="card-title" style={{ marginBottom:0 }}>⚙ Generate & Controls</div>
+            {/* Global lock/unlock toggle — rota is locked by default */}
+            <button
+              onClick={() => setManagerUnlocked(v => !v)}
+              style={{
+                display:'flex', alignItems:'center', gap:6,
+                background: managerUnlocked ? 'rgba(239,68,68,0.15)' : 'rgba(34,197,94,0.12)',
+                border: `1px solid ${managerUnlocked ? '#ef4444' : '#22c55e'}`,
+                borderRadius:8, padding:'6px 14px', cursor:'pointer',
+                color: managerUnlocked ? '#fca5a5' : '#6ee7b7',
+                fontSize:12, fontWeight:600, transition:'all 0.2s'
+              }}>
+              {managerUnlocked ? '🔓 Unlocked — editing enabled' : '🔒 Locked — click to enable editing'}
+            </button>
+          </div>
+          {!managerUnlocked && (
+            <div style={{ padding:'8px 12px', background:'rgba(34,197,94,0.06)', border:'1px solid rgba(34,197,94,0.2)', borderRadius:6, fontSize:11, color:'#6ee7b7', marginBottom:12 }}>
+              🔒 Rota is in read-only mode. Click <strong>Locked</strong> above to unlock and enable editing.
+            </div>
+          )}
           <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
             <FormGroup label="Start Date">
               <input className="input" type="date" value={startDate} onChange={e => setStartDate(e.target.value)} style={{ width: 180 }} />
@@ -1591,11 +1617,12 @@ function RotaPage({ users, rota, setRota, holidays, upgrades, swapRequests, setS
               </select>
             </FormGroup>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-              <button className="btn btn-primary" onClick={generate}>🔄 Generate Rota</button>
+              <button className="btn btn-primary" onClick={generate} disabled={!canEdit} style={{ opacity: canEdit ? 1 : 0.4 }}>🔄 Generate Rota</button>
               <div style={{ fontSize: 9, color: 'rgba(255,255,255,0.35)', textAlign: 'center' }}>🔒 Keeps manual entries</div>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-              <button className="btn btn-secondary" onClick={() => {
+              <button className="btn btn-secondary" disabled={!canEdit} style={{ opacity: canEdit ? 1 : 0.4 }} onClick={() => {
+                if (!canEdit) return;
                 if (window.confirm('⚠️  Regenerate from scratch? Locked cells will be preserved, all others overwritten.')) {
                   const fresh = sanitiseRota(generateRota(users, startDate, weeks));
                   setRota(prev => {
@@ -1603,7 +1630,7 @@ function RotaPage({ users, rota, setRota, holidays, upgrades, swapRequests, setS
                     users.forEach(u => {
                       merged[u.id] = { ...(fresh[u.id] || {}) };
                       Object.entries(prev[u.id] || {}).forEach(([date, shift]) => {
-                        if (isLocked(u.id, date)) merged[u.id][date] = shift; // locked wins
+                        if (isLocked(u.id, date)) merged[u.id][date] = shift;
                       });
                     });
                     return merged;
@@ -1613,14 +1640,15 @@ function RotaPage({ users, rota, setRota, holidays, upgrades, swapRequests, setS
               }}>↺ Force Regenerate</button>
               <div style={{ fontSize: 9, color: 'rgba(255,80,80,0.5)', textAlign: 'center' }}>⚠ Overwrites all shifts</div>
             </div>
-            <button className="btn btn-danger" onClick={() => {
+            <button className="btn btn-danger" disabled={!canEdit} style={{ opacity: canEdit ? 1 : 0.4 }} onClick={() => {
+              if (!canEdit) return;
               if (window.confirm('⚠️  Clear all rota entries? Locked cells will be preserved.')) {
                 setRota(prev => {
                   const next = {};
                   users.forEach(u => {
                     next[u.id] = {};
                     Object.entries(prev[u.id] || {}).forEach(([date, shift]) => {
-                      if (isLocked(u.id, date)) next[u.id][date] = shift; // keep locked
+                      if (isLocked(u.id, date)) next[u.id][date] = shift;
                     });
                   });
                   return next;
@@ -1985,13 +2013,18 @@ function RotaPage({ users, rota, setRota, holidays, upgrades, swapRequests, setS
                           )}
                           {isManager && s !== 'off' && !isEditing && (
                             <div style={{ display: 'flex', justifyContent: 'center', gap: 3, marginTop: 2 }}>
-                              <button
-                                onClick={e => { e.stopPropagation(); toggleLock(u.id, ds); }}
-                                title={isLocked(u.id, ds) ? 'Unlock this cell' : 'Lock to protect from Clear/Generate'}
-                                style={{ background: 'none', border: 'none', fontSize: 9, cursor: 'pointer', padding: 0, color: isLocked(u.id, ds) ? '#f59e0b' : 'rgba(255,255,255,0.25)', lineHeight: 1 }}>
-                                {isLocked(u.id, ds) ? '🔒' : '🔓'}
-                              </button>
-                              <button onClick={() => deleteCell(u.id, ds)} style={{ background: 'none', border: 'none', color: '#ef4444', fontSize: 8, cursor: 'pointer', padding: 0 }}>✕</button>
+                              {canEdit && (
+                                <button
+                                  onClick={e => { e.stopPropagation(); toggleLock(u.id, ds); }}
+                                  title={isLocked(u.id, ds) ? 'Unlock this cell' : 'Lock to protect from Clear/Generate'}
+                                  style={{ background: 'none', border: 'none', fontSize: 9, cursor: 'pointer', padding: 0, color: isLocked(u.id, ds) ? '#f59e0b' : 'rgba(255,255,255,0.25)', lineHeight: 1 }}>
+                                  {isLocked(u.id, ds) ? '🔒' : '🔓'}
+                                </button>
+                              )}
+                              {!canEdit && isLocked(u.id, ds) && (
+                                <span style={{ fontSize: 9, color: '#f59e0b', lineHeight: 1 }}>🔒</span>
+                              )}
+                              {canEdit && <button onClick={() => deleteCell(u.id, ds)} style={{ background: 'none', border: 'none', color: '#ef4444', fontSize: 8, cursor: 'pointer', padding: 0 }}>✕</button>}
                             </div>
                           )}
                         </td>
@@ -6507,6 +6540,7 @@ export default function App() {
   const [lastSync, setLastSync]       = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [searchQ, setSearchQ]         = useState('');
+  const [theme, setTheme]             = useState(() => localStorage.getItem('cr_theme') || 'dark');
 
   const [users, setUsers]             = useState(DEFAULT_USERS);
   const [holidays, setHolidays]       = useState(DEFAULT_HOLIDAYS);
@@ -6881,20 +6915,42 @@ export default function App() {
     </>
   );
 
-  const openInc   = incidents.filter(i => i.status === 'Investigating').length;
-  const pendingSwaps = swapRequests.filter(s => s.status === 'pending').length;
+  // ── Theme CSS injection ─────────────────────────────────────────────────
+  const isDark = theme === 'dark';
+  const themeVars = isDark ? `
+    :root {
+      --bg: #0a0e1a; --bg-card: #0f1629; --bg-card2: #131d35;
+      --border: rgba(30,58,95,0.6); --accent: #3b82f6; --accent2: #06b6d4;
+      --text-primary: #f1f5f9; --text-secondary: #94a3b8; --text-muted: #475569;
+      --sidebar-bg: #080c18; --sidebar-border: rgba(30,58,95,0.8);
+      --topbar-bg: rgba(8,12,24,0.95); --input-bg: rgba(15,22,41,0.8);
+      --shadow: 0 4px 24px rgba(0,0,0,0.4);
+    }
+  ` : `
+    :root {
+      --bg: #f1f5f9; --bg-card: #ffffff; --bg-card2: #f8fafc;
+      --border: rgba(148,163,184,0.4); --accent: #2563eb; --accent2: #0891b2;
+      --text-primary: #0f172a; --text-secondary: #334155; --text-muted: #64748b;
+      --sidebar-bg: #1e293b; --sidebar-border: rgba(15,23,42,0.3);
+      --topbar-bg: rgba(255,255,255,0.96); --input-bg: #ffffff;
+      --shadow: 0 4px 24px rgba(0,0,0,0.08);
+    }
+    .card { background: #ffffff; border-color: rgba(148,163,184,0.3); }
+    .input, .select { background: #ffffff; border-color: rgba(148,163,184,0.4); color: #0f172a; }
+    .btn-secondary { background: rgba(148,163,184,0.15); color: #334155; border-color: rgba(148,163,184,0.3); }
+    table th { background: rgba(148,163,184,0.12); color: #334155; }
+    .modal { background: #ffffff; }
+    .modal-overlay { background: rgba(15,23,42,0.5); }
+  `;
 
-  const props = {
-    users, setUsers, rota, setRota, holidays, setHolidays,
-    incidents, setIncidents, timesheets, setTimesheets,
-    upgrades, setUpgrades, wiki, setWiki, glossary, setGlossary,
-    contacts, setContacts, payconfig, setPayconfig,
-    currentUser, isManager, swapRequests, setSwapRequests,
-    toil, setToil, absences, setAbsences, overtime, setOvertime, logbook, setLogbook,
-    documents, setDocuments, secureLinks, setSecureLinks,
-    obsidianNotes, setObsidianNotes, whatsappChats, setWhatsappChats,
-    driveToken, profilePics, setProfilePicsState
+  const toggleTheme = () => {
+    const next = theme === 'dark' ? 'light' : 'dark';
+    setTheme(next);
+    try { localStorage.setItem('cr_theme', next); } catch (_) {}
   };
+
+  // ── NAV group icons for collapsed mode labels ───────────────────────────
+  const sectionIcons = { Overview:'◈', Operations:'⚙', People:'👤', Knowledge:'📖', Communication:'💬', Reporting:'📊', Finance:'💷', Account:'🔧' }; // eslint-disable-line
 
   const renderPage = () => {
     switch (page) {
@@ -6929,141 +6985,186 @@ export default function App() {
       default: return <p className="muted-sm">Page coming soon</p>;
     }
   };
+    <>
+      <style>{themeVars}</style>
+      <div className="app" data-theme={theme}>
 
-  const user = users.find(u => u.id === currentUser);
-  const pageTitles = {
-    dashboard: 'Dashboard', oncall: "Who's On Call", myshift: 'My Shift', calendar: 'Calendar',
-    rota: 'Rota', incidents: 'Incidents', timesheets: 'Timesheets', holidays: 'Holidays',
-    swaps: 'Shift Swaps', upgrades: 'Upgrade Days', stress: 'Stress Score', toil: 'TOIL',
-    absence: 'Absence & Sick', overtime: 'Overtime', logbook: 'Logbook', wiki: 'Wiki', glossary: 'Glossary',
-    contacts: 'Contacts', notes: 'Notes', docs: 'Documents', whatsapp: 'Team Chat', insights: 'Insights', capacity: 'Capacity',
-    reports: 'Weekly Reports', payroll: 'Payroll', payconfig: 'Pay Config',
-    settings: 'Settings', myaccount: 'My Account'
-  };
-
-  return (
-    <div className="app">
-      <div className={`sidebar${sidebarOpen ? '' : ' collapsed'}`}>
-        <div className="logo">
-          <div className="logo-icon">CR</div>
-          {sidebarOpen && <div>
-            <div className="logo-text">CloudOps Rota</div>
-            <div className="logo-sub">Cloud Run Operations</div>
-          </div>}
-        </div>
-        {sidebarOpen && (
-          <div className="user-pill">
-            <Avatar user={user || { avatar: '?', color: '#475569' }} />
-            <div className="user-info">
-              <div className="user-name">{user?.name?.split(' ')[0]} {user?.name?.split(' ')[1]?.[0]}.</div>
-              <div className="user-role">{currentUser} · {user?.role}</div>
-            </div>
+        {/* ── SIDEBAR ───────────────────────────────────────────────── */}
+        <div style={{
+          width: sidebarOpen ? 200 : 48, flexShrink: 0,
+          background: 'var(--sidebar-bg)', borderRight: '1px solid var(--sidebar-border)',
+          display: 'flex', flexDirection: 'column', height: '100vh',
+          position: 'sticky', top: 0, transition: 'width 0.2s ease', overflow: 'hidden',
+          zIndex: 100
+        }}>
+          {/* Logo */}
+          <div style={{ display:'flex', alignItems:'center', gap:8, padding: sidebarOpen ? '14px 12px 10px' : '14px 0 10px', justifyContent: sidebarOpen ? 'flex-start' : 'center', borderBottom:'1px solid var(--sidebar-border)' }}>
+            <div style={{ width:28, height:28, borderRadius:8, background:'linear-gradient(135deg,#3b82f6,#06b6d4)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:11, fontWeight:800, color:'#fff', flexShrink:0 }}>CR</div>
+            {sidebarOpen && <div>
+              <div style={{ fontSize:12, fontWeight:700, color:'#f1f5f9', lineHeight:1.2 }}>CloudOps Rota</div>
+              <div style={{ fontSize:9, color:'#475569', letterSpacing:0.5 }}>CLOUD RUN OPS</div>
+            </div>}
           </div>
-        )}
-        <div style={{ overflowY: 'auto', flex: 1 }}>
-          {NAV.map(sec => (
-            <div key={sec.section}>
-              {sidebarOpen && <div className="nav-section" style={{ fontSize: 9, padding: '4px 12px 2px', letterSpacing: 1 }}>{sec.section}</div>}
-              {sec.items.filter(i => !i.managerOnly || isManager).map(item => (
-                <div key={item.id}
-                  className={`nav-item${page === item.id ? ' active' : ''}`}
-                  onClick={() => setPage(item.id)}
-                  title={item.label}
-                  style={{ padding: sidebarOpen ? '5px 12px' : '6px', minHeight: 30 }}>
-                  <span className="nav-icon" style={{ fontSize: 14 }}>{item.icon}</span>
-                  {sidebarOpen && <span style={{ fontSize: 12 }}>{item.label}</span>}
-                  {item.badge && openInc > 0 && <span className="badge">{openInc}</span>}
-                  {item.id === 'swaps' && pendingSwaps > 0 && <span className="badge">{pendingSwaps}</span>}
-                </div>
-              ))}
-            </div>
-          ))}
-        </div>
-        <div style={{ padding: '8px 10px', borderTop: '1px solid var(--border)', flexShrink: 0 }}>
-          {driveToken ? (
-            sidebarOpen && (
-              <div className="gd-status" style={{ marginBottom: 6 }}>
-                <div className="dot-live" />
-                <span style={{ fontSize: 10 }}>
-                  {syncing ? 'Syncing…' : `Synced ${lastSync ? lastSync.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : ''}`}
-                </span>
+
+          {/* User pill */}
+          {sidebarOpen ? (
+            <div style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 10px', margin:'6px 8px', background:'rgba(59,130,246,0.08)', borderRadius:8, border:'1px solid rgba(59,130,246,0.15)' }}>
+              <Avatar user={user || { avatar:'?', color:'#475569' }} size={26} />
+              <div style={{ flex:1, minWidth:0 }}>
+                <div style={{ fontSize:11, fontWeight:600, color:'var(--text-primary)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{user?.name?.split(' ')[0]} {user?.name?.split(' ')[1]?.[0]}.</div>
+                <div style={{ fontSize:9, color:'var(--text-muted)', fontFamily:'DM Mono' }}>{currentUser} · {user?.role}</div>
               </div>
-            )
+            </div>
           ) : (
-            <div style={{ marginBottom: 6 }}>
-              <div style={{ fontSize: 10, color: '#fcd34d' }}>{connectingDrive ? '⏳ Connecting…' : '⚠ Drive offline'}</div>
-              {!connectingDrive && <button className="btn btn-secondary btn-sm" style={{ width: '100%', marginTop: 3, fontSize: 10 }} onClick={connectDrive}>📁 Reconnect</button>}
+            <div style={{ display:'flex', justifyContent:'center', padding:'6px 0' }}>
+              <Avatar user={user || { avatar:'?', color:'#475569' }} size={26} />
             </div>
           )}
-          <button className="btn btn-secondary btn-sm" style={{ width: '100%', fontSize: 11, padding: '4px 8px' }} onClick={() => { setLoggedIn(false); }}>
-            {sidebarOpen ? '⎋ Sign Out' : '⎋'}
-          </button>
-        </div>
-      </div>
-      <div className="main">
-        <div className="topbar">
-          <button className="btn btn-secondary btn-sm" onClick={() => setSidebarOpen(!sidebarOpen)} style={{ padding: '4px 10px' }}>{sidebarOpen ? '◀' : '▶'}</button>
-          <div className="topbar-title">{pageTitles[page] || page}</div>
-          <input className="topbar-search" placeholder="Search…" value={searchQ} onChange={e => setSearchQ(e.target.value)} />
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'DM Mono' }}>
-              {new Date().toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}
-            </div>
-            {/* Refresh data from Drive */}
-            {driveToken && (
-              <button title="Refresh data from Google Drive" className="btn btn-secondary btn-sm" style={{ padding: '3px 8px' }}
-                onClick={async () => {
-                  try {
-                    setSyncing(true);
-                    const defaults = { users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, overtime, logbook, documents, obsidianNotes, whatsappChats };
-                    const data = await loadAllFromDrive(driveToken, defaults);
-                    const has = (v) => v !== null && v !== undefined;
-                    if (has(data.users))         setUsers(data.users);
-                    if (has(data.holidays))      setHolidays(data.holidays);
-                    if (has(data.incidents))     setIncidents(data.incidents);
-                    if (has(data.timesheets))    setTimesheets(data.timesheets);
-                    if (has(data.upgrades))      setUpgrades(data.upgrades);
-                    if (has(data.wiki))          setWiki(data.wiki);
-                    if (has(data.glossary))      setGlossary(data.glossary);
-                    if (has(data.contacts))      setContacts(data.contacts);
-                    if (has(data.payconfig))     setPayconfig(data.payconfig);
-                    if (has(data.rota))          setRota(sanitiseRota(data.rota));
-                    if (has(data.swapRequests))  setSwapRequests(data.swapRequests);
-                    if (has(data.toil))          setToil(data.toil);
-                    if (has(data.absences))      setAbsences(data.absences);
-                    if (has(data.overtime))      setOvertime(data.overtime);
-                    if (has(data.logbook))       setLogbook(data.logbook);
-                    if (has(data.documents))     setDocuments(data.documents);
-                    if (has(data.obsidianNotes)) setObsidianNotes(data.obsidianNotes);
-                    if (has(data.whatsappChats)) setWhatsappChats(data.whatsappChats);
-                    setLastSync(new Date());
-                  } catch(e) { console.warn('Refresh failed:', e); }
-                  finally { setSyncing(false); }
-                }}>🔄</button>
+
+          {/* Nav items */}
+          <div style={{ overflowY:'auto', flex:1, padding:'4px 0' }}>
+            {NAV.map(sec => (
+              <div key={sec.section}>
+                {sidebarOpen
+                  ? <div style={{ fontSize:8, fontWeight:700, letterSpacing:1.5, color:'#334155', padding:'8px 12px 3px', textTransform:'uppercase' }}>{sec.section}</div>
+                  : <div style={{ height:1, background:'var(--sidebar-border)', margin:'4px 6px' }} />
+                }
+                {sec.items.filter(i => !i.managerOnly || isManager).map(item => {
+                  const isActive = page === item.id;
+                  const badge = (item.badge && openInc > 0) ? openInc : (item.id === 'swaps' && pendingSwaps > 0) ? pendingSwaps : 0;
+                  return (
+                    <div key={item.id}
+                      onClick={() => setPage(item.id)}
+                      title={!sidebarOpen ? item.label : ''}
+                      style={{
+                        display:'flex', alignItems:'center', gap:8,
+                        padding: sidebarOpen ? '5px 10px 5px 12px' : '6px 0',
+                        justifyContent: sidebarOpen ? 'flex-start' : 'center',
+                        cursor:'pointer', position:'relative',
+                        background: isActive ? 'rgba(59,130,246,0.18)' : 'transparent',
+                        borderLeft: isActive ? '2px solid #3b82f6' : '2px solid transparent',
+                        borderRadius: sidebarOpen ? '0 6px 6px 0' : '0',
+                        margin: sidebarOpen ? '0 6px 0 0' : '1px 0',
+                        transition:'all 0.15s',
+                      }}
+                      onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = 'rgba(59,130,246,0.08)'; }}
+                      onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent'; }}>
+                      <span style={{ fontSize:13, flexShrink:0, opacity: isActive ? 1 : 0.7 }}>{item.icon}</span>
+                      {sidebarOpen && <span style={{ fontSize:11, color: isActive ? '#93c5fd' : 'var(--text-secondary)', fontWeight: isActive ? 600 : 400, flex:1 }}>{item.label}</span>}
+                      {badge > 0 && <span style={{ background:'#ef4444', color:'#fff', borderRadius:10, padding:'1px 5px', fontSize:9, fontWeight:700, flexShrink:0 }}>{badge}</span>}
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+
+          {/* Footer */}
+          <div style={{ padding:'8px', borderTop:'1px solid var(--sidebar-border)', flexShrink:0 }}>
+            {/* Drive status */}
+            {sidebarOpen && (
+              <div style={{ display:'flex', alignItems:'center', gap:6, padding:'4px 4px 6px', fontSize:9, color: driveToken ? '#6ee7b7' : '#fcd34d' }}>
+                <div style={{ width:6, height:6, borderRadius:'50%', background: driveToken ? '#22c55e' : '#f59e0b', flexShrink:0 }} />
+                {driveToken
+                  ? (syncing ? 'Syncing…' : `Synced ${lastSync ? lastSync.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}) : ''}`)
+                  : connectingDrive ? 'Connecting…' : 'Drive offline'}
+              </div>
             )}
-            {/* Manual sync to Drive */}
-            {driveToken && (
-              <button title="Sync all data to Google Drive" className="btn btn-secondary btn-sm" style={{ padding: '3px 8px', fontSize: 11 }}
-                onClick={syncAllToDrive} disabled={manualSyncing}>
-                {manualSyncing ? '⏳' : '☁'}
+            {!driveToken && !connectingDrive && (
+              <button style={{ width:'100%', marginBottom:4, fontSize:9, padding:'3px 0', background:'rgba(251,191,36,0.1)', border:'1px solid rgba(251,191,36,0.3)', borderRadius:5, color:'#fcd34d', cursor:'pointer' }} onClick={connectDrive}>
+                {sidebarOpen ? '📁 Reconnect Drive' : '📁'}
               </button>
             )}
-            {openInc > 0 && <div style={{ background: '#ef4444', color: '#fff', borderRadius: 12, padding: '2px 8px', fontSize: 11, fontWeight: 600 }}>🚨 {openInc}</div>}
-            <Avatar user={user || { avatar: '?', color: '#475569' }} size={28} />
+            <div style={{ display:'flex', gap:4 }}>
+              <button
+                onClick={() => setSidebarOpen(v => !v)}
+                style={{ flex:1, padding:'4px 0', background:'rgba(148,163,184,0.08)', border:'1px solid var(--sidebar-border)', borderRadius:5, color:'var(--text-muted)', cursor:'pointer', fontSize:10 }}
+                title={sidebarOpen ? 'Collapse sidebar' : 'Expand sidebar'}>
+                {sidebarOpen ? '◀' : '▶'}
+              </button>
+              <button
+                onClick={() => { setLoggedIn(false); }}
+                style={{ flex:1, padding:'4px 0', background:'rgba(239,68,68,0.08)', border:'1px solid rgba(239,68,68,0.2)', borderRadius:5, color:'#fca5a5', cursor:'pointer', fontSize:10 }}
+                title="Sign Out">
+                {sidebarOpen ? '⎋ Out' : '⎋'}
+              </button>
+            </div>
           </div>
         </div>
-        {/* Manual sync progress bar */}
-        {manualSyncing && (
-          <div style={{ padding: '6px 16px', background: 'rgba(59,130,246,0.1)', borderBottom: '1px solid var(--border)', display: 'flex', gap: 12, alignItems: 'center' }}>
-            <span style={{ fontSize: 11, color: 'var(--accent)', minWidth: 180 }}>{syncStatus}</span>
-            <div style={{ flex: 1, height: 6, background: 'rgba(255,255,255,0.1)', borderRadius: 3, overflow: 'hidden' }}>
-              <div style={{ height: '100%', width: `${syncProgress}%`, background: 'var(--accent)', borderRadius: 3, transition: 'width 0.3s' }} />
+
+        {/* ── MAIN ──────────────────────────────────────────────────── */}
+        <div className="main">
+          {/* Topbar */}
+          <div className="topbar" style={{ backdropFilter:'blur(8px)', background:'var(--topbar-bg)', borderBottom:'1px solid var(--border)', padding:'0 16px', height:46, display:'flex', alignItems:'center', gap:10, position:'sticky', top:0, zIndex:50 }}>
+            <div className="topbar-title" style={{ fontSize:13, fontWeight:600, color:'var(--text-primary)', flex:1 }}>{pageTitles[page] || page}</div>
+            <input className="topbar-search" placeholder="Search…" value={searchQ} onChange={e => setSearchQ(e.target.value)}
+              style={{ width:160, fontSize:11 }} />
+            <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+              <div style={{ fontSize:10, color:'var(--text-muted)', fontFamily:'DM Mono', whiteSpace:'nowrap' }}>
+                {new Date().toLocaleDateString('en-GB', { weekday:'short', day:'numeric', month:'short' })}
+              </div>
+              {driveToken && (
+                <button title="Refresh from Drive" className="btn btn-secondary btn-sm" style={{ padding:'3px 7px', fontSize:11 }}
+                  onClick={async () => {
+                    try {
+                      setSyncing(true);
+                      const defaults = { users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, overtime, logbook, documents, obsidianNotes, whatsappChats };
+                      const data = await loadAllFromDrive(driveToken, defaults);
+                      const has = v => v !== null && v !== undefined;
+                      if (has(data.users))         setUsers(data.users);
+                      if (has(data.holidays))      setHolidays(data.holidays);
+                      if (has(data.incidents))     setIncidents(data.incidents);
+                      if (has(data.timesheets))    setTimesheets(data.timesheets);
+                      if (has(data.upgrades))      setUpgrades(data.upgrades);
+                      if (has(data.wiki))          setWiki(data.wiki);
+                      if (has(data.glossary))      setGlossary(data.glossary);
+                      if (has(data.contacts))      setContacts(data.contacts);
+                      if (has(data.payconfig))     setPayconfig(data.payconfig);
+                      if (has(data.rota))          setRota(sanitiseRota(data.rota));
+                      if (has(data.swapRequests))  setSwapRequests(data.swapRequests);
+                      if (has(data.toil))          setToil(data.toil);
+                      if (has(data.absences))      setAbsences(data.absences);
+                      if (has(data.overtime))      setOvertime(data.overtime);
+                      if (has(data.logbook))       setLogbook(data.logbook);
+                      if (has(data.documents))     setDocuments(data.documents);
+                      if (has(data.obsidianNotes)) setObsidianNotes(data.obsidianNotes);
+                      if (has(data.whatsappChats)) setWhatsappChats(data.whatsappChats);
+                      setLastSync(new Date());
+                    } catch(e) { console.warn('Refresh failed:', e); }
+                    finally { setSyncing(false); }
+                  }}>🔄</button>
+              )}
+              {driveToken && (
+                <button title="Sync all to Drive" className="btn btn-secondary btn-sm" style={{ padding:'3px 7px', fontSize:11 }}
+                  onClick={syncAllToDrive} disabled={manualSyncing}>
+                  {manualSyncing ? '⏳' : '☁'}
+                </button>
+              )}
+              {/* Light / Dark mode toggle */}
+              <button
+                onClick={toggleTheme}
+                title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+                style={{ padding:'3px 8px', background:'rgba(148,163,184,0.1)', border:'1px solid var(--border)', borderRadius:6, cursor:'pointer', fontSize:13, lineHeight:1 }}>
+                {isDark ? '☀️' : '🌙'}
+              </button>
+              {openInc > 0 && <div style={{ background:'#ef4444', color:'#fff', borderRadius:12, padding:'2px 8px', fontSize:10, fontWeight:600 }}>🚨 {openInc}</div>}
+              <Avatar user={user || { avatar:'?', color:'#475569' }} size={26} />
             </div>
-            <span style={{ fontSize: 11, fontFamily: 'DM Mono', color: 'var(--text-muted)' }}>{syncProgress}%</span>
           </div>
-        )}
-        <div className="content">{renderPage()}</div>
+
+          {/* Sync progress bar */}
+          {manualSyncing && (
+            <div style={{ padding:'5px 16px', background:'rgba(59,130,246,0.08)', borderBottom:'1px solid var(--border)', display:'flex', gap:12, alignItems:'center' }}>
+              <span style={{ fontSize:10, color:'var(--accent)', minWidth:180 }}>{syncStatus}</span>
+              <div style={{ flex:1, height:4, background:'rgba(255,255,255,0.08)', borderRadius:2, overflow:'hidden' }}>
+                <div style={{ height:'100%', width:`${syncProgress}%`, background:'var(--accent)', borderRadius:2, transition:'width 0.3s' }} />
+              </div>
+              <span style={{ fontSize:10, fontFamily:'DM Mono', color:'var(--text-muted)' }}>{syncProgress}%</span>
+            </div>
+          )}
+          <div className="content">{renderPage()}</div>
+        </div>
       </div>
-    </div>
+    </>
   );
 }
