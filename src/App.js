@@ -7044,6 +7044,51 @@ export default function App() {
   // ── NAV group icons for collapsed mode labels ───────────────────────────
   const sectionIcons = { Overview:'◈', Operations:'⚙', People:'👤', Knowledge:'📖', Communication:'💬', Reporting:'📊', Finance:'💷', Account:'🔧' }; // eslint-disable-line
 
+  // ── Derived values ──────────────────────────────────────────────────────
+  const user = users.find(u => u.id === currentUser) || null;
+  const openInc = (incidents || []).filter(i => i.status === 'Investigating').length;
+  const pendingSwaps = (swapRequests || []).filter(s => s.status === 'pending').length;
+  const pageTitles = {
+    dashboard: '📊 Dashboard', oncall: '📡 On-Call', myshift: '🗓 My Shift',
+    calendar: '📅 Calendar', rota: '📋 Rota', incidents: '🚨 Incidents',
+    timesheets: '⏱ Timesheets', holidays: '🌴 Holidays', swaps: '🔁 Shift Swaps',
+    upgrades: '⬆ Upgrade Days', stress: '💆 Stress Score', toil: '⏰ TOIL',
+    absence: '🏥 Absence', overtime: '💰 Overtime', logbook: '📔 Logbook',
+    wiki: '📖 Wiki', glossary: '📚 Glossary', contacts: '📇 Contacts',
+    notes: '📝 Notes', docs: '📄 Documents', whatsapp: '💬 WhatsApp',
+    insights: '📈 Insights', capacity: '⚡ Capacity', reports: '📊 Weekly Reports',
+    payroll: '💷 Payroll', payconfig: '⚙ Pay Config', settings: '🔧 Settings',
+    myaccount: '👤 My Account',
+  };
+
+  // ── Props passed to all page components ────────────────────────────────
+  const props = {
+    currentUser, users, setUsers,
+    holidays, setHolidays,
+    incidents, setIncidents,
+    timesheets, setTimesheets,
+    upgrades, setUpgrades,
+    wiki, setWiki,
+    glossary, setGlossary,
+    contacts, setContacts,
+    payconfig, setPayconfig,
+    rota, setRota,
+    swapRequests, setSwapRequests,
+    toil, setToil,
+    absences, setAbsences,
+    overtime, setOvertime,
+    logbook, setLogbook,
+    documents, setDocuments,
+    obsidianNotes, setObsidianNotes,
+    whatsappChats, setWhatsappChats,
+    secureLinks, setSecureLinks,
+    driveToken,
+    searchQ,
+    isManager,
+    profilePics,
+    user,
+  };
+
   const renderPage = () => {
     switch (page) {
       case 'dashboard':  return isManager ? <Dashboard {...props} /> : <Alert type="warning">⚠ Dashboard restricted to managers.</Alert>;
