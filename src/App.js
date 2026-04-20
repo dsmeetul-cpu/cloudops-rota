@@ -1024,7 +1024,7 @@ function Dashboard({ users, rota, holidays, incidents, timesheets, swapRequests,
                     <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#10b981' }}>{resolvedUserInc}</td>
                     <td style={{ fontFamily:'DM Mono', fontSize:12, color: incHrs>0?'#f59e0b':'var(--text-muted)' }}>{incHrs>0?`${incHrs}h`:'—'}</td>
                     <td style={{ fontFamily:'DM Mono', fontSize:12 }}>{holDays}/25d</td>
-                    <td style={{ fontFamily:'DM Mono', fontSize:12, color: toilBal.balance>0?'#6ee7b7':'#fca5a5' }}>{toilBal.balance}h</td>
+                    <td style={{ fontFamily:'DM Mono', fontSize:12, color: toilBal.balance>0?'#38bdf8':'#fca5a5' }}>{toilBal.balance}h</td>
                   </tr>
                 );
               })}
@@ -1596,14 +1596,14 @@ function RotaPage({ users, rota, setRota, holidays, upgrades, swapRequests, setS
                 background: managerUnlocked ? 'rgba(239,68,68,0.15)' : 'rgba(34,197,94,0.12)',
                 border: `1px solid ${managerUnlocked ? '#ef4444' : '#22c55e'}`,
                 borderRadius:8, padding:'6px 14px', cursor:'pointer',
-                color: managerUnlocked ? '#fca5a5' : '#6ee7b7',
+                color: managerUnlocked ? '#fca5a5' : '#4ade80',
                 fontSize:12, fontWeight:600, transition:'all 0.2s'
               }}>
               {managerUnlocked ? '🔓 Unlocked — editing enabled' : '🔒 Locked — click to enable editing'}
             </button>
           </div>
           {!managerUnlocked && (
-            <div style={{ padding:'8px 12px', background:'rgba(34,197,94,0.06)', border:'1px solid rgba(34,197,94,0.2)', borderRadius:6, fontSize:11, color:'#6ee7b7', marginBottom:12 }}>
+            <div style={{ padding:'8px 12px', background:'rgba(34,197,94,0.06)', border:'1px solid rgba(34,197,94,0.2)', borderRadius:6, fontSize:11, color:'#4ade80', marginBottom:12 }}>
               🔒 Rota is in read-only mode. Click <strong>Locked</strong> above to unlock and enable editing.
             </div>
           )}
@@ -3246,10 +3246,10 @@ function TOIL({ users, timesheets, toil, setToil, currentUser, isManager }) {
                 </div>
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
-                <div><div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Auto (1:1 worked)</div><div style={{ fontSize: 16, fontWeight: 600, color: '#6ee7b7' }}>{b.autoToil}h</div></div>
+                <div><div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Auto (1:1 worked)</div><div style={{ fontSize: 16, fontWeight: 600, color: '#38bdf8' }}>{b.autoToil}h</div></div>
                 <div><div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Manual</div><div style={{ fontSize: 16, fontWeight: 600, color: '#93c5fd' }}>{b.manualAccrued}h</div></div>
                 <div><div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Used</div><div style={{ fontSize: 16, fontWeight: 600, color: '#fcd34d' }}>{b.used}h</div></div>
-                <div><div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Balance (max {b.cappedAt}h)</div><div style={{ fontSize: 16, fontWeight: 600, color: b.balance >= 0 ? '#6ee7b7' : '#fca5a5' }}>{b.balance}h</div></div>
+                <div><div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Balance (max {b.cappedAt}h)</div><div style={{ fontSize: 16, fontWeight: 600, color: b.balance >= 0 ? '#38bdf8' : '#fca5a5' }}>{b.balance}h</div></div>
               </div>
               {b.balance >= TOIL_MAX_CARRYOVER_HOURS && <div style={{ marginTop: 8, fontSize: 11, color: '#fcd34d' }}>⚠ At WTR carryover cap — use before year end</div>}
             </div>
@@ -3757,7 +3757,7 @@ function Overtime({ users, overtime, setOvertime, currentUser, isManager, driveT
   const myApproved = overtime.filter(o => o.status === 'approved' && o.userId === currentUser).reduce((s, o) => s + o.hours, 0);
 
   const statusBadge = (s) => ({
-    approved: { bg: '#14532d', color: '#6ee7b7', label: '✅ Approved' },
+    approved: { bg: '#14532d', color: '#e879f9', label: '✅ Approved' },
     pending:  { bg: '#7c2d12', color: '#fcd34d', label: '⏳ Pending'  },
     rejected: { bg: '#450a0a', color: '#fca5a5', label: '❌ Rejected' },
   }[s] || { bg: '#1e293b', color: '#94a3b8', label: s });
@@ -3858,7 +3858,7 @@ function Overtime({ users, overtime, setOvertime, currentUser, isManager, driveT
                   <tr key={o.id} style={{ cursor:'pointer' }} onClick={e => openEdit(o, e)}>
                     <td><div style={{ display:'flex', gap:8, alignItems:'center' }}><Avatar user={u || { avatar:'?', color:'#475569' }} size={24} /><span style={{ fontSize:12 }}>{u?.name || o.userId}</span></div></td>
                     <td style={{ fontFamily:'DM Mono', fontSize:12 }}>{fmtUK(o.date)}</td>
-                    <td style={{ fontFamily:'DM Mono', fontSize:13, fontWeight:700, color:'#6ee7b7' }}>{o.hours}h</td>
+                    <td style={{ fontFamily:'DM Mono', fontSize:13, fontWeight:700, color:'#e879f9' }}>{o.hours}h</td>
                     <td style={{ fontSize:12, color:'var(--text-secondary)', maxWidth:200 }}>{o.reason || '—'}</td>
                     <td><span style={{ background:badge.bg, color:badge.color, borderRadius:6, padding:'2px 8px', fontSize:11, fontWeight:600, whiteSpace:'nowrap' }}>{badge.label}</span></td>
                     <td style={{ fontSize:11, color:'var(--text-muted)' }}>{approver ? approver.name : '—'}{o.approvedAt && <div style={{ fontSize:10 }}>{fmtUK(o.approvedAt?.slice(0,10))}</div>}</td>
@@ -5546,7 +5546,6 @@ function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, rota
   const doExportExcel = async () => {
     setExporting(true);
     try {
-      // Load SheetJS from CDN
       const loadXLSX = () => new Promise((res, rej) => {
         if (window.XLSX) { res(window.XLSX); return; }
         const s = document.createElement('script');
@@ -5556,177 +5555,295 @@ function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, rota
       });
       const XLSX = await loadXLSX();
 
-      const fmtUK = d => d ? new Date(d + 'T12:00:00').toLocaleDateString('en-GB', { day:'2-digit', month:'2-digit', year:'numeric' }) : '';
-      const today = fmtUK(new Date().toISOString().slice(0, 10));
-      const rangeLabel = (exportStart && exportEnd)
-        ? `${fmtUK(exportStart)} – ${fmtUK(exportEnd)}`
-        : 'All time';
+      const fmtUK    = d => d ? new Date(d + 'T12:00:00').toLocaleDateString('en-GB', { day:'2-digit', month:'2-digit', year:'numeric' }) : '';
+      const fmtMonth = d => d ? new Date(d + 'T12:00:00').toLocaleDateString('en-GB', { month:'long', year:'numeric' }) : '';
+      const today    = fmtUK(new Date().toISOString().slice(0, 10));
+      const rangeLabel = exportStart && exportEnd ? `${fmtUK(exportStart)} – ${fmtUK(exportEnd)}` : 'All time';
 
-      // ── SHEET 1: Hours Summary ────────────────────────────────────────────
-      const hdrs = [
-        'Trigram', 'Full Name', 'Export Date', 'Period',
-        'Standby WD (h)', 'Worked WD (h)',
-        'Standby WE (h)', 'Worked WE (h)',
-        'Incident Hrs', 'Upgrade Hrs', 'Bank Hol Hrs', 'Overtime Hrs',
-        'TOIL Balance (h)',
-      ];
-      const dataRows = safeUsers.map(u => {
-        const { oc, tb, incHrs, upgradeHrs, bankHolHrs, overtimeHrs } = getUserData(u, exportStart, exportEnd);
-        return [
-          u.id, u.name, today, rangeLabel,
-          oc.standbyWD, oc.workedWD,
-          oc.standbyWE, oc.workedWE,
-          incHrs, upgradeHrs, bankHolHrs, overtimeHrs || 0,
-          tb.balance,
-        ];
-      });
-      // Totals row (cols 4–12 are numeric)
-      const totRow = ['TOTAL', '', today, rangeLabel,
-        ...Array.from({ length: 9 }, (_, i) =>
-          dataRows.reduce((s, r) => s + (parseFloat(r[4 + i]) || 0), 0)
-        ), ''
-      ];
-      const ws1Data = [hdrs, ...dataRows, totRow];
-      const ws1 = XLSX.utils.aoa_to_sheet(ws1Data);
-      // Column widths
-      ws1['!cols'] = [8, 22, 12, 16, 13, 13, 13, 13, 12, 12, 12, 12, 14].map(w => ({ wch: w }));
-      // Style header row bold + coloured (SheetJS free tier: basic cell styles)
-      const range1 = XLSX.utils.decode_range(ws1['!ref']);
-      for (let C = range1.s.c; C <= range1.e.c; C++) {
-        const hdrCell = XLSX.utils.encode_cell({ r: 0, c: C });
-        if (!ws1[hdrCell]) continue;
-        ws1[hdrCell].s = { font: { bold: true, color: { rgb: 'FFFFFF' } }, fill: { fgColor: { rgb: '0F3460' } }, alignment: { horizontal: 'center' } };
-      }
-      // Style totals row
-      const totRowIdx = ws1Data.length - 1;
-      for (let C = range1.s.c; C <= range1.e.c; C++) {
-        const cell = XLSX.utils.encode_cell({ r: totRowIdx, c: C });
-        if (!ws1[cell]) continue;
-        ws1[cell].s = { font: { bold: true }, fill: { fgColor: { rgb: '1E3A5F' } } };
-      }
-      // Freeze header row
-      ws1['!freeze'] = { xSplit: 0, ySplit: 1 };
-
-      // ── SHEET 2: Dashboard ────────────────────────────────────────────────
-      // Grand totals across all engineers
-      const gt = {
-        standbyWD: dataRows.reduce((s, r) => s + (r[4]||0), 0),
-        workedWD:  dataRows.reduce((s, r) => s + (r[5]||0), 0),
-        standbyWE: dataRows.reduce((s, r) => s + (r[6]||0), 0),
-        workedWE:  dataRows.reduce((s, r) => s + (r[7]||0), 0),
-        incidents: dataRows.reduce((s, r) => s + (r[8]||0), 0),
-        upgrades:  dataRows.reduce((s, r) => s + (r[9]||0), 0),
-        bankHols:  dataRows.reduce((s, r) => s + (r[10]||0), 0),
-        overtime:  dataRows.reduce((s, r) => s + (r[11]||0), 0),
-        totalOT:   safeOT.filter(o => o.status === 'approved').length,
-        pendingOT: safeOT.filter(o => o.status === 'pending').length,
+      // Helper: colour a range of cells in a worksheet
+      const styleRange = (ws, r1, c1, r2, c2, style) => {
+        for (let r = r1; r <= r2; r++) {
+          for (let c = c1; c <= c2; c++) {
+            const addr = XLSX.utils.encode_cell({ r, c });
+            if (!ws[addr]) ws[addr] = { t: 's', v: '' };
+            ws[addr].s = { ...ws[addr].s, ...style };
+          }
+        }
       };
-      const totalAllHrs = gt.standbyWD + gt.workedWD + gt.standbyWE + gt.workedWE + gt.incidents + gt.upgrades + gt.bankHols + gt.overtime;
+      const styleRow = (ws, row, nCols, style) => styleRange(ws, row, 0, row, nCols - 1, style);
 
-      const dash = [];
-      // Title block
-      dash.push(['CLOUDOPS ROTA — HOURS DASHBOARD', '', '', '', '', '']);
-      dash.push([`Period: ${rangeLabel}`, '', `Generated: ${today}`, '', `Engineers: ${safeUsers.length}`, '']);
-      dash.push([]);
-
-      // ── Team Summary KPIs
-      dash.push(['TEAM SUMMARY', 'Hours', '% of Total', '', '', '']);
-      const kpiRows = [
-        ['Standby Weekday',    gt.standbyWD],
-        ['Worked Weekday',     gt.workedWD],
-        ['Standby Weekend',    gt.standbyWE],
-        ['Worked Weekend',     gt.workedWE],
-        ['Incident Hours',     gt.incidents],
-        ['Upgrade Hours',      gt.upgrades],
-        ['Bank Holiday Hours', gt.bankHols],
-        ['Overtime Hours',     gt.overtime],
-        ['TOTAL ALL HOURS',    totalAllHrs],
+      // ─────────────────────────────────────────────────────────────────────
+      // SHEET 1 — Hours Summary (one row per engineer, totals)
+      // ─────────────────────────────────────────────────────────────────────
+      const s1Hdrs = [
+        'Trigram', 'Full Name', 'Export Date', 'Period',
+        'Standby WD (h)', 'Worked WD (h)', 'Standby WE (h)', 'Worked WE (h)',
+        'Incident Hrs', 'Upgrade Hrs', 'Bank Hol Hrs', 'Overtime Hrs', 'TOIL Bal (h)',
       ];
-      kpiRows.forEach(([lbl, val]) => {
-        const pct = totalAllHrs > 0 ? ((val / totalAllHrs) * 100).toFixed(1) + '%' : '0%';
-        dash.push([lbl, val, lbl === 'TOTAL ALL HOURS' ? '100%' : pct, '', '', '']);
-      });
-      dash.push([]);
-
-      // ── Overtime summary
-      dash.push(['OVERTIME SUMMARY', '', '', '', '', '']);
-      dash.push(['Total Approved Overtime Records', gt.totalOT, '', '', '', '']);
-      dash.push(['Total Approved Overtime Hours',   gt.overtime, '', '', '', '']);
-      dash.push(['Records Pending Approval',        gt.pendingOT, '', '', '', '']);
-      dash.push([]);
-
-      // ── Per-engineer breakdown
-      dash.push(['ENGINEER BREAKDOWN', 'Standby WD', 'Worked WD', 'Standby WE', 'Worked WE', 'Incidents', 'Upgrades', 'Bank Hols', 'Overtime', 'TOIL Bal.', 'Total Hrs']);
-      safeUsers.forEach(u => {
+      const s1Rows = safeUsers.map(u => {
         const { oc, tb, incHrs, upgradeHrs, bankHolHrs, overtimeHrs } = getUserData(u, exportStart, exportEnd);
-        const total = oc.standbyWD + oc.workedWD + oc.standbyWE + oc.workedWE + incHrs + upgradeHrs + bankHolHrs + (overtimeHrs||0);
-        dash.push([u.name, oc.standbyWD, oc.workedWD, oc.standbyWE, oc.workedWE, incHrs, upgradeHrs, bankHolHrs, overtimeHrs||0, tb.balance, total]);
+        return [u.id, u.name, today, rangeLabel,
+          oc.standbyWD, oc.workedWD, oc.standbyWE, oc.workedWE,
+          incHrs, upgradeHrs, bankHolHrs, overtimeHrs||0, tb.balance];
       });
-      dash.push([]);
+      const s1TotRow = ['TOTAL', `${safeUsers.length} engineers`, today, rangeLabel,
+        ...Array.from({length:9}, (_,i) => s1Rows.reduce((a,r)=>a+(parseFloat(r[4+i])||0),0)), ''];
+      const ws1Data = [s1Hdrs, ...s1Rows, s1TotRow];
+      const ws1 = XLSX.utils.aoa_to_sheet(ws1Data);
+      ws1['!cols'] = [8,24,12,18,14,13,14,13,12,12,12,13,13].map(w=>({wch:w}));
+      ws1['!freeze'] = { xSplit: 2, ySplit: 1 }; // freeze name cols + header row
+      // Header styling: dark navy bg, white bold text
+      const H = { font:{bold:true,color:{rgb:'FFFFFF'}}, fill:{fgColor:{rgb:'0F1629'}}, alignment:{horizontal:'center',wrapText:true}, border:{bottom:{style:'medium',color:{rgb:'3B82F6'}}} };
+      styleRow(ws1, 0, s1Hdrs.length, H);
+      // Engineer rows: alternate light/dark
+      s1Rows.forEach((_, i) => {
+        const bg = i % 2 === 0 ? '0F1629' : '131D35';
+        styleRow(ws1, i+1, s1Hdrs.length, { fill:{fgColor:{rgb:bg}}, font:{color:{rgb:'E2E8F0'}} });
+        // Colour-code numeric cols
+        for (let c = 4; c <= 11; c++) {
+          const addr = XLSX.utils.encode_cell({r:i+1, c});
+          if (!ws1[addr]) continue;
+          const colours = ['93C5FD','93C5FD','A78BFA','A78BFA','FCD34D','818CF8','FCA5A5','6EE7B7'];
+          ws1[addr].s = { ...ws1[addr].s, font:{color:{rgb:colours[c-4]}, bold: parseFloat(ws1[addr].v)>0 } };
+        }
+      });
+      // Totals row: bold teal
+      styleRow(ws1, s1Rows.length+1, s1Hdrs.length, { fill:{fgColor:{rgb:'1E3A5F'}}, font:{bold:true,color:{rgb:'6EE7B7'}}, border:{top:{style:'medium',color:{rgb:'3B82F6'}}} });
 
-      // ── Hours distribution (data for a manual chart)
-      dash.push(['HOURS DISTRIBUTION BY TYPE', '']);
-      dash.push(['Category', 'Hours', 'Engineers with hours']);
-      [
-        ['Standby Weekday',    gt.standbyWD, dataRows.filter(r=>r[4]>0).length],
-        ['Worked Weekday',     gt.workedWD,  dataRows.filter(r=>r[5]>0).length],
-        ['Standby Weekend',    gt.standbyWE, dataRows.filter(r=>r[6]>0).length],
-        ['Worked Weekend',     gt.workedWE,  dataRows.filter(r=>r[7]>0).length],
-        ['Incidents',          gt.incidents, dataRows.filter(r=>r[8]>0).length],
-        ['Upgrades',           gt.upgrades,  dataRows.filter(r=>r[9]>0).length],
-        ['Bank Holidays',      gt.bankHols,  dataRows.filter(r=>r[10]>0).length],
-        ['Overtime',           gt.overtime,  dataRows.filter(r=>r[11]>0).length],
-      ].forEach(row => dash.push(row));
-      dash.push([]);
+      // ─────────────────────────────────────────────────────────────────────
+      // SHEET 2 — Daily Detail (exact dates for every shift/overtime entry)
+      // ─────────────────────────────────────────────────────────────────────
+      const s2Hdrs = ['Trigram','Full Name','Date','Day','Shift Type','Hours','Category','Notes'];
+      const SHIFT_HRS = { daily:9, evening:12, weekend:12, bankholiday:22, upgrade:8, holiday:0, off:0 };
+      const SHIFT_CAT = { daily:'Daily Shift', evening:'Weekday On-Call', weekend:'Weekend On-Call', bankholiday:'Bank Holiday OC', upgrade:'Upgrade Day', holiday:'Annual Leave', off:'' };
+      const s2Rows = [];
 
-      // ── Top overtime entries
-      const topOT = [...safeOT]
-        .filter(o => o.status === 'approved')
-        .sort((a, b) => b.hours - a.hours)
-        .slice(0, 15);
-      if (topOT.length > 0) {
-        dash.push(['TOP OVERTIME ENTRIES (APPROVED)', '', '', '', '']);
-        dash.push(['Rank', 'Engineer', 'Date', 'Hours', 'Reason']);
-        topOT.forEach((o, i) => {
-          const u = safeUsers.find(x => x.id === o.userId);
-          dash.push([i + 1, u?.name || o.userId, fmtUK(o.date), o.hours, o.reason || '']);
+      safeUsers.forEach(u => {
+        // Rota entries — exact dates
+        const rotaEntries = Object.entries(safeRota[u.id]||{})
+          .filter(([d,s]) => s && s !== 'off' && (!exportStart||d>=exportStart) && (!exportEnd||d<=exportEnd))
+          .sort(([a],[b]) => a.localeCompare(b));
+        rotaEntries.forEach(([date, shift]) => {
+          const dayName = new Date(date+'T12:00:00').toLocaleDateString('en-GB',{weekday:'long'});
+          const hrs = SHIFT_HRS[shift] || 0;
+          if (hrs > 0) s2Rows.push([u.id, u.name, fmtUK(date), dayName, SHIFT_CAT[shift]||shift, hrs, 'On-Call/Shift','']);
         });
-        dash.push([]);
+        // Upgrade days with actual engineer-logged hours
+        safeUpgrades.filter(up => up.date && (!exportStart||up.date>=exportStart) && (!exportEnd||up.date<=exportEnd)).forEach(up => {
+          const et = (up.engineerTimes||[]).find(e=>e.engineerId===u.id&&e.approved);
+          if (et) {
+            const dayName = new Date(up.date+'T12:00:00').toLocaleDateString('en-GB',{weekday:'long'});
+            s2Rows.push([u.id, u.name, fmtUK(up.date), dayName, 'Upgrade Day', et.hours, 'Upgrade', up.title||'']);
+          }
+        });
+        // Approved overtime with exact dates
+        safeOT.filter(o=>o.userId===u.id&&o.status==='approved'&&(!exportStart||o.date>=exportStart)&&(!exportEnd||o.date<=exportEnd))
+          .sort((a,b)=>a.date.localeCompare(b.date))
+          .forEach(o => {
+            const dayName = new Date(o.date+'T12:00:00').toLocaleDateString('en-GB',{weekday:'long'});
+            s2Rows.push([u.id, u.name, fmtUK(o.date), dayName, 'Overtime', o.hours, 'Overtime', o.reason||'']);
+          });
+        // Incidents with hours logged
+        const incRows = (incidents||[]).filter(inc => inc.assigned_to===u.id && inc.hours_worked > 0
+          && (!exportStart||(inc.date||'')>=exportStart) && (!exportEnd||(inc.date||'')<=exportEnd));
+        incRows.forEach(inc => {
+          const d = inc.date||inc.created_at||'';
+          if (!d) return;
+          const dayName = new Date(d.slice(0,10)+'T12:00:00').toLocaleDateString('en-GB',{weekday:'long'});
+          s2Rows.push([u.id, u.name, fmtUK(d.slice(0,10)), dayName, 'Incident', inc.hours_worked||0, 'Incident', inc.title||'']);
+        });
+      });
+
+      // Sort by date then name
+      s2Rows.sort((a,b) => {
+        const [da,db] = [a[2],b[2]].map(s => s.split('/').reverse().join(''));
+        return da.localeCompare(db) || a[1].localeCompare(b[1]);
+      });
+
+      const ws2Data = [s2Hdrs, ...s2Rows];
+      const ws2 = XLSX.utils.aoa_to_sheet(ws2Data);
+      ws2['!cols'] = [8,22,12,12,20,8,14,28].map(w=>({wch:w}));
+      ws2['!freeze'] = { xSplit: 2, ySplit: 1 };
+      styleRow(ws2, 0, s2Hdrs.length, H);
+      // Colour-code rows by category
+      const catColours = { 'Daily Shift':'1E40AF','Weekday On-Call':'166534','Weekend On-Call':'854D0E','Bank Holiday OC':'7F1D1D','Upgrade Day':'5B21B6','Upgrade':'5B21B6','Annual Leave':'92400E','Overtime':'0F766E','Incident':'92400E' };
+      const catText    = { 'Daily Shift':'BFDBFE','Weekday On-Call':'BBF7D0','Weekend On-Call':'FEF08A','Bank Holiday OC':'FCA5A5','Upgrade Day':'DDD6FE','Upgrade':'DDD6FE','Annual Leave':'FDE68A','Overtime':'99F6E4','Incident':'FDE68A' };
+      s2Rows.forEach((row, i) => {
+        const cat = row[6]||'';
+        const bg  = catColours[row[4]] || catColours[cat] || '131D35';
+        const fg  = catText[row[4]]    || catText[cat]    || 'E2E8F0';
+        styleRow(ws2, i+1, s2Hdrs.length, { fill:{fgColor:{rgb:bg}}, font:{color:{rgb:fg}} });
+      });
+
+      // ─────────────────────────────────────────────────────────────────────
+      // SHEET 3 — Dashboard & Analysis (visual summary)
+      // ─────────────────────────────────────────────────────────────────────
+      const gt = {
+        standbyWD: s1Rows.reduce((s,r)=>s+(r[4]||0),0),
+        workedWD:  s1Rows.reduce((s,r)=>s+(r[5]||0),0),
+        standbyWE: s1Rows.reduce((s,r)=>s+(r[6]||0),0),
+        workedWE:  s1Rows.reduce((s,r)=>s+(r[7]||0),0),
+        incidents: s1Rows.reduce((s,r)=>s+(r[8]||0),0),
+        upgrades:  s1Rows.reduce((s,r)=>s+(r[9]||0),0),
+        bankHols:  s1Rows.reduce((s,r)=>s+(r[10]||0),0),
+        overtime:  s1Rows.reduce((s,r)=>s+(r[11]||0),0),
+      };
+      const totalHrs = Object.values(gt).reduce((a,b)=>a+b,0);
+      const pct = v => totalHrs > 0 ? ((v/totalHrs)*100).toFixed(1)+'%' : '0%';
+      // Build bar chart rows (ASCII-style in cells)
+      const bar = v => {
+        const w = totalHrs > 0 ? Math.round((v/totalHrs)*30) : 0;
+        return '█'.repeat(w) + '░'.repeat(30-w);
+      };
+
+      // Collect monthly data
+      const monthlyMap = {};
+      s2Rows.forEach(row => {
+        const rawDate = row[2]; // dd/mm/yyyy
+        if (!rawDate) return;
+        const [d,m,y] = rawDate.split('/');
+        const mo = `${y}-${m}`;
+        if (!monthlyMap[mo]) monthlyMap[mo] = { standby:0, worked:0, upgrade:0, overtime:0, incident:0, bankHol:0 };
+        const hrs = parseFloat(row[5])||0;
+        const cat = row[6]||'';
+        if (cat==='On-Call/Shift') { const sc=row[4]||''; if (sc.includes('Standby')||sc.includes('On-Call')||sc.includes('Bank Hol')) monthlyMap[mo].standby+=hrs; else monthlyMap[mo].worked+=hrs; }
+        else if (cat==='Upgrade') monthlyMap[mo].upgrade+=hrs;
+        else if (cat==='Overtime') monthlyMap[mo].overtime+=hrs;
+        else if (cat==='Incident') monthlyMap[mo].incident+=hrs;
+      });
+      const months = Object.keys(monthlyMap).sort();
+
+      const d3 = [];
+
+      // ── Title banner
+      d3.push(['CLOUDOPS ROTA', 'HOURS DASHBOARD & ANALYSIS', '', '', '', '', '', '']);
+      d3.push([`Period: ${rangeLabel}`, `Generated: ${today}`, `Engineers: ${safeUsers.length}`, `Total Hours: ${totalHrs}`, '', '', '', '']);
+      d3.push(['','','','','','','','']);
+
+      // ── KPI tiles (row 4, cols A-H)
+      d3.push(['METRIC', 'HOURS', '% OF TOTAL', 'VISUAL (30 units = 100%)', '', '', '', '']);
+      const kpis = [
+        ['Standby Weekday',    gt.standbyWD, '93C5FD'],
+        ['Worked Weekday',     gt.workedWD,  '93C5FD'],
+        ['Standby Weekend',    gt.standbyWE, 'A78BFA'],
+        ['Worked Weekend',     gt.workedWE,  'A78BFA'],
+        ['Incident Hours',     gt.incidents, 'FCD34D'],
+        ['Upgrade Hours',      gt.upgrades,  '818CF8'],
+        ['Bank Holiday Hours', gt.bankHols,  'FCA5A5'],
+        ['Overtime Hours',     gt.overtime,  '6EE7B7'],
+        ['GRAND TOTAL',        totalHrs,     'FFFFFF'],
+      ];
+      kpis.forEach(([lbl, v]) => d3.push([lbl, v, pct(v), bar(v), '', '', '', '']));
+      d3.push(['','','','','','','','']);
+
+      // ── Per-engineer table
+      d3.push(['ENGINEER PERFORMANCE', 'Standby WD', 'Worked WD', 'Standby WE', 'Worked WE', 'Incidents', 'Upgrades', 'Overtime', 'Total Hrs', 'TOIL']);
+      const engRows = safeUsers.map(u => {
+        const { oc, tb, incHrs, upgradeHrs, bankHolHrs, overtimeHrs } = getUserData(u, exportStart, exportEnd);
+        const total = oc.standbyWD+oc.workedWD+oc.standbyWE+oc.workedWE+incHrs+upgradeHrs+bankHolHrs+(overtimeHrs||0);
+        return [u.name, oc.standbyWD, oc.workedWD, oc.standbyWE, oc.workedWE, incHrs, upgradeHrs||0, overtimeHrs||0, total, tb.balance];
+      }).sort((a,b) => b[8]-a[8]); // sort by total desc
+      engRows.forEach(r => d3.push(r));
+      d3.push(['','','','','','','','','','']);
+
+      // ── Monthly trend table
+      if (months.length > 0) {
+        d3.push(['MONTHLY TREND', 'Standby/OC', 'Worked', 'Upgrades', 'Overtime', 'Incidents', 'Total', '']);
+        months.forEach(mo => {
+          const md = monthlyMap[mo];
+          const rowTotal = md.standby+md.worked+md.upgrade+md.overtime+md.incident;
+          const [y,m] = mo.split('-');
+          const label = new Date(+y,+m-1,1).toLocaleDateString('en-GB',{month:'long',year:'numeric'});
+          d3.push([label, md.standby, md.worked, md.upgrade, md.overtime, md.incident, rowTotal, '']);
+        });
+        d3.push(['','','','','','','','']);
       }
 
-      // ── Monthly breakdown (group by YYYY-MM)
-      const byMonth = {};
-      dataRows.forEach((r, i) => {
-        const u = safeUsers[i];
-        const allEntries = [
-          ...(safeTS[u.id] || []).map(e => ({ date: e.weekStart || '', type: 'timesheet' })),
-          ...safeOT.filter(o => o.userId === u.id && o.status === 'approved').map(o => ({ date: o.date, hours: o.hours, type: 'overtime' })),
-        ];
-        allEntries.forEach(e => {
-          if (!e.date) return;
-          const mo = e.date.slice(0, 7);
-          if (!byMonth[mo]) byMonth[mo] = { overtime: 0, records: 0 };
-          if (e.type === 'overtime') { byMonth[mo].overtime += (e.hours || 0); byMonth[mo].records++; }
+      // ── Overtime detail
+      const approvedOT = [...safeOT].filter(o=>o.status==='approved').sort((a,b)=>b.hours-a.hours);
+      if (approvedOT.length > 0) {
+        d3.push(['TOP OVERTIME ENTRIES', 'Engineer', 'Date', 'Day', 'Hours', 'Reason', '', '']);
+        approvedOT.slice(0,20).forEach((o,i) => {
+          const u = safeUsers.find(x=>x.id===o.userId);
+          const dayName = o.date ? new Date(o.date+'T12:00:00').toLocaleDateString('en-GB',{weekday:'short'}) : '';
+          d3.push([i+1, u?.name||o.userId, fmtUK(o.date), dayName, o.hours, o.reason||'—', '', '']);
         });
+        d3.push(['','','','','','','','']);
+      }
+
+      const ws3 = XLSX.utils.aoa_to_sheet(d3);
+      ws3['!cols'] = [28,14,14,35,14,14,14,14,14,12].map(w=>({wch:w}));
+      ws3['!freeze'] = { xSplit: 0, ySplit: 3 };
+
+      // Style the dashboard sheet
+      // Title rows
+      styleRow(ws3, 0, 8, { font:{bold:true,sz:16,color:{rgb:'3B82F6'}}, fill:{fgColor:{rgb:'080C18'}} });
+      styleRow(ws3, 1, 8, { font:{sz:10,color:{rgb:'94A3B8'}}, fill:{fgColor:{rgb:'080C18'}} });
+      styleRow(ws3, 2, 8, { fill:{fgColor:{rgb:'080C18'}} });
+      // KPI section header
+      styleRow(ws3, 3, 8, { font:{bold:true,color:{rgb:'FFFFFF'}}, fill:{fgColor:{rgb:'0F3460'}}, border:{bottom:{style:'medium',color:{rgb:'3B82F6'}}} });
+      // KPI rows: alternating
+      kpis.forEach(([, , rgb], i) => {
+        const rowIdx = 4 + i;
+        const bg = i % 2 === 0 ? '0F1629' : '131D35';
+        styleRow(ws3, rowIdx, 4, { fill:{fgColor:{rgb:bg}}, font:{color:{rgb:'E2E8F0'}} });
+        // Colour the value cell
+        const valCell = XLSX.utils.encode_cell({r:rowIdx, c:1});
+        if (ws3[valCell]) ws3[valCell].s = { font:{bold:true,color:{rgb:rgb}}, fill:{fgColor:{rgb:bg}}, alignment:{horizontal:'center'} };
+        // Colour the bar cell
+        const barCell = XLSX.utils.encode_cell({r:rowIdx, c:3});
+        if (ws3[barCell]) ws3[barCell].s = { font:{color:{rgb:rgb}}, fill:{fgColor:{rgb:bg}}, alignment:{horizontal:'left'} };
+        // Grand total gets special treatment
+        if (i === kpis.length-1) styleRow(ws3, rowIdx, 4, { font:{bold:true,color:{rgb:'6EE7B7'}}, fill:{fgColor:{rgb:'1E3A5F'}}, border:{top:{style:'medium',color:{rgb:'3B82F6'}}} });
       });
-      const monthRows = Object.entries(byMonth).sort(([a], [b]) => a.localeCompare(b));
-      if (monthRows.length > 0) {
-        dash.push(['MONTHLY OVERTIME TREND', '', '']);
-        dash.push(['Month', 'Approved Overtime Hrs', 'Records']);
-        monthRows.forEach(([mo, d]) => {
-          const [y, m] = mo.split('-');
-          const label = new Date(+y, +m - 1, 1).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
-          dash.push([label, d.overtime, d.records]);
+      // Engineer section: find its rows
+      let eStart = 3 + kpis.length + 2; // approximate — after KPI rows + blank
+      // Find actual row by searching d3
+      let engSectionRow = -1;
+      d3.forEach((row, i) => { if (row[0]==='ENGINEER PERFORMANCE') engSectionRow = i; });
+      if (engSectionRow >= 0) {
+        styleRow(ws3, engSectionRow, 10, { font:{bold:true,color:{rgb:'FFFFFF'}}, fill:{fgColor:{rgb:'0F3460'}}, border:{bottom:{style:'medium',color:{rgb:'3B82F6'}}} });
+        engRows.forEach((_, i) => {
+          const ri = engSectionRow + 1 + i;
+          const bg = i % 2 === 0 ? '0F1629' : '131D35';
+          styleRow(ws3, ri, 10, { fill:{fgColor:{rgb:bg}}, font:{color:{rgb:'E2E8F0'}} });
+          // Highlight total column
+          const totCell = XLSX.utils.encode_cell({r:ri, c:8});
+          if (ws3[totCell]) ws3[totCell].s = { font:{bold:true,color:{rgb:'6EE7B7'}}, fill:{fgColor:{rgb:bg}} };
+        });
+      }
+      // Monthly trend section
+      let monthSectionRow = -1;
+      d3.forEach((row, i) => { if (row[0]==='MONTHLY TREND') monthSectionRow = i; });
+      if (monthSectionRow >= 0) {
+        styleRow(ws3, monthSectionRow, 8, { font:{bold:true,color:{rgb:'FFFFFF'}}, fill:{fgColor:{rgb:'0F3460'}}, border:{bottom:{style:'medium',color:{rgb:'3B82F6'}}} });
+        months.forEach((_, i) => {
+          const ri = monthSectionRow + 1 + i;
+          const bg = i % 2 === 0 ? '0F1629' : '131D35';
+          styleRow(ws3, ri, 8, { fill:{fgColor:{rgb:bg}}, font:{color:{rgb:'E2E8F0'}} });
+          const totCell = XLSX.utils.encode_cell({r:ri, c:6});
+          if (ws3[totCell]) ws3[totCell].s = { font:{bold:true,color:{rgb:'A78BFA'}}, fill:{fgColor:{rgb:bg}} };
+        });
+      }
+      // OT section
+      let otSectionRow = -1;
+      d3.forEach((row, i) => { if (row[0]==='TOP OVERTIME ENTRIES') otSectionRow = i; });
+      if (otSectionRow >= 0) {
+        styleRow(ws3, otSectionRow, 8, { font:{bold:true,color:{rgb:'FFFFFF'}}, fill:{fgColor:{rgb:'0F3460'}}, border:{bottom:{style:'medium',color:{rgb:'3B82F6'}}} });
+        approvedOT.slice(0,20).forEach((_, i) => {
+          const ri = otSectionRow + 1 + i;
+          const bg = i % 2 === 0 ? '0F1629' : '131D35';
+          styleRow(ws3, ri, 8, { fill:{fgColor:{rgb:bg}}, font:{color:{rgb:'E2E8F0'}} });
+          const hrsCell = XLSX.utils.encode_cell({r:ri, c:4});
+          if (ws3[hrsCell]) ws3[hrsCell].s = { font:{bold:true,color:{rgb:'6EE7B7'}}, fill:{fgColor:{rgb:bg}} };
         });
       }
 
-      const ws2 = XLSX.utils.aoa_to_sheet(dash);
-      ws2['!cols'] = [28, 14, 14, 14, 14, 12, 12, 12, 12, 12, 12].map(w => ({ wch: w }));
-
-      // Build workbook
+      // Build workbook — 3 sheets
       const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws1, 'Hours Summary');
-      XLSX.utils.book_append_sheet(wb, ws2, 'Dashboard & Analysis');
+      XLSX.utils.book_append_sheet(wb, ws3, '📊 Dashboard');
+      XLSX.utils.book_append_sheet(wb, ws1, '📋 Hours Summary');
+      XLSX.utils.book_append_sheet(wb, ws2, '📅 Daily Detail');
 
       const fname = `CloudOps-Hours-${(exportStart||'all').replace(/-/g,'')}-${(exportEnd||'time').replace(/-/g,'')}.xlsx`;
       XLSX.writeFile(wb, fname);
@@ -5816,7 +5933,7 @@ function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, rota
               <th style={{ color:'#f59e0b' }}>Incidents</th>
               <th style={{ color:'#818cf8' }}>Upgrades</th>
               <th style={{ color:'#fca5a5' }}>Bank Hol</th>
-              <th style={{ color:'#6ee7b7' }}>Overtime</th>
+              <th style={{ color:'#e879f9' }}>Overtime</th>
               <th>TOIL Bal.</th>
             </tr>
           </thead>
@@ -5833,8 +5950,8 @@ function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, rota
                   <td style={{ fontFamily:'DM Mono', fontSize:12, color:incHrs>0?'#f59e0b':'var(--text-muted)' }}>{incHrs>0?`${incHrs}h`:'—'}</td>
                   <td style={{ fontFamily:'DM Mono', fontSize:12, color:upgradeHrs>0?'#818cf8':'var(--text-muted)' }}>{upgradeHrs>0?`${upgradeHrs}h`:'—'}</td>
                   <td style={{ fontFamily:'DM Mono', fontSize:12, color:bankHolHrs>0?'#fca5a5':'var(--text-muted)' }}>{bankHolHrs>0?`${bankHolHrs}h`:'—'}</td>
-                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:overtimeHrs>0?'#6ee7b7':'var(--text-muted)', fontWeight:overtimeHrs>0?700:400 }}>{overtimeHrs>0?`${overtimeHrs}h`:'—'}</td>
-                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:tb.balance>0?'#6ee7b7':'#fca5a5' }}>{tb.balance}h</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:overtimeHrs>0?'#e879f9':'var(--text-muted)', fontWeight:overtimeHrs>0?700:400 }}>{overtimeHrs>0?`${overtimeHrs}h`:'—'}</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:tb.balance>0?'#38bdf8':'#fca5a5' }}>{tb.balance}h</td>
                 </tr>
               );
             })}
@@ -5876,7 +5993,7 @@ function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, rota
                 {[['Monthly','monthly'],['Weekly','weekly'],['Daily','daily'],['Hourly','hourly']].map(([label,key]) => (
                   <div key={key} style={{ background:'rgba(30,64,175,0.15)', borderRadius:6, padding:'6px 8px', textAlign:'center' }}>
                     <div style={{ color:'var(--text-muted)', marginBottom:2, fontSize:10 }}>{label}</div>
-                    <div style={{ fontWeight:700, color:'#6ee7b7', fontFamily:'DM Mono', fontSize:12 }}>£{tx[key].net.toFixed(key==='hourly'?2:0)}</div>
+                    <div style={{ fontWeight:700, color:'#10b981', fontFamily:'DM Mono', fontSize:12 }}>£{tx[key].net.toFixed(key==='hourly'?2:0)}</div>
                     <div style={{ color:'var(--text-muted)', fontSize:9 }}>gross £{tx[key].gross.toFixed(key==='hourly'?2:0)}</div>
                   </div>
                 ))}
@@ -6031,7 +6148,7 @@ function PayConfig({ users, payconfig, setPayconfig, isManager }) {
                       <td style={{ textAlign: 'right', padding: '5px 6px', fontFamily: 'DM Mono', color: '#fcd34d' }}>-{fmt(tx[key].ni, key==='hourly'?2:2)}</td>
                       {p.pensionPct > 0 && <td style={{ textAlign: 'right', padding: '5px 6px', fontFamily: 'DM Mono', color: '#93c5fd' }}>-{fmt(tx[key].pension, key==='hourly'?2:2)}</td>}
                       {p.studentLoan && <td style={{ textAlign: 'right', padding: '5px 6px', fontFamily: 'DM Mono', color: '#c4b5fd' }}>-{fmt(tx[key].sl, key==='hourly'?2:2)}</td>}
-                      <td style={{ textAlign: 'right', padding: '5px 6px', fontFamily: 'DM Mono', fontWeight: 700, color: '#6ee7b7' }}>{fmt(tx[key].net, key==='hourly'?2:2)}</td>
+                      <td style={{ textAlign: 'right', padding: '5px 6px', fontFamily: 'DM Mono', fontWeight: 700, color: '#10b981' }}>{fmt(tx[key].net, key==='hourly'?2:2)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -6888,32 +7005,7 @@ export default function App() {
     setLoggedIn(true);
   };
 
-  if (!loggedIn) return (
-    <>
-      {loadingAfterLogin && (
-        <div style={{
-          position: 'fixed', inset: 0, background: 'rgba(10,14,26,0.92)',
-          display: 'flex', flexDirection: 'column', alignItems: 'center',
-          justifyContent: 'center', zIndex: 9999, gap: 24
-        }}>
-          <div style={{ fontSize: 28, fontWeight: 700, color: '#fff', letterSpacing: '-0.5px' }}>
-            ☁️ Loading from Google Drive
-          </div>
-          <div style={{ width: 360, background: 'rgba(255,255,255,0.1)', borderRadius: 12, overflow: 'hidden', height: 14 }}>
-            <div style={{
-              height: '100%', borderRadius: 12,
-              background: 'linear-gradient(90deg, #3b82f6, #06b6d4)',
-              width: loadProgress + '%',
-              transition: 'width 0.4s ease'
-            }} />
-          </div>
-          <div style={{ fontSize: 14, color: '#94a3b8', marginTop: -8 }}>{loadStatus}</div>
-          <div style={{ fontSize: 12, color: '#475569' }}>{loadProgress}% complete</div>
-        </div>
-      )}
-      <LoginScreen onLogin={login} driveToken={driveToken} onConnectDrive={connectDrive} users={users} connectingDrive={connectingDrive} driveReady={driveReady} />
-    </>
-  );
+
 
   // ── Theme CSS injection ─────────────────────────────────────────────────
   const isDark = theme === 'dark';
@@ -6985,6 +7077,35 @@ export default function App() {
       default: return <p className="muted-sm">Page coming soon</p>;
     }
   };
+
+  if (!loggedIn) return (
+    <>
+      {loadingAfterLogin && (
+        <div style={{
+          position: 'fixed', inset: 0, background: 'rgba(10,14,26,0.92)',
+          display: 'flex', flexDirection: 'column', alignItems: 'center',
+          justifyContent: 'center', zIndex: 9999, gap: 24
+        }}>
+          <div style={{ fontSize: 28, fontWeight: 700, color: '#fff', letterSpacing: '-0.5px' }}>
+            ☁️ Loading from Google Drive
+          </div>
+          <div style={{ width: 360, background: 'rgba(255,255,255,0.1)', borderRadius: 12, overflow: 'hidden', height: 14 }}>
+            <div style={{
+              height: '100%', borderRadius: 12,
+              background: 'linear-gradient(90deg, #3b82f6, #06b6d4)',
+              width: loadProgress + '%',
+              transition: 'width 0.4s ease'
+            }} />
+          </div>
+          <div style={{ fontSize: 14, color: '#94a3b8', marginTop: -8 }}>{loadStatus}</div>
+          <div style={{ fontSize: 12, color: '#475569' }}>{loadProgress}% complete</div>
+        </div>
+      )}
+      <LoginScreen onLogin={login} driveToken={driveToken} onConnectDrive={connectDrive} users={users} connectingDrive={connectingDrive} driveReady={driveReady} />
+    </>
+  );
+
+  return (
     <>
       <style>{themeVars}</style>
       <div className="app" data-theme={theme}>
