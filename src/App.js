@@ -7149,7 +7149,7 @@ export default function App() {
   return (
     <>
       <style>{themeVars}</style>
-      <div className="app" data-theme={theme}>
+      <div className="app" data-theme={theme} style={{ display:'flex', height:'100vh', overflow:'hidden' }}>
 
         {/* ── SIDEBAR ───────────────────────────────────────────────── */}
         <div style={{
@@ -7255,7 +7255,7 @@ export default function App() {
         </div>
 
         {/* ── MAIN ──────────────────────────────────────────────────── */}
-        <div className="main">
+        <div className="main" style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden', minWidth:0 }}>
           {/* Topbar */}
           <div className="topbar" style={{ backdropFilter:'blur(8px)', background:'var(--topbar-bg)', borderBottom:'1px solid var(--border)', padding:'0 16px', height:46, display:'flex', alignItems:'center', gap:10, position:'sticky', top:0, zIndex:50 }}>
             <div className="topbar-title" style={{ fontSize:13, fontWeight:600, color:'var(--text-primary)', flex:1 }}>{pageTitles[page] || page}</div>
@@ -7324,7 +7324,7 @@ export default function App() {
               <span style={{ fontSize:10, fontFamily:'DM Mono', color:'var(--text-muted)' }}>{syncProgress}%</span>
             </div>
           )}
-          <div className="content">{renderPage()}</div>
+          <div className="content" style={{ flex:1, overflowY:'auto', padding:'16px' }}>{renderPage()}</div>
         </div>
       </div>
     </>
