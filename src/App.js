@@ -1912,7 +1912,7 @@ function RotaPage({ users, rota, setRota, holidays, upgrades, swapRequests, setS
                           {d.getDate()} {MON_SHORT[d.getMonth()]}{bh ? ' 🔴' : ''}
                         </div>
                         <div style={{ fontSize: 8, color: 'rgba(255,255,255,0.2)', fontFamily: 'DM Mono', marginTop: 1 }}>
-                          {bh ? '—' : isWkd ? '19:00→07:00' : dow >= 1 && dow <= 4 ? '10:00 / 19:00→' : '→07:00'}
+                          {bh ? '—' : isWkd ? '19:00–07:00' : dow === 5 ? '10:00 / 19:00→' : '10:00 / 19:00→'}
                         </div>
                       </th>
                     );
@@ -1981,17 +1981,13 @@ function RotaPage({ users, rota, setRota, holidays, upgrades, swapRequests, setS
                                   background: col.bg ? col.bg + '55' : 'transparent',
                                   color: col.text || 'var(--text-muted)',
                                   border: isBulkSel ? '2px solid #3b82f6' : col.bg ? `1px solid ${col.bg}88` : '1px solid transparent',
-                                  borderRadius: 6, padding: '3px 4px', fontSize: 9, fontWeight: 600,
-                                  cursor: isManager ? 'pointer' : 'default', userSelect: 'none', lineHeight: 1.4, minWidth: 30,
+                                  borderRadius: 6, padding: '4px 4px', fontSize: 9, fontWeight: 600,
+                                  cursor: isManager ? 'pointer' : 'default', userSelect: 'none', lineHeight: 1.3, minWidth: 30,
                                 }}>
                                 {hol ? '🌴' : bh ? '🔴' : upg ? '⬆' : s === 'off' ? '—' : col.label?.slice(0,4) || s}
-                                {s !== 'off' && !hol && !bh && !upg && hrs?.label && (
-                                  <div style={{ fontSize: 8, opacity: 0.75, fontWeight: 400, marginTop: 1 }}>{hrs.label}</div>
-                                )}
-                                {/* Overnight overflow indicator */}
                                 {isOvernight && (
-                                  <div style={{ fontSize: 7, color: col.text, opacity: 0.8, marginTop: 1, letterSpacing: 0.3 }}>
-                                    →07:00 next day
+                                  <div style={{ fontSize: 7, color: col.text, opacity: 0.8, marginTop: 1 }}>
+                                    →07:00
                                   </div>
                                 )}
                               </div>
@@ -2005,8 +2001,8 @@ function RotaPage({ users, rota, setRota, holidays, upgrades, swapRequests, setS
                                   borderRadius: 6, padding: '2px 4px', fontSize: 8, fontWeight: 600,
                                   lineHeight: 1.3,
                                 }}>
-                                  ←00:00–07:00
-                                  <div style={{ fontSize: 7, opacity: 0.8 }}>{prevCol.label?.slice(0,4)} cont.</div>
+                                  ←07:00
+                                  <div style={{ fontSize: 7, opacity: 0.8 }}>cont.</div>
                                 </div>
                               )}
                             </>
@@ -4013,7 +4009,7 @@ function Logbook({ users, logbook, setLogbook, currentUser, isManager }) {
   return (
     <div>
       <PageHeader title="📓 Logbook"
-        sub={isManager ? 'Record &amp; review appraisals, training, notes for all engineers' : 'Your personal logbook — add notes, training records, achievements'}
+        sub={isManager ? 'Record & review appraisals, training, notes for all engineers' : 'Your personal logbook — add notes, training records, achievements'}
         actions={<>
           {isManager && selected.size > 0 && <button className="btn btn-danger btn-sm" onClick={deleteBulk}>🗑 Delete {selected.size}</button>}
           <button className="btn btn-primary" onClick={openAdd}>+ Add Entry</button>
