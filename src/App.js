@@ -1,6 +1,6 @@
 // src/App.js
 // CloudOps Rota — Full Production Build v2
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 20th April 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 21st April 2026
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
@@ -3167,8 +3167,7 @@ function calcOncallPay(timesheetEntries, hourlyRate, upgradeHrs = 0, bankHolHrs 
     }
   });
 
-  // Bank holiday standby hours — now passed in as pre-calculated hours
-  // (not a day count) so extended weekend rules are already baked in.
+  // Bank holiday standby hours — pre-calculated hours (not day count)
   const bhStandby = bankHolHrs;
 
   // Incident hours from timesheets (entries with week starting "INC")
@@ -4843,73 +4842,102 @@ function Notes({ obsidianNotes, setObsidianNotes, users, currentUser, isManager 
 
 // ── WhatsApp Team Chat ────────────────────────────────────────────────────
 function WhatsAppChat({ whatsappChats, setWhatsappChats, users, currentUser, isManager, driveToken }) {
-  const [selectedChat, setSelectedChat] = useState(null);
-  const [newMessage, setNewMessage] = useState('');
+  const [selectedChat, setSelectedChat]     = useState(null);
+  const [newMessage, setNewMessage]         = useState('');
   const [showCreateChat, setShowCreateChat] = useState(false);
-  const [chatForm, setChatForm] = useState({ name: '', members: [] });
-  const [saveStatus, setSaveStatus] = useState('');
-  const [loadingChats, setLoadingChats] = useState(false);
-  const messagesContainerRef = useRef(null);
-  const messagesEndRef = useRef(null);
+  const [chatForm, setChatForm]             = useState({ name: '', members: [] });
+  const [sending, setSending]               = useState(false);
+  const [polling, setPolling]               = useState(false);
+  const [lastPoll, setLastPoll]             = useState(null);
+  const [showMembers, setShowMembers]       = useState(false);
+  const messagesEndRef  = useRef(null);
+  const inputRef        = useRef(null);
+  const pollIntervalRef = useRef(null);
+  const latestChatsRef  = useRef(whatsappChats); // always holds latest for polling closure
 
-  // ── Two-way sync: load chats from Drive JSON on mount / when Drive connects ─
+  // Keep ref in sync with state
+  useEffect(() => { latestChatsRef.current = whatsappChats; }, [whatsappChats]);
+
+  // ── Scroll to bottom whenever messages change ──────────────────────────────
   useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [selectedChat, whatsappChats]);
+
+  // ── Auto-select first chat ─────────────────────────────────────────────────
+  useEffect(() => {
+    if (!selectedChat && whatsappChats.length > 0) setSelectedChat(whatsappChats[0].id);
+  }, [whatsappChats.length]);
+
+  // ── Pull latest messages from Drive (merge, don't overwrite unsent) ────────
+  const pollDrive = useCallback(async (silent = true) => {
     if (!driveToken) return;
-    const loadChats = async () => {
-      setLoadingChats(true);
-      try {
-        const f = await driveFindFile(driveToken, 'whatsappChats.json');
-        if (f) {
-          const data = await driveReadJson(driveToken, f.id);
-          if (Array.isArray(data) && data.length > 0) {
-            // Merge: keep any local messages that might be newer
-            setWhatsappChats(prev => {
-              if (data.length >= prev.length) return data; // Drive has more — trust Drive
-              return prev;
-            });
-          }
-        }
-      } catch (e) { console.warn('Chat load from Drive:', e?.message); }
-      finally { setLoadingChats(false); }
-    };
-    loadChats();
-  }, [driveToken]); // re-runs whenever Drive token becomes available
-
-  // Auto-select first available chat
-  useEffect(() => {
-    if (!selectedChat && whatsappChats.length > 0) {
-      setSelectedChat(whatsappChats[0].id);
-    }
-  }, [whatsappChats]);
-
-  // Scroll to bottom when messages change
-  useEffect(() => {
-    if (messagesEndRef.current) {
-      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
-    }
-  }, [selectedChat, whatsappChats.length, whatsappChats.map?.(c => (c.messages||[]).length).join(',')]);
-
-  // Manual refresh from Drive
-  const refreshFromDrive = async () => {
-    if (!driveToken) { setSaveStatus('⚠ Drive not connected'); return; }
-    setLoadingChats(true);
-    setSaveStatus('⏳ Loading chats from Drive…');
+    if (!silent) setPolling(true);
     try {
       const f = await driveFindFile(driveToken, 'whatsappChats.json');
-      if (f) {
-        const data = await driveReadJson(driveToken, f.id);
-        if (Array.isArray(data)) {
-          setWhatsappChats(data);
-          if (data.length > 0 && !selectedChat) setSelectedChat(data[0].id);
-          setSaveStatus(`✅ Loaded ${data.length} chat(s) from Drive`);
-        } else { setSaveStatus('⚠ No chats found in Drive'); }
-      } else { setSaveStatus('⚠ No chat data found in Drive yet'); }
-    } catch (e) { setSaveStatus('❌ Load failed: ' + (e?.message || e)); }
-    setLoadingChats(false);
-    setTimeout(() => setSaveStatus(''), 4000);
+      if (!f) return;
+      const fresh = await driveReadJson(driveToken, f.id);
+      if (!Array.isArray(fresh)) return;
+      // Merge: for each channel keep whichever has more messages
+      setWhatsappChats(prev => {
+        const merged = fresh.map(fc => {
+          const local = prev.find(lc => lc.id === fc.id);
+          if (!local) return fc;
+          // Use whichever has more messages — Drive is source of truth after a send
+          return (fc.messages||[]).length >= (local.messages||[]).length ? fc : local;
+        });
+        // Keep any locally-created channels not yet in Drive
+        prev.forEach(lc => { if (!merged.find(mc => mc.id === lc.id)) merged.push(lc); });
+        return merged;
+      });
+      setLastPoll(new Date());
+    } catch (e) { console.warn('Chat poll error:', e?.message); }
+    finally { if (!silent) setPolling(false); }
+  }, [driveToken]);
+
+  // ── Start polling every 5 s when Drive is available ───────────────────────
+  useEffect(() => {
+    if (!driveToken) return;
+    pollDrive(false); // immediate load on connect
+    pollIntervalRef.current = setInterval(() => pollDrive(true), 5000);
+    return () => clearInterval(pollIntervalRef.current);
+  }, [driveToken, pollDrive]);
+
+  // ── Write updated chats array to Drive ────────────────────────────────────
+  const persistToDrive = async (updatedChats) => {
+    if (!driveToken) return;
+    try {
+      await driveWriteJson(driveToken, 'whatsappChats.json', updatedChats);
+    } catch (e) { console.warn('Chat persist error:', e?.message); }
   };
 
-  const createChat = () => {
+  // ── Send a message ─────────────────────────────────────────────────────────
+  const sendMessage = async () => {
+    const text = newMessage.trim();
+    if (!text || !selectedChat || sending) return;
+    setSending(true);
+    setNewMessage('');
+    const message = {
+      id: 'msg-' + Date.now() + '-' + currentUser,
+      sender: currentUser,
+      content: text,
+      timestamp: new Date().toISOString(),
+    };
+    // Optimistic update — show instantly in UI
+    let updatedChats;
+    setWhatsappChats(prev => {
+      updatedChats = prev.map(c =>
+        c.id === selectedChat ? { ...c, messages: [...(c.messages||[]), message] } : c
+      );
+      return updatedChats;
+    });
+    // Persist to Drive so other users see it on next poll
+    await persistToDrive(updatedChats || latestChatsRef.current);
+    setSending(false);
+    inputRef.current?.focus();
+  };
+
+  // ── Create a new channel ───────────────────────────────────────────────────
+  const createChat = async () => {
     if (!chatForm.name || chatForm.members.length === 0) return;
     const chat = {
       id: 'chat-' + Date.now(),
@@ -4917,232 +4945,308 @@ function WhatsAppChat({ whatsappChats, setWhatsappChats, users, currentUser, isM
       createdBy: currentUser,
       members: [...new Set([...chatForm.members, currentUser])],
       created: new Date().toISOString().slice(0, 10),
-      messages: []
+      messages: [],
     };
-    setWhatsappChats(prev => [...prev, chat]);
+    const updated = [...latestChatsRef.current, chat];
+    setWhatsappChats(updated);
     setShowCreateChat(false);
     setChatForm({ name: '', members: [] });
     setSelectedChat(chat.id);
+    await persistToDrive(updated);
   };
 
-  const sendMessage = () => {
-    if (!newMessage.trim() || !selectedChat) return;
-    const message = {
-      id: 'msg-' + Date.now(),
-      sender: currentUser,
-      content: newMessage.trim(),
-      timestamp: new Date().toISOString()
-    };
-    setWhatsappChats(prev => prev.map(c =>
-      c.id === selectedChat
-        ? { ...c, messages: [...(c.messages || []), message] }
-        : c
-    ));
-    setNewMessage('');
-    setSaveStatus('✓ Saved');
-    setTimeout(() => setSaveStatus(''), 2000);
-    if (driveToken) setTimeout(() => syncToGoogleDoc(), 500);
-  };
-
-  const deleteChat = (chatId) => {
-    if (window.confirm('Delete this chat?')) {
-      setWhatsappChats(prev => prev.filter(c => c.id !== chatId));
-      setSelectedChat(null);
-    }
-  };
-
-  // Save all chats to Google Doc (creates/updates a single compact doc)
-  const syncToGoogleDoc = async () => {
-    if (!driveToken) {
-      setSaveStatus('⚠️ Connect Drive first');
-      setTimeout(() => setSaveStatus(''), 3000);
-      return;
-    }
-    setSaveStatus('⏳ Syncing to Google Doc…');
-    try {
-      const DOC_NAME = 'CloudOps-TeamChat';
-      // Check if doc already exists
-      const listResp = await fetch(
-        `https://www.googleapis.com/drive/v3/files?q=name%3D'${DOC_NAME}'+and+trashed%3Dfalse+and+mimeType%3D'application%2Fvnd.google-apps.document'&fields=files(id,name)`,
-        { headers: { Authorization: `Bearer ${driveToken}` } }
-      ).then(r => r.json());
-
-      let docId = listResp.files && listResp.files.length > 0 ? listResp.files[0].id : null;
-
-      if (!docId) {
-        // Create new doc
-        const createResp = await fetch('https://www.googleapis.com/drive/v3/files', {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${driveToken}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: DOC_NAME, mimeType: 'application/vnd.google-apps.document' })
-        }).then(r => r.json());
-        docId = createResp.id;
-      }
-
-      // Build compact plain text content
-      const lines = [];
-      lines.push(`CloudOps Team Chat — exported ${new Date().toLocaleString('en-GB')}`);
-      lines.push('='.repeat(60));
-      whatsappChats.forEach(chat => {
-        lines.push(`\n=== ${chat.name} (${chat.members.length} members) ===`);
-        (chat.messages || []).forEach(m => {
-          const sender = users.find(u => u.id === m.sender)?.name || m.sender;
-          const time = new Date(m.timestamp).toLocaleString('en-GB', { day:'2-digit', month:'2-digit', year:'2-digit', hour:'2-digit', minute:'2-digit' });
-          lines.push(`[${time}] ${sender}: ${m.content}`);
-        });
-        if ((chat.messages||[]).length === 0) lines.push('(no messages)');
-      });
-      const fullText = lines.join('\n');
-
-      // Clear existing content and write new content via Docs API
-      // First get doc to find end index
-      const docResp = await fetch(`https://docs.googleapis.com/v1/documents/${docId}`, {
-        headers: { Authorization: `Bearer ${driveToken}` }
-      }).then(r => r.json());
-      const endIndex = docResp.body?.content?.slice(-1)[0]?.endIndex || 1;
-
-      const requests = [];
-      if (endIndex > 1) {
-        requests.push({ deleteContentRange: { range: { startIndex: 1, endIndex: endIndex - 1 } } });
-      }
-      requests.push({ insertText: { location: { index: 1 }, text: fullText } });
-
-      await fetch(`https://docs.googleapis.com/v1/documents/${docId}:batchUpdate`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${driveToken}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ requests })
-      });
-
-      setSaveStatus(`✅ Synced to Google Doc "${DOC_NAME}"`);
-      setTimeout(() => setSaveStatus(''), 4000);
-    } catch (e) {
-      console.error('Chat doc sync error:', e);
-      setSaveStatus('⚠️ Drive not accessible. Speak to Meetul.');
-      setTimeout(() => setSaveStatus(''), 4000);
-    }
+  // ── Delete a channel ──────────────────────────────────────────────────────
+  const deleteChat = async (chatId) => {
+    if (!window.confirm('Delete this channel and all its messages?')) return;
+    const updated = latestChatsRef.current.filter(c => c.id !== chatId);
+    setWhatsappChats(updated);
+    setSelectedChat(updated[0]?.id || null);
+    await persistToDrive(updated);
   };
 
   const currentChat = whatsappChats.find(c => c.id === selectedChat);
+  const currentChatMessages = currentChat?.messages || [];
+
+  // Group messages by date for Slack-style date dividers
+  const groupedMessages = currentChatMessages.reduce((groups, msg) => {
+    const date = new Date(msg.timestamp).toLocaleDateString('en-GB', { weekday:'long', day:'numeric', month:'long' });
+    if (!groups[date]) groups[date] = [];
+    groups[date].push(msg);
+    return groups;
+  }, {});
 
   return (
-    <div>
-      <PageHeader title="💬 Team Chat" sub="Team collaboration & messaging — auto-saved to Google Doc"
-        actions={<>
-          {saveStatus && <span style={{ fontSize:11, color: saveStatus.startsWith('✅') ? '#6ee7b7' : saveStatus.startsWith('⚠') || saveStatus.startsWith('❌') ? '#fcd34d' : 'var(--accent)' }}>{saveStatus}</span>}
-          <button className="btn btn-secondary btn-sm" onClick={refreshFromDrive} disabled={loadingChats} title="Reload chats from Google Drive">{loadingChats ? '⏳' : '🔄 Refresh'}</button>
-          {isManager && <button className="btn btn-secondary btn-sm" onClick={syncToGoogleDoc}>📄 Sync to Doc</button>}
-          {isManager && <button className="btn btn-primary" onClick={() => setShowCreateChat(true)}>+ New Group</button>}
-        </>} />
+    <div style={{ display:'flex', flexDirection:'column', height:'calc(100vh - 120px)', gap:0 }}>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '280px 1fr', gap: 16, height: '70vh' }}>
-        {/* Chat List */}
-        <div className="card" style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-          <div className="card-title">Groups ({whatsappChats.length})</div>
-          <div style={{ overflowY: 'auto', flex: 1 }}>
+      {/* ── Top bar ─────────────────────────────────────────────────────── */}
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
+        padding:'10px 16px', borderBottom:'1px solid var(--border)',
+        background:'var(--card-bg)', borderRadius:'12px 12px 0 0', flexShrink:0 }}>
+        <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+          <span style={{ fontSize:20 }}>💬</span>
+          <div>
+            <div style={{ fontWeight:700, fontSize:15, color:'var(--text-primary)' }}>Team Chat</div>
+            <div style={{ fontSize:11, color:'var(--text-muted)' }}>
+              {driveToken ? (
+                <span style={{ color:'#6ee7b7' }}>
+                  ● Live · syncs every 5s
+                  {lastPoll && ` · last update ${new Date(lastPoll).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}`}
+                </span>
+              ) : <span style={{ color:'#f59e0b' }}>⚠ Connect Drive to send & receive messages</span>}
+            </div>
+          </div>
+        </div>
+        <div style={{ display:'flex', gap:6 }}>
+          <button className="btn btn-secondary btn-sm" onClick={() => pollDrive(false)} disabled={polling} title="Refresh now">
+            {polling ? '⏳' : '🔄'}
+          </button>
+          {isManager && (
+            <button className="btn btn-primary btn-sm" onClick={() => setShowCreateChat(true)}>
+              + New Channel
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* ── Main layout ─────────────────────────────────────────────────── */}
+      <div style={{ display:'flex', flex:1, overflow:'hidden', background:'var(--card-bg)', borderRadius:'0 0 12px 12px' }}>
+
+        {/* Sidebar — channel list */}
+        <div style={{ width:220, flexShrink:0, borderRight:'1px solid var(--border)',
+          display:'flex', flexDirection:'column', overflow:'hidden' }}>
+          <div style={{ padding:'10px 12px 6px', fontSize:11, fontWeight:700,
+            color:'var(--text-muted)', letterSpacing:'0.08em', textTransform:'uppercase' }}>
+            Channels
+          </div>
+          <div style={{ overflowY:'auto', flex:1, padding:'0 6px 8px' }}>
             {whatsappChats.length === 0 ? (
-              <div style={{ padding: 12, fontSize: 12, color: 'var(--text-muted)', textAlign: 'center' }}>
-                No chats yet. {isManager ? 'Create one above!' : 'Ask your manager to create a group.'}
+              <div style={{ padding:'12px 6px', fontSize:12, color:'var(--text-muted)' }}>
+                {isManager ? 'Create your first channel above.' : 'No channels yet — ask your manager.'}
               </div>
-            ) : (
-              whatsappChats.map(chat => {
-                const lastMsg = (chat.messages||[]).slice(-1)[0];
-                const lastSender = lastMsg ? users.find(u=>u.id===lastMsg.sender)?.name?.split(' ')[0] || lastMsg.sender : null;
-                return (
-                  <div key={chat.id} onClick={() => setSelectedChat(chat.id)}
-                    style={{ padding:'10px 12px', background: selectedChat===chat.id?'var(--accent)':'transparent',
-                      color: selectedChat===chat.id?'#fff':'var(--text-primary)', borderRadius:6, cursor:'pointer', marginBottom:6, fontSize:13 }}>
-                    <div style={{ fontWeight:500, marginBottom:2 }}>💬 {chat.name}</div>
-                    <div style={{ fontSize:11, opacity:0.75 }}>{chat.members.length} members · {(chat.messages||[]).length} msgs</div>
-                    {lastMsg && <div style={{ fontSize:10, opacity:0.6, marginTop:2, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
-                      {lastSender}: {lastMsg.content.slice(0,30)}{lastMsg.content.length>30?'…':''}
-                    </div>}
-                  </div>
-                );
-              })
-            )}
+            ) : whatsappChats.map(chat => {
+              const isSelected = selectedChat === chat.id;
+              const lastMsg = (chat.messages||[]).slice(-1)[0];
+              const unreadDot = lastMsg && lastMsg.sender !== currentUser;
+              return (
+                <div key={chat.id} onClick={() => { setSelectedChat(chat.id); setShowMembers(false); }}
+                  style={{ display:'flex', alignItems:'center', gap:8, padding:'7px 8px', borderRadius:6,
+                    background: isSelected ? 'rgba(59,130,246,0.15)' : 'transparent',
+                    color: isSelected ? 'var(--accent)' : 'var(--text-primary)',
+                    cursor:'pointer', marginBottom:2, fontWeight: isSelected ? 600 : 400 }}>
+                  <span style={{ fontSize:14, flexShrink:0 }}>#</span>
+                  <span style={{ flex:1, fontSize:13, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                    {chat.name}
+                  </span>
+                  {unreadDot && !isSelected && (
+                    <div style={{ width:7, height:7, borderRadius:'50%', background:'#3b82f6', flexShrink:0 }} />
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
 
-        {/* Chat View */}
+        {/* Main chat area */}
         {currentChat ? (
-          <div className="card" style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', paddingBottom:12, borderBottom:'1px solid var(--border)' }}>
-              <div>
-                <h3 style={{ margin:'0 0 2px' }}>{currentChat.name}</h3>
-                <div style={{ fontSize:11, color:'var(--text-muted)' }}>
-                  {currentChat.members.map(id => users.find(u=>u.id===id)?.name?.split(' ')[0]).filter(Boolean).join(', ')}
-                </div>
+          <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden' }}>
+
+            {/* Channel header */}
+            <div style={{ padding:'10px 16px', borderBottom:'1px solid var(--border)',
+              display:'flex', alignItems:'center', justifyContent:'space-between', flexShrink:0 }}>
+              <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                <span style={{ fontSize:16, color:'var(--text-muted)' }}>#</span>
+                <span style={{ fontWeight:700, fontSize:15 }}>{currentChat.name}</span>
+                <span style={{ fontSize:11, color:'var(--text-muted)', marginLeft:4 }}>
+                  {currentChat.members.length} members
+                </span>
               </div>
-              <div style={{ display:'flex', gap:6, alignItems:'center' }}>
-                {isManager && <button className="btn btn-danger btn-sm" onClick={() => deleteChat(currentChat.id)}>🗑 Delete</button>}
+              <div style={{ display:'flex', gap:6 }}>
+                <button className="btn btn-secondary btn-sm"
+                  onClick={() => setShowMembers(v => !v)}
+                  style={{ fontSize:11 }}>
+                  👥 Members
+                </button>
+                {isManager && (
+                  <button className="btn btn-danger btn-sm"
+                    onClick={() => deleteChat(currentChat.id)}
+                    style={{ fontSize:11 }}>
+                    🗑
+                  </button>
+                )}
               </div>
             </div>
 
-            <div style={{ overflowY:'auto', flex:1, padding:'12px', display:'flex', flexDirection:'column', gap:8 }}>
-              {(currentChat.messages||[]).length === 0 ? (
-                <div style={{ textAlign:'center', color:'var(--text-muted)', margin:'auto' }}>No messages yet. Start the conversation!</div>
-              ) : (
-                (currentChat.messages||[]).map(msg => {
-                  const sender = users.find(u => u.id === msg.sender);
-                  const isOwn = msg.sender === currentUser;
-                  return (
-                    <div key={msg.id} style={{ display:'flex', justifyContent:isOwn?'flex-end':'flex-start' }}>
-                      {!isOwn && <Avatar user={sender||{avatar:'?',color:'#475569'}} size={28} style={{ marginRight:6, flexShrink:0 }} />}
-                      <div style={{ maxWidth:'70%', padding:'8px 12px', borderRadius:12,
-                        background: isOwn ? 'var(--accent)' : 'rgba(255,255,255,0.05)',
-                        color: isOwn ? '#fff' : 'var(--text-primary)', fontSize:13 }}>
-                        {!isOwn && <div style={{ fontSize:11, fontWeight:600, opacity:0.8, marginBottom:2 }}>{sender?.name}</div>}
-                        <div style={{ wordBreak:'break-word' }}>{msg.content}</div>
-                        <div style={{ fontSize:9, opacity:0.6, marginTop:4, textAlign:'right' }}>
-                          {new Date(msg.timestamp).toLocaleTimeString('en-GB', { hour:'2-digit', minute:'2-digit' })}
-                        </div>
-                      </div>
+            {/* Members panel (toggleable) */}
+            {showMembers && (
+              <div style={{ padding:'10px 16px', borderBottom:'1px solid var(--border)',
+                background:'rgba(255,255,255,0.02)', display:'flex', gap:10, flexWrap:'wrap', flexShrink:0 }}>
+                {currentChat.members.map(id => {
+                  const u = users.find(u => u.id === id);
+                  return u ? (
+                    <div key={id} style={{ display:'flex', alignItems:'center', gap:6, fontSize:12,
+                      background:'rgba(255,255,255,0.05)', padding:'4px 8px', borderRadius:20 }}>
+                      <Avatar user={u} size={20} />
+                      <span>{u.name.split(' ')[0]}</span>
                     </div>
-                  );
-                })
+                  ) : null;
+                })}
+              </div>
+            )}
+
+            {/* Messages */}
+            <div style={{ flex:1, overflowY:'auto', padding:'16px', display:'flex', flexDirection:'column', gap:0 }}>
+              {currentChatMessages.length === 0 ? (
+                <div style={{ margin:'auto', textAlign:'center', color:'var(--text-muted)' }}>
+                  <div style={{ fontSize:40, marginBottom:12 }}>👋</div>
+                  <div style={{ fontWeight:600, fontSize:15, marginBottom:4 }}>Welcome to #{currentChat.name}</div>
+                  <div style={{ fontSize:12 }}>This is the start of this channel. Say hello!</div>
+                </div>
+              ) : (
+                Object.entries(groupedMessages).map(([date, msgs]) => (
+                  <div key={date}>
+                    {/* Date divider */}
+                    <div style={{ display:'flex', alignItems:'center', gap:10, margin:'16px 0 8px' }}>
+                      <div style={{ flex:1, height:1, background:'var(--border)' }} />
+                      <span style={{ fontSize:11, color:'var(--text-muted)', whiteSpace:'nowrap',
+                        padding:'2px 10px', background:'var(--card-bg)', border:'1px solid var(--border)', borderRadius:12 }}>
+                        {date}
+                      </span>
+                      <div style={{ flex:1, height:1, background:'var(--border)' }} />
+                    </div>
+                    {/* Messages for this day */}
+                    {msgs.map((msg, idx) => {
+                      const sender   = users.find(u => u.id === msg.sender);
+                      const isOwn    = msg.sender === currentUser;
+                      const prevMsg  = idx > 0 ? msgs[idx - 1] : null;
+                      const isSameSender = prevMsg && prevMsg.sender === msg.sender &&
+                        (new Date(msg.timestamp) - new Date(prevMsg.timestamp)) < 5 * 60 * 1000;
+                      return (
+                        <div key={msg.id} style={{ display:'flex', gap:10, padding: isSameSender ? '1px 0' : '8px 0 1px',
+                          flexDirection: 'row', alignItems:'flex-start' }}>
+                          {/* Avatar — only show on first in a group */}
+                          <div style={{ width:36, flexShrink:0, paddingTop:2 }}>
+                            {!isSameSender && (
+                              <Avatar user={sender || { avatar: msg.sender?.slice(0,2) || '?', color:'#475569' }} size={34} />
+                            )}
+                          </div>
+                          <div style={{ flex:1, minWidth:0 }}>
+                            {!isSameSender && (
+                              <div style={{ display:'flex', alignItems:'baseline', gap:8, marginBottom:2 }}>
+                                <span style={{ fontWeight:700, fontSize:13,
+                                  color: isOwn ? 'var(--accent)' : 'var(--text-primary)' }}>
+                                  {sender?.name || msg.sender}
+                                  {isOwn && <span style={{ fontSize:10, fontWeight:400, color:'var(--text-muted)', marginLeft:4 }}>you</span>}
+                                </span>
+                                <span style={{ fontSize:10, color:'var(--text-muted)' }}>
+                                  {new Date(msg.timestamp).toLocaleTimeString('en-GB', { hour:'2-digit', minute:'2-digit' })}
+                                </span>
+                              </div>
+                            )}
+                            <div style={{ fontSize:13, color:'var(--text-primary)', wordBreak:'break-word',
+                              lineHeight:1.5, paddingLeft: isSameSender ? 0 : 0 }}>
+                              {msg.content}
+                            </div>
+                          </div>
+                          {isSameSender && (
+                            <div style={{ fontSize:10, color:'transparent', paddingTop:3,
+                              minWidth:40, textAlign:'right', transition:'color 0.2s' }}
+                              className="msg-time">
+                              {new Date(msg.timestamp).toLocaleTimeString('en-GB', { hour:'2-digit', minute:'2-digit' })}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))
               )}
               <div ref={messagesEndRef} />
             </div>
 
-            <div style={{ padding:'12px', borderTop:'1px solid var(--border)', display:'flex', gap:8 }}>
-              <input type="text" className="input" placeholder="Type a message… (Enter to send)"
-                value={newMessage} onChange={e => setNewMessage(e.target.value)}
-                onKeyDown={e => e.key==='Enter' && !e.shiftKey && sendMessage()}
-                style={{ flex:1, margin:0 }} />
-              <button className="btn btn-primary btn-sm" onClick={sendMessage} disabled={!newMessage.trim()}>Send</button>
+            {/* Message input */}
+            <div style={{ padding:'12px 16px', borderTop:'1px solid var(--border)', flexShrink:0 }}>
+              <div style={{ display:'flex', gap:8, alignItems:'flex-end',
+                background:'rgba(255,255,255,0.05)', border:'1px solid var(--border)',
+                borderRadius:10, padding:'8px 12px' }}>
+                <textarea
+                  ref={inputRef}
+                  rows={1}
+                  className="input"
+                  placeholder={driveToken ? `Message #${currentChat.name}` : 'Connect Drive to send messages'}
+                  value={newMessage}
+                  disabled={!driveToken || sending}
+                  onChange={e => {
+                    setNewMessage(e.target.value);
+                    // Auto-grow textarea
+                    e.target.style.height = 'auto';
+                    e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px';
+                  }}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+                  }}
+                  style={{ flex:1, margin:0, border:'none', background:'transparent',
+                    resize:'none', outline:'none', fontSize:13, lineHeight:1.5,
+                    minHeight:22, maxHeight:120, padding:0, color:'var(--text-primary)' }}
+                />
+                <button
+                  onClick={sendMessage}
+                  disabled={!newMessage.trim() || !driveToken || sending}
+                  style={{ flexShrink:0, width:34, height:34, borderRadius:8, border:'none',
+                    background: newMessage.trim() && driveToken ? 'var(--accent)' : 'rgba(255,255,255,0.1)',
+                    color: newMessage.trim() && driveToken ? '#fff' : 'var(--text-muted)',
+                    cursor: newMessage.trim() && driveToken ? 'pointer' : 'not-allowed',
+                    fontSize:16, display:'flex', alignItems:'center', justifyContent:'center',
+                    transition:'background 0.15s' }}>
+                  {sending ? '⏳' : '➤'}
+                </button>
+              </div>
+              <div style={{ fontSize:10, color:'var(--text-muted)', marginTop:5, paddingLeft:2 }}>
+                Enter to send · Shift+Enter for new line
+              </div>
             </div>
           </div>
         ) : (
-          <div className="card" style={{ display:'flex', alignItems:'center', justifyContent:'center', color:'var(--text-muted)', textAlign:'center' }}>
-            <div><div style={{ fontSize:32, marginBottom:8 }}>💬</div><div>Select a chat or create a new group</div></div>
+          <div style={{ flex:1, display:'flex', alignItems:'center', justifyContent:'center',
+            color:'var(--text-muted)', textAlign:'center', flexDirection:'column', gap:12 }}>
+            <div style={{ fontSize:48 }}>💬</div>
+            <div style={{ fontWeight:600, fontSize:16 }}>Welcome to Team Chat</div>
+            <div style={{ fontSize:13 }}>
+              {isManager ? 'Create a channel to get started.' : 'Select a channel from the left.'}
+            </div>
           </div>
         )}
       </div>
 
+      {/* ── Create channel modal ─────────────────────────────────────────── */}
       {showCreateChat && (
-        <Modal title="Create Group Chat" onClose={() => setShowCreateChat(false)}>
-          <FormGroup label="Group Name">
-            <input className="input" placeholder="e.g. Cloud Ops Team" value={chatForm.name}
-              onChange={e => setChatForm({ ...chatForm, name: e.target.value })} />
+        <Modal title="Create Channel" onClose={() => setShowCreateChat(false)}>
+          <FormGroup label="Channel Name" hint="e.g. general, incidents, upgrades">
+            <input className="input" placeholder="channel-name" value={chatForm.name}
+              onChange={e => setChatForm({ ...chatForm, name: e.target.value.toLowerCase().replace(/\s+/g,'-') })} />
           </FormGroup>
           <FormGroup label="Add Members">
-            <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+            <div style={{ display:'flex', flexDirection:'column', gap:6, maxHeight:240, overflowY:'auto' }}>
               {users.filter(u => u.id !== currentUser).map(u => (
-                <label key={u.id} style={{ display:'flex', alignItems:'center', gap:8, padding:'6px', cursor:'pointer' }}>
+                <label key={u.id} style={{ display:'flex', alignItems:'center', gap:8, padding:'6px 8px',
+                  borderRadius:6, cursor:'pointer', background:'rgba(255,255,255,0.03)' }}>
                   <input type="checkbox" checked={chatForm.members.includes(u.id)}
                     onChange={e => {
                       if (e.target.checked) setChatForm({ ...chatForm, members:[...chatForm.members, u.id] });
                       else setChatForm({ ...chatForm, members:chatForm.members.filter(id=>id!==u.id) });
                     }} />
                   <Avatar user={u} size={24} />
-                  <span style={{ fontSize:13 }}>{u.name} ({u.id})</span>
+                  <span style={{ fontSize:13 }}>{u.name}</span>
+                  <span style={{ fontSize:11, color:'var(--text-muted)', fontFamily:'DM Mono' }}>{u.id}</span>
                 </label>
               ))}
             </div>
           </FormGroup>
-          <div style={{ display:'flex', gap:8, justifyContent:'flex-end', marginTop:12 }}>
+          <div style={{ display:'flex', gap:8, justifyContent:'flex-end', marginTop:16 }}>
             <button className="btn btn-secondary" onClick={() => setShowCreateChat(false)}>Cancel</button>
-            <button className="btn btn-primary" onClick={createChat} disabled={!chatForm.name||chatForm.members.length===0}>Create Group</button>
+            <button className="btn btn-primary" onClick={createChat}
+              disabled={!chatForm.name || chatForm.members.length===0}>
+              Create Channel
+            </button>
           </div>
         </Modal>
       )}
@@ -5523,44 +5627,21 @@ function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, rota
     }, 0);
 
     // ── Bank holiday standby hours — extended weekend rules ─────────────────
-    // Rules (all times are for the engineer on weekend OC Fri 7pm → Mon 7am):
-    //   • BH on Monday   → extend OC to Tue 7am  (+24h, so Mon full day = 24h)
-    //   • BH on Friday   → start OC from Fri 7am  (+12h, so Fri = 24h not 12h)
-    //   • BH on Fri+Mon  → Fri 7am → Tue 7am
-    //   • BH on other days while on-call → 22h standby (9am–7am next day)
     const bankHolHrs = (() => {
       let totalBHHours = 0;
       bhList.forEach(bh => {
         if (startDs && bh.date < startDs) return;
         if (endDs   && bh.date > endDs)   return;
         const s = safeRota[u.id]?.[bh.date];
-        if (!s || s === 'off') return; // engineer not on-call this day
-
-        const bhDate = new Date(bh.date);
-        const dow = bhDate.getDay(); // 0=Sun,1=Mon,2=Tue,3=Wed,4=Thu,5=Fri,6=Sat
-
-        // Check if engineer is on weekend OC (has 'weekend' shift on this BH date
-        // or the preceding Friday)
+        if (!s || s === 'off') return;
+        const dow = new Date(bh.date).getDay();
         const isOnWeekendOC = s === 'weekend' || s === 'bankholiday';
-
         if (isOnWeekendOC) {
-          if (dow === 1) {
-            // BH on Monday — weekend OC normally ends Mon 7am.
-            // Extend to Tue 7am: Mon 7am→Tue 7am = 24h extra standby
-            // (the Mon 00:00–07:00 portion is already in standbyWE as 7h,
-            //  so we add the remaining 24h for the full bank holiday day)
-            totalBHHours += 24;
-          } else if (dow === 5) {
-            // BH on Friday — weekend OC normally starts Fri 7pm.
-            // Extend back to Fri 7am: +12h extra standby
-            totalBHHours += 12;
-          } else {
-            // BH falls mid-weekend (Sat/Sun) or other day while on weekend OC
-            totalBHHours += 22; // standard bank holiday: 9am–7am next day
-          }
+          if (dow === 1) totalBHHours += 24;       // BH Monday → extend to Tue 7am
+          else if (dow === 5) totalBHHours += 12;  // BH Friday → start from Fri 7am
+          else totalBHHours += 22;                 // Sat/Sun mid-weekend BH
         } else {
-          // Engineer is on weekday OC or daily shift on this bank holiday
-          totalBHHours += 22; // standard: 9am–7am next day
+          totalBHHours += 22; // weekday OC or daily on bank holiday
         }
       });
       return totalBHHours;
