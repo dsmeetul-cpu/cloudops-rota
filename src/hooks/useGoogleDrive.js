@@ -1,8 +1,19 @@
 // src/hooks/useGoogleDrive.js
 // Google Drive API integration - stores all data as JSON files in Drive
+//
+// ── IMPORTANT ───────────────────────────────────────────────────────────────
+// All app data lives in ONE shared folder owned by dsmeetul@gmail.com.
+// The folder ID is hardcoded below — reads always come from this folder
+// regardless of which Google account the user authenticates with.
+// The folder must be shared as "Anyone with the link → Viewer" in Drive.
+// Writes (manager only) still require a valid OAuth token with drive.file scope.
+// ────────────────────────────────────────────────────────────────────────────
 
 const SCOPES = 'https://www.googleapis.com/auth/drive.file';
-const FOLDER_NAME = 'CloudOps-Rota';
+
+// ── Hardcoded shared folder — never search for or create this ───────────────
+const SHARED_FOLDER_ID = '1MLKyzsfxH3vRb1lthOlN7aLp3bltb59C';
+
 const FILES = {
   users: 'users.json',
   rota: 'rota.json',
@@ -17,60 +28,32 @@ const FILES = {
   reports: 'reports.json',
 };
 
-let folderId = null;
+// Cache file IDs so we don't re-query Drive on every read/write
 let fileIds = {};
 
 // ── Auth ────────────────────────────────────────────────────────────────────
 
-// Cache the GSI script load so it is only injected into the DOM once.
-// Without this, every call to initGoogleAuth appended a new <script> tag,
-// which caused multiple account-chooser popups and race conditions.
-let _gsiLoadPromise = null;
-function loadGsi() {
-  if (_gsiLoadPromise) return _gsiLoadPromise;
-  _gsiLoadPromise = new Promise((resolve, reject) => {
-    if (window.google?.accounts?.oauth2) { resolve(); return; }
+export async function initGoogleAuth(clientId) {
+  return new Promise((resolve, reject) => {
     const script = document.createElement('script');
     script.src = 'https://accounts.google.com/gsi/client';
-    script.onload = resolve;
-    script.onerror = (e) => { _gsiLoadPromise = null; reject(e); };
+    script.onload = () => {
+      window.google.accounts.oauth2.initTokenClient({
+        client_id: clientId,
+        scope: SCOPES,
+        callback: (resp) => {
+          if (resp.error) reject(resp.error);
+          else resolve(resp.access_token);
+        },
+      }).requestAccessToken();
+    };
+    script.onerror = reject;
     document.head.appendChild(script);
-  });
-  return _gsiLoadPromise;
-}
-
-/**
- * initGoogleAuth(clientId, options?)
- *
- * options.prompt:
- *   ''       - default interactive flow; shows account chooser (original behaviour)
- *   'none'   - silent/invisible attempt; rejects immediately with 'interaction_required'
- *              if the user has no active Google session. NEVER shows a popup.
- *
- * App.js autoConnect() calls with { prompt: 'none' } on page load so users
- * with an active Google session connect automatically. If that fails, the
- * manual Connect button calls with no options (interactive flow, shows chooser).
- */
-export async function initGoogleAuth(clientId, options = {}) {
-  await loadGsi();
-  return new Promise((resolve, reject) => {
-    const promptValue = options.prompt ?? '';
-    const client = window.google.accounts.oauth2.initTokenClient({
-      client_id: clientId,
-      scope: SCOPES,
-      prompt: promptValue,
-      callback: (resp) => {
-        if (resp.error) reject(resp.error);
-        else resolve(resp.access_token);
-      },
-    });
-    client.requestAccessToken({ prompt: promptValue });
   });
 }
 
 export async function gapiLoad() {
   return new Promise((resolve) => {
-    if (window.gapi?.client) { resolve(); return; }
     const script = document.createElement('script');
     script.src = 'https://apis.google.com/js/api.js';
     script.onload = () => {
@@ -85,45 +68,33 @@ export async function gapiLoad() {
   });
 }
 
-// ── Folder helpers ───────────────────────────────────────────────────────────
+// ── File ID lookup ───────────────────────────────────────────────────────────
+// Always searches inside the hardcoded shared folder.
 
-async function getOrCreateFolder(token) {
-  const searchRes = await fetch(
-    `https://www.googleapis.com/drive/v3/files?q=name='${FOLDER_NAME}' and mimeType='application/vnd.google-apps.folder' and trashed=false&fields=files(id,name)`,
-    { headers: { Authorization: `Bearer ${token}` } }
-  );
-  const searchData = await searchRes.json();
-  if (searchData.files && searchData.files.length > 0) {
-    return searchData.files[0].id;
-  }
-  const createRes = await fetch('https://www.googleapis.com/drive/v3/files', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: FOLDER_NAME, mimeType: 'application/vnd.google-apps.folder' }),
-  });
-  const createData = await createRes.json();
-  return createData.id;
-}
-
-async function getFileId(token, filename, parentId) {
+async function getFileId(token, filename) {
+  // Use the shared folder ID directly — never the authenticated user's Drive
   const res = await fetch(
-    `https://www.googleapis.com/drive/v3/files?q=name='${filename}' and '${parentId}' in parents and trashed=false&fields=files(id,name)`,
+    `https://www.googleapis.com/drive/v3/files?q=name='${filename}' and '${SHARED_FOLDER_ID}' in parents and trashed=false&fields=files(id,name)`,
     { headers: { Authorization: `Bearer ${token}` } }
   );
   const data = await res.json();
   return data.files && data.files.length > 0 ? data.files[0].id : null;
 }
 
-// ── Read / Write ─────────────────────────────────────────────────────────────
+// ── Read ─────────────────────────────────────────────────────────────────────
+// Reads always come from the shared folder. The token just needs to be any
+// valid Google OAuth token — the folder's public sharing handles the access.
 
 export async function driveRead(token, key) {
   try {
-    if (!folderId) folderId = await getOrCreateFolder(token);
     const filename = FILES[key];
     if (!filename) throw new Error('Unknown key: ' + key);
-    let fileId = fileIds[key] || await getFileId(token, filename, folderId);
-    if (!fileId) return null;
+
+    // Use cached file ID if available, otherwise look it up
+    let fileId = fileIds[key] || await getFileId(token, filename);
+    if (!fileId) return null; // File doesn't exist yet
     fileIds[key] = fileId;
+
     const res = await fetch(
       `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
       { headers: { Authorization: `Bearer ${token}` } }
@@ -136,25 +107,31 @@ export async function driveRead(token, key) {
   }
 }
 
+// ── Write ────────────────────────────────────────────────────────────────────
+// Writes always target the shared folder. Only the manager (MBA47) should
+// call this — their token has drive.file scope over the shared folder.
+
 export async function driveWrite(token, key, data) {
   try {
-    if (!folderId) folderId = await getOrCreateFolder(token);
     const filename = FILES[key];
     if (!filename) throw new Error('Unknown key: ' + key);
-    let fileId = fileIds[key] || await getFileId(token, filename, folderId);
+
+    let fileId = fileIds[key] || await getFileId(token, filename);
     const body = JSON.stringify(data, null, 2);
     const blob = new Blob([body], { type: 'application/json' });
     const form = new FormData();
     form.append('metadata', new Blob([JSON.stringify(
       fileId
         ? { name: filename }
-        : { name: filename, parents: [folderId] }
+        : { name: filename, parents: [SHARED_FOLDER_ID] } // always write to shared folder
     )], { type: 'application/json' }));
     form.append('file', blob);
+
     const url = fileId
       ? `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=multipart`
       : 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart';
     const method = fileId ? 'PATCH' : 'POST';
+
     const res = await fetch(url, {
       method,
       headers: { Authorization: `Bearer ${token}` },
