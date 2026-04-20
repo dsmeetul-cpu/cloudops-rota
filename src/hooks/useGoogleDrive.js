@@ -22,27 +22,55 @@ let fileIds = {};
 
 // ── Auth ────────────────────────────────────────────────────────────────────
 
-export async function initGoogleAuth(clientId) {
-  return new Promise((resolve, reject) => {
+// Cache the GSI script load so it is only injected into the DOM once.
+// Without this, every call to initGoogleAuth appended a new <script> tag,
+// which caused multiple account-chooser popups and race conditions.
+let _gsiLoadPromise = null;
+function loadGsi() {
+  if (_gsiLoadPromise) return _gsiLoadPromise;
+  _gsiLoadPromise = new Promise((resolve, reject) => {
+    if (window.google?.accounts?.oauth2) { resolve(); return; }
     const script = document.createElement('script');
     script.src = 'https://accounts.google.com/gsi/client';
-    script.onload = () => {
-      window.google.accounts.oauth2.initTokenClient({
-        client_id: clientId,
-        scope: SCOPES,
-        callback: (resp) => {
-          if (resp.error) reject(resp.error);
-          else resolve(resp.access_token);
-        },
-      }).requestAccessToken();
-    };
-    script.onerror = reject;
+    script.onload = resolve;
+    script.onerror = (e) => { _gsiLoadPromise = null; reject(e); };
     document.head.appendChild(script);
+  });
+  return _gsiLoadPromise;
+}
+
+/**
+ * initGoogleAuth(clientId, options?)
+ *
+ * options.prompt:
+ *   ''       - default interactive flow; shows account chooser (original behaviour)
+ *   'none'   - silent/invisible attempt; rejects immediately with 'interaction_required'
+ *              if the user has no active Google session. NEVER shows a popup.
+ *
+ * App.js autoConnect() calls with { prompt: 'none' } on page load so users
+ * with an active Google session connect automatically. If that fails, the
+ * manual Connect button calls with no options (interactive flow, shows chooser).
+ */
+export async function initGoogleAuth(clientId, options = {}) {
+  await loadGsi();
+  return new Promise((resolve, reject) => {
+    const promptValue = options.prompt ?? '';
+    const client = window.google.accounts.oauth2.initTokenClient({
+      client_id: clientId,
+      scope: SCOPES,
+      prompt: promptValue,
+      callback: (resp) => {
+        if (resp.error) reject(resp.error);
+        else resolve(resp.access_token);
+      },
+    });
+    client.requestAccessToken({ prompt: promptValue });
   });
 }
 
 export async function gapiLoad() {
   return new Promise((resolve) => {
+    if (window.gapi?.client) { resolve(); return; }
     const script = document.createElement('script');
     script.src = 'https://apis.google.com/js/api.js';
     script.onload = () => {
@@ -60,7 +88,6 @@ export async function gapiLoad() {
 // ── Folder helpers ───────────────────────────────────────────────────────────
 
 async function getOrCreateFolder(token) {
-  // Search for existing folder
   const searchRes = await fetch(
     `https://www.googleapis.com/drive/v3/files?q=name='${FOLDER_NAME}' and mimeType='application/vnd.google-apps.folder' and trashed=false&fields=files(id,name)`,
     { headers: { Authorization: `Bearer ${token}` } }
@@ -69,7 +96,6 @@ async function getOrCreateFolder(token) {
   if (searchData.files && searchData.files.length > 0) {
     return searchData.files[0].id;
   }
-  // Create folder
   const createRes = await fetch('https://www.googleapis.com/drive/v3/files', {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -96,7 +122,7 @@ export async function driveRead(token, key) {
     const filename = FILES[key];
     if (!filename) throw new Error('Unknown key: ' + key);
     let fileId = fileIds[key] || await getFileId(token, filename, folderId);
-    if (!fileId) return null; // File doesn't exist yet
+    if (!fileId) return null;
     fileIds[key] = fileId;
     const res = await fetch(
       `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
