@@ -549,6 +549,12 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDri
   const handle = () => {
     const id = uid.trim().toUpperCase();
     if (!id) { setErr('Please enter your username.'); return; }
+    // Block login until Drive has finished loading — otherwise users is still
+    // DEFAULT_USERS and nobody except hardcoded defaults can sign in.
+    if (!driveReady) {
+      setErr('Please connect Google Drive first and wait for the green indicator before signing in.');
+      return;
+    }
     const userExists = users.find(u => u.id === id);
     if (!userExists) { setErr('Username not found. Contact your manager if you need access.'); return; }
     if (checkPassword(id, pw)) {
@@ -556,7 +562,7 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDri
       if (id === 'MBA47') { setPending2FA(id); setShow2FA(true); }
       else onLogin(id);
     } else {
-      setErr('Incorrect password. If the Drive indicator above is not green, wait a moment for it to connect, then try again. Use Forgot Password if needed.');
+      setErr('Incorrect password. Use Forgot Password if needed.');
     }
   };
 
@@ -662,8 +668,8 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDri
                 onChange={e => setPw(e.target.value)}
                 onKeyDown={e => e.key === 'Enter' && handle()} />
             </FormGroup>
-            <button className="btn btn-primary" style={{ width: '100%', padding: 11, marginBottom: 8 }} onClick={handle}>
-              Sign In
+            <button className="btn btn-primary" style={{ width: '100%', padding: 11, marginBottom: 8 }} onClick={handle} disabled={!driveReady}>
+              {driveReady ? 'Sign In' : '⏳ Waiting for Drive…'}
             </button>
             <div style={{ display: 'flex', gap: 8 }}>
               <button className="btn btn-secondary btn-sm" style={{ flex: 1 }} onClick={() => setShowForgot(true)}>🔑 Forgot Password?</button>
@@ -6698,14 +6704,13 @@ export default function App() {
   useEffect(() => {
     const autoConnect = async () => {
       try {
-        // ── Auto-connect: try cached token first, then silent OAuth ──────────
-        // Step 1: Check sessionStorage for a valid cached token (< 50 min old).
-        // Step 2: If no cached token, attempt a silent OAuth request (prompt:none).
-        //         This succeeds with zero UI when the user already has an active
-        //         Google session in their browser — which is the case for almost
-        //         everyone using a work Google account (dsmeetul@gmail.com domain).
-        //         If silent auth fails (no Google session), we fall back to the
-        //         manual Connect button — the popup ONLY appears when explicitly clicked.
+        // ── Silent-only auto-connect using sessionStorage cached token ────────
+        // We deliberately do NOT call initGoogleAuth() here even with prompt:'none'
+        // because some browsers still show the Google account chooser popup for
+        // prompt:'none' requests (especially when third-party cookies are restricted).
+        // Rule: the Google popup ONLY ever appears when the user explicitly clicks
+        // the 📁 Connect button. On first load there is no cached token so we do
+        // nothing — the login screen shows the Connect button.
         let token = null;
         try {
           const cached = sessionStorage.getItem('gdrive_token');
@@ -6714,29 +6719,7 @@ export default function App() {
         } catch (_) {}
 
         if (!token) {
-          // No cached token — try silent OAuth (prompt:none). No popup will appear;
-          // if the user has no active Google session this throws immediately and we
-          // fall through to the manual Connect button as before.
-          try {
-            await gapiLoad();
-            setConnectingDrive(true);
-            token = await initGoogleAuth(GOOGLE_CLIENT_ID, { prompt: 'none' });
-            if (token) {
-              try {
-                sessionStorage.setItem('gdrive_token', token);
-                sessionStorage.setItem('gdrive_token_ts', Date.now());
-              } catch (_) {}
-            }
-          } catch (silentErr) {
-            // Silent auth failed (login_required / interaction_required) — normal on
-            // first visit with no Google session. Fall back to manual Connect button.
-            setConnectingDrive(false);
-            return;
-          }
-        }
-
-        if (!token) {
-          setConnectingDrive(false);
+          // No valid cached token — stay offline. User connects manually via button.
           return;
         }
 
