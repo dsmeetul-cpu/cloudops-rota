@@ -7220,18 +7220,33 @@ export default function App() {
   return (
     <>
       <style>{themeVars}</style>
-      <div className="app" data-theme={theme}>
+      {/* Root shell — explicit inline flex, no dependency on App.css */}
+      <div data-theme={theme} style={{
+        display: 'flex', flexDirection: 'row', width: '100vw', height: '100vh',
+        overflow: 'hidden', background: 'var(--bg)', color: 'var(--text-primary)',
+        fontFamily: "'Inter', system-ui, sans-serif", fontSize: 13,
+      }}>
 
         {/* ── SIDEBAR ───────────────────────────────────────────────── */}
         <div style={{
-          width: sidebarOpen ? 200 : 48, flexShrink: 0,
-          background: 'var(--sidebar-bg)', borderRight: '1px solid var(--sidebar-border)',
-          display: 'flex', flexDirection: 'column', height: '100vh',
-          position: 'relative', transition: 'width 0.2s ease', overflow: 'hidden',
-          zIndex: 100
+          width: sidebarOpen ? 200 : 48,
+          minWidth: sidebarOpen ? 200 : 48,
+          maxWidth: sidebarOpen ? 200 : 48,
+          flexShrink: 0, flexGrow: 0,
+          display: 'flex', flexDirection: 'column',
+          height: '100vh', overflow: 'hidden',
+          background: 'var(--sidebar-bg)',
+          borderRight: '1px solid var(--sidebar-border)',
+          transition: 'width 0.2s ease, min-width 0.2s ease, max-width 0.2s ease',
+          zIndex: 100,
         }}>
           {/* Logo */}
-          <div style={{ display:'flex', alignItems:'center', gap:8, padding: sidebarOpen ? '14px 12px 10px' : '14px 0 10px', justifyContent: sidebarOpen ? 'flex-start' : 'center', borderBottom:'1px solid var(--sidebar-border)' }}>
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0,
+            padding: sidebarOpen ? '14px 12px 10px' : '14px 0 10px',
+            justifyContent: sidebarOpen ? 'flex-start' : 'center',
+            borderBottom: '1px solid var(--sidebar-border)',
+          }}>
             <div style={{ width:28, height:28, borderRadius:8, background:'linear-gradient(135deg,#3b82f6,#06b6d4)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:11, fontWeight:800, color:'#fff', flexShrink:0 }}>CR</div>
             {sidebarOpen && <div>
               <div style={{ fontSize:12, fontWeight:700, color:'#f1f5f9', lineHeight:1.2 }}>CloudOps Rota</div>
@@ -7240,26 +7255,28 @@ export default function App() {
           </div>
 
           {/* User pill */}
-          {sidebarOpen ? (
-            <div style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 10px', margin:'6px 8px', background:'rgba(59,130,246,0.08)', borderRadius:8, border:'1px solid rgba(59,130,246,0.15)' }}>
-              <Avatar user={user || { avatar:'?', color:'#475569' }} size={26} />
-              <div style={{ flex:1, minWidth:0 }}>
-                <div style={{ fontSize:11, fontWeight:600, color:'var(--text-primary)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{user?.name?.split(' ')[0]} {user?.name?.split(' ')[1]?.[0]}.</div>
-                <div style={{ fontSize:9, color:'var(--text-muted)', fontFamily:'DM Mono' }}>{currentUser} · {user?.role}</div>
+          <div style={{ flexShrink: 0 }}>
+            {sidebarOpen ? (
+              <div style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 10px', margin:'6px 8px', background:'rgba(59,130,246,0.08)', borderRadius:8, border:'1px solid rgba(59,130,246,0.15)' }}>
+                <Avatar user={user || { avatar:'?', color:'#475569' }} size={26} />
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ fontSize:11, fontWeight:600, color:'#f1f5f9', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{user?.name?.split(' ')[0]} {user?.name?.split(' ')[1]?.[0]}.</div>
+                  <div style={{ fontSize:9, color:'#64748b', fontFamily:'DM Mono' }}>{currentUser} · {user?.role}</div>
+                </div>
               </div>
-            </div>
-          ) : (
-            <div style={{ display:'flex', justifyContent:'center', padding:'6px 0' }}>
-              <Avatar user={user || { avatar:'?', color:'#475569' }} size={26} />
-            </div>
-          )}
+            ) : (
+              <div style={{ display:'flex', justifyContent:'center', padding:'6px 0' }}>
+                <Avatar user={user || { avatar:'?', color:'#475569' }} size={26} />
+              </div>
+            )}
+          </div>
 
           {/* Nav items */}
-          <div style={{ overflowY:'auto', flex:1, padding:'4px 0' }}>
+          <div style={{ overflowY: 'auto', flex: 1, padding: '4px 0' }}>
             {NAV.map(sec => (
               <div key={sec.section}>
                 {sidebarOpen
-                  ? <div style={{ fontSize:8, fontWeight:700, letterSpacing:1.5, color:'#334155', padding:'8px 12px 3px', textTransform:'uppercase' }}>{sec.section}</div>
+                  ? <div style={{ fontSize:8, fontWeight:700, letterSpacing:1.5, color:'#475569', padding:'8px 12px 3px', textTransform:'uppercase' }}>{sec.section}</div>
                   : <div style={{ height:1, background:'var(--sidebar-border)', margin:'4px 6px' }} />
                 }
                 {sec.items.filter(i => !i.managerOnly || isManager).map(item => {
@@ -7270,20 +7287,20 @@ export default function App() {
                       onClick={() => setPage(item.id)}
                       title={!sidebarOpen ? item.label : ''}
                       style={{
-                        display:'flex', alignItems:'center', gap:8,
+                        display: 'flex', alignItems: 'center', gap: 8,
                         padding: sidebarOpen ? '5px 10px 5px 12px' : '6px 0',
                         justifyContent: sidebarOpen ? 'flex-start' : 'center',
-                        cursor:'pointer', position:'relative',
+                        cursor: 'pointer',
                         background: isActive ? 'rgba(59,130,246,0.18)' : 'transparent',
                         borderLeft: isActive ? '2px solid #3b82f6' : '2px solid transparent',
-                        borderRadius: sidebarOpen ? '0 6px 6px 0' : '0',
                         margin: sidebarOpen ? '0 6px 0 0' : '1px 0',
-                        transition:'all 0.15s',
+                        borderRadius: sidebarOpen ? '0 6px 6px 0' : 0,
+                        transition: 'background 0.12s',
                       }}
                       onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = 'rgba(59,130,246,0.08)'; }}
                       onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent'; }}>
-                      <span style={{ fontSize:13, flexShrink:0, opacity: isActive ? 1 : 0.7 }}>{item.icon}</span>
-                      {sidebarOpen && <span style={{ fontSize:11, color: isActive ? '#93c5fd' : 'var(--text-secondary)', fontWeight: isActive ? 600 : 400, flex:1 }}>{item.label}</span>}
+                      <span style={{ fontSize:13, flexShrink:0, opacity: isActive ? 1 : 0.65 }}>{item.icon}</span>
+                      {sidebarOpen && <span style={{ fontSize:11, color: isActive ? '#93c5fd' : '#94a3b8', fontWeight: isActive ? 600 : 400, flex:1 }}>{item.label}</span>}
                       {badge > 0 && <span style={{ background:'#ef4444', color:'#fff', borderRadius:10, padding:'1px 5px', fontSize:9, fontWeight:700, flexShrink:0 }}>{badge}</span>}
                     </div>
                   );
@@ -7294,7 +7311,6 @@ export default function App() {
 
           {/* Footer */}
           <div style={{ padding:'8px', borderTop:'1px solid var(--sidebar-border)', flexShrink:0 }}>
-            {/* Drive status */}
             {sidebarOpen && (
               <div style={{ display:'flex', alignItems:'center', gap:6, padding:'4px 4px 6px', fontSize:9, color: driveToken ? '#6ee7b7' : '#fcd34d' }}>
                 <div style={{ width:6, height:6, borderRadius:'50%', background: driveToken ? '#22c55e' : '#f59e0b', flexShrink:0 }} />
@@ -7309,14 +7325,12 @@ export default function App() {
               </button>
             )}
             <div style={{ display:'flex', gap:4 }}>
-              <button
-                onClick={() => setSidebarOpen(v => !v)}
-                style={{ flex:1, padding:'4px 0', background:'rgba(148,163,184,0.08)', border:'1px solid var(--sidebar-border)', borderRadius:5, color:'var(--text-muted)', cursor:'pointer', fontSize:10 }}
+              <button onClick={() => setSidebarOpen(v => !v)}
+                style={{ flex:1, padding:'4px 0', background:'rgba(148,163,184,0.08)', border:'1px solid var(--sidebar-border)', borderRadius:5, color:'#64748b', cursor:'pointer', fontSize:10 }}
                 title={sidebarOpen ? 'Collapse sidebar' : 'Expand sidebar'}>
                 {sidebarOpen ? '◀' : '▶'}
               </button>
-              <button
-                onClick={() => { setLoggedIn(false); }}
+              <button onClick={() => setLoggedIn(false)}
                 style={{ flex:1, padding:'4px 0', background:'rgba(239,68,68,0.08)', border:'1px solid rgba(239,68,68,0.2)', borderRadius:5, color:'#fca5a5', cursor:'pointer', fontSize:10 }}
                 title="Sign Out">
                 {sidebarOpen ? '⎋ Out' : '⎋'}
@@ -7326,18 +7340,26 @@ export default function App() {
         </div>
 
         {/* ── MAIN ──────────────────────────────────────────────────── */}
-        <div className="main">
+        <div style={{
+          flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column',
+          height: '100vh', overflow: 'hidden',
+        }}>
           {/* Topbar */}
-          <div className="topbar" style={{ backdropFilter:'blur(8px)', background:'var(--topbar-bg)', borderBottom:'1px solid var(--border)', padding:'0 16px', height:46, display:'flex', alignItems:'center', gap:10, position:'sticky', top:0, zIndex:50 }}>
-            <div className="topbar-title" style={{ fontSize:13, fontWeight:600, color:'var(--text-primary)', flex:1 }}>{pageTitles[page] || page}</div>
-            <input className="topbar-search" placeholder="Search…" value={searchQ} onChange={e => setSearchQ(e.target.value)}
-              style={{ width:160, fontSize:11 }} />
+          <div style={{
+            flexShrink: 0, height: 46, display: 'flex', alignItems: 'center', gap: 10,
+            padding: '0 16px', zIndex: 50,
+            background: 'var(--topbar-bg)', borderBottom: '1px solid var(--border)',
+            backdropFilter: 'blur(8px)',
+          }}>
+            <div style={{ fontSize:13, fontWeight:600, color:'var(--text-primary)', flex:1 }}>{pageTitles[page] || page}</div>
+            <input placeholder="Search…" value={searchQ} onChange={e => setSearchQ(e.target.value)}
+              style={{ width:160, fontSize:11, background:'var(--input-bg)', border:'1px solid var(--border)', borderRadius:6, padding:'4px 8px', color:'var(--text-primary)', outline:'none' }} />
             <div style={{ display:'flex', alignItems:'center', gap:6 }}>
               <div style={{ fontSize:10, color:'var(--text-muted)', fontFamily:'DM Mono', whiteSpace:'nowrap' }}>
                 {new Date().toLocaleDateString('en-GB', { weekday:'short', day:'numeric', month:'short' })}
               </div>
               {driveToken && (
-                <button title="Refresh from Drive" className="btn btn-secondary btn-sm" style={{ padding:'3px 7px', fontSize:11 }}
+                <button title="Refresh from Drive" style={{ padding:'3px 7px', fontSize:11, background:'var(--bg-card2)', border:'1px solid var(--border)', borderRadius:6, color:'var(--text-secondary)', cursor:'pointer' }}
                   onClick={async () => {
                     try {
                       setSyncing(true);
@@ -7368,15 +7390,12 @@ export default function App() {
                   }}>🔄</button>
               )}
               {driveToken && (
-                <button title="Sync all to Drive" className="btn btn-secondary btn-sm" style={{ padding:'3px 7px', fontSize:11 }}
+                <button title="Sync all to Drive" style={{ padding:'3px 7px', fontSize:11, background:'var(--bg-card2)', border:'1px solid var(--border)', borderRadius:6, color:'var(--text-secondary)', cursor:'pointer' }}
                   onClick={syncAllToDrive} disabled={manualSyncing}>
                   {manualSyncing ? '⏳' : '☁'}
                 </button>
               )}
-              {/* Light / Dark mode toggle */}
-              <button
-                onClick={toggleTheme}
-                title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+              <button onClick={toggleTheme} title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
                 style={{ padding:'3px 8px', background:'rgba(148,163,184,0.1)', border:'1px solid var(--border)', borderRadius:6, cursor:'pointer', fontSize:13, lineHeight:1 }}>
                 {isDark ? '☀️' : '🌙'}
               </button>
@@ -7387,7 +7406,7 @@ export default function App() {
 
           {/* Sync progress bar */}
           {manualSyncing && (
-            <div style={{ padding:'5px 16px', background:'rgba(59,130,246,0.08)', borderBottom:'1px solid var(--border)', display:'flex', gap:12, alignItems:'center' }}>
+            <div style={{ flexShrink:0, padding:'5px 16px', background:'rgba(59,130,246,0.08)', borderBottom:'1px solid var(--border)', display:'flex', gap:12, alignItems:'center' }}>
               <span style={{ fontSize:10, color:'var(--accent)', minWidth:180 }}>{syncStatus}</span>
               <div style={{ flex:1, height:4, background:'rgba(255,255,255,0.08)', borderRadius:2, overflow:'hidden' }}>
                 <div style={{ height:'100%', width:`${syncProgress}%`, background:'var(--accent)', borderRadius:2, transition:'width 0.3s' }} />
@@ -7395,8 +7414,13 @@ export default function App() {
               <span style={{ fontSize:10, fontFamily:'DM Mono', color:'var(--text-muted)' }}>{syncProgress}%</span>
             </div>
           )}
-          <div className="content">{renderPage()}</div>
+
+          {/* Page content */}
+          <div style={{ flex:1, overflowY:'auto', padding:'16px', background:'var(--bg)' }}>
+            {renderPage()}
+          </div>
         </div>
+
       </div>
     </>
   );
