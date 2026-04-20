@@ -7227,7 +7227,7 @@ export default function App() {
           width: sidebarOpen ? 200 : 48, flexShrink: 0,
           background: 'var(--sidebar-bg)', borderRight: '1px solid var(--sidebar-border)',
           display: 'flex', flexDirection: 'column', height: '100vh',
-          position: 'sticky', top: 0, transition: 'width 0.2s ease', overflow: 'hidden',
+          position: 'relative', transition: 'width 0.2s ease', overflow: 'hidden',
           zIndex: 100
         }}>
           {/* Logo */}
