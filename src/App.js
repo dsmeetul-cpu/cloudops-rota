@@ -549,8 +549,6 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDri
   const handle = () => {
     const id = uid.trim().toUpperCase();
     if (!id) { setErr('Please enter your username.'); return; }
-    // Block login until Drive has finished loading — otherwise users is still
-    // DEFAULT_USERS and nobody except hardcoded defaults can sign in.
     if (!driveReady) {
       setErr('Please connect Google Drive first and wait for the green indicator before signing in.');
       return;
@@ -3169,8 +3167,9 @@ function calcOncallPay(timesheetEntries, hourlyRate, upgradeHrs = 0, bankHolHrs 
     }
   });
 
-  // Bank holiday hours (22h standby each, passed in as count of days)
-  const bhStandby = bankHolHrs * 22;
+  // Bank holiday standby hours — now passed in as pre-calculated hours
+  // (not a day count) so extended weekend rules are already baked in.
+  const bhStandby = bankHolHrs;
 
   // Incident hours from timesheets (entries with week starting "INC")
   let incidentHrs = 0;
@@ -5523,14 +5522,49 @@ function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, rota
       return sum + (et ? et.hours : 0);
     }, 0);
 
-    // Count bank holiday OC days in range (where rota has this user assigned)
-    const bankHolDays = bhList.filter(bh => {
-      if (startDs && bh.date < startDs) return false;
-      if (endDs   && bh.date > endDs)   return false;
-      const s = safeRota[u.id]?.[bh.date];
-      return s && s !== 'off';
-    });
-    const bankHolHrs = bankHolDays.length;
+    // ── Bank holiday standby hours — extended weekend rules ─────────────────
+    // Rules (all times are for the engineer on weekend OC Fri 7pm → Mon 7am):
+    //   • BH on Monday   → extend OC to Tue 7am  (+24h, so Mon full day = 24h)
+    //   • BH on Friday   → start OC from Fri 7am  (+12h, so Fri = 24h not 12h)
+    //   • BH on Fri+Mon  → Fri 7am → Tue 7am
+    //   • BH on other days while on-call → 22h standby (9am–7am next day)
+    const bankHolHrs = (() => {
+      let totalBHHours = 0;
+      bhList.forEach(bh => {
+        if (startDs && bh.date < startDs) return;
+        if (endDs   && bh.date > endDs)   return;
+        const s = safeRota[u.id]?.[bh.date];
+        if (!s || s === 'off') return; // engineer not on-call this day
+
+        const bhDate = new Date(bh.date);
+        const dow = bhDate.getDay(); // 0=Sun,1=Mon,2=Tue,3=Wed,4=Thu,5=Fri,6=Sat
+
+        // Check if engineer is on weekend OC (has 'weekend' shift on this BH date
+        // or the preceding Friday)
+        const isOnWeekendOC = s === 'weekend' || s === 'bankholiday';
+
+        if (isOnWeekendOC) {
+          if (dow === 1) {
+            // BH on Monday — weekend OC normally ends Mon 7am.
+            // Extend to Tue 7am: Mon 7am→Tue 7am = 24h extra standby
+            // (the Mon 00:00–07:00 portion is already in standbyWE as 7h,
+            //  so we add the remaining 24h for the full bank holiday day)
+            totalBHHours += 24;
+          } else if (dow === 5) {
+            // BH on Friday — weekend OC normally starts Fri 7pm.
+            // Extend back to Fri 7am: +12h extra standby
+            totalBHHours += 12;
+          } else {
+            // BH falls mid-weekend (Sat/Sun) or other day while on weekend OC
+            totalBHHours += 22; // standard bank holiday: 9am–7am next day
+          }
+        } else {
+          // Engineer is on weekday OC or daily shift on this bank holiday
+          totalBHHours += 22; // standard: 9am–7am next day
+        }
+      });
+      return totalBHHours;
+    })();
 
     // Approved overtime hours in range
     const overtimeHrs = safeOT.filter(o =>
