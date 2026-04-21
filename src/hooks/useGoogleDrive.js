@@ -4,17 +4,26 @@
 const SCOPES = 'https://www.googleapis.com/auth/drive.file';
 const FOLDER_NAME = 'CloudOps-Rota';
 const FILES = {
-  users: 'users.json',
-  rota: 'rota.json',
-  holidays: 'holidays.json',
-  incidents: 'incidents.json',
-  timesheets: 'timesheets.json',
-  upgrades: 'upgrades.json',
-  wiki: 'wiki.json',
-  glossary: 'glossary.json',
-  contacts: 'contacts.json',
-  payconfig: 'payconfig.json',
-  reports: 'reports.json',
+  users:         'users.json',
+  rota:          'rota.json',
+  holidays:      'holidays.json',
+  incidents:     'incidents.json',
+  timesheets:    'timesheets.json',
+  upgrades:      'upgrades.json',
+  wiki:          'wiki.json',
+  glossary:      'glossary.json',
+  contacts:      'contacts.json',
+  payconfig:     'payconfig.json',
+  reports:       'reports.json',
+  // ── These 8 keys were missing — every save/load for them silently failed ──
+  swapRequests:  'swapRequests.json',
+  toil:          'toil.json',
+  absences:      'absences.json',
+  overtime:      'overtime.json',
+  logbook:       'logbook.json',
+  documents:     'documents.json',
+  obsidianNotes: 'obsidianNotes.json',
+  whatsappChats: 'whatsappChats.json',
 };
 
 let folderId = null;
@@ -60,9 +69,15 @@ export async function gapiLoad() {
 // ── Folder helpers ───────────────────────────────────────────────────────────
 
 async function getOrCreateFolder(token) {
-  // Search for existing folder
+  // ── BUG FIX: the q= parameter MUST be URL-encoded.
+  // Unencoded apostrophes and spaces cause the Drive API query to fail silently,
+  // so the search returns 0 results and a brand-new empty folder is created every
+  // session — meaning saved files are never found on reload.
+  const q = encodeURIComponent(
+    `name='${FOLDER_NAME}' and mimeType='application/vnd.google-apps.folder' and trashed=false`
+  );
   const searchRes = await fetch(
-    `https://www.googleapis.com/drive/v3/files?q=name='${FOLDER_NAME}' and mimeType='application/vnd.google-apps.folder' and trashed=false&fields=files(id,name)`,
+    `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`,
     { headers: { Authorization: `Bearer ${token}` } }
   );
   const searchData = await searchRes.json();
@@ -80,8 +95,12 @@ async function getOrCreateFolder(token) {
 }
 
 async function getFileId(token, filename, parentId) {
+  // ── BUG FIX: q= must be URL-encoded (same issue as getOrCreateFolder above)
+  const q = encodeURIComponent(
+    `name='${filename}' and '${parentId}' in parents and trashed=false`
+  );
   const res = await fetch(
-    `https://www.googleapis.com/drive/v3/files?q=name='${filename}' and '${parentId}' in parents and trashed=false&fields=files(id,name)`,
+    `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`,
     { headers: { Authorization: `Bearer ${token}` } }
   );
   const data = await res.json();
@@ -135,6 +154,10 @@ export async function driveWrite(token, key, data) {
       body: form,
     });
     const result = await res.json();
+    if (!res.ok) {
+      console.error(`Drive: write failed for "${filename}":`, res.status, result?.error?.message || result);
+      return null;
+    }
     if (result.id) fileIds[key] = result.id;
     return result;
   } catch (e) {
