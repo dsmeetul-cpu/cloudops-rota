@@ -1,5 +1,5 @@
 // src/App.js
-// CloudOps Rota — Full Production Build v2
+// CloudOps Rota — Full Production Build v3
 // Meetul Bhundia (MBA47) · Cloud Run Operations · 22nd April 2026
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
