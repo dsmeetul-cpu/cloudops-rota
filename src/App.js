@@ -61,9 +61,14 @@ function updatePasswordInRegistry(uid, newPw) {
 }
 
 // ── Drive API helpers ──────────────────────────────────────────────────────
+// IMPORTANT: These helpers search within the SAME shared folder used by useGoogleDrive.js
+// so that auth_registry.json and profile_pictures.json land alongside all other data files.
+const APP_SHARED_FOLDER_ID = '1MLKyzsfxH3vRb1lthOlN7aLp3bltb59C';
+
 async function driveFindFile(token, name) {
+  const q = encodeURIComponent(`name='${name}' and '${APP_SHARED_FOLDER_ID}' in parents and trashed=false`);
   const resp = await fetch(
-    `https://www.googleapis.com/drive/v3/files?q=name%3D'${encodeURIComponent(name)}'+and+trashed%3Dfalse&spaces=drive&fields=files(id,name)`,
+    `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
     { headers: { Authorization: `Bearer ${token}` } }
   ).then(r => r.json());
   return resp.files && resp.files.length > 0 ? resp.files[0] : null;
@@ -85,10 +90,11 @@ async function driveWriteJson(token, name, data) {
       body
     }).then(r => r.json());
   }
+  // Create new file inside the shared folder so it's visible to all users
   const meta = await fetch('https://www.googleapis.com/drive/v3/files', {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, mimeType: 'application/json' })
+    body: JSON.stringify({ name, mimeType: 'application/json', parents: [APP_SHARED_FOLDER_ID] })
   }).then(r => r.json());
   return fetch(`https://www.googleapis.com/upload/drive/v3/files/${meta.id}?uploadType=media`, {
     method: 'PATCH',
@@ -6734,7 +6740,7 @@ export default function App() {
               try {
                 window.google.accounts.oauth2.initTokenClient({
                   client_id: GOOGLE_CLIENT_ID,
-                  scope: 'https://www.googleapis.com/auth/drive.readonly',
+                  scope: 'https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.file',
                   prompt: '',
                   callback: (resp) => {
                     if (resp?.access_token) {
