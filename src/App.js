@@ -1,13 +1,11 @@
 // src/App.js
 // CloudOps Rota — Full Production Build v2
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 21st April 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 20th April 2026
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
 import {
-  SCOPES,
   initGoogleAuth, gapiLoad, loadAllFromDrive, driveWrite,
-  getOrCreateMasterSheet, syncAllToSheet, syncUsersToMasterSheet,
   generateICalFeed, downloadIcal
 } from './hooks/useGoogleDrive';
 import {
@@ -63,14 +61,9 @@ function updatePasswordInRegistry(uid, newPw) {
 }
 
 // ── Drive API helpers ──────────────────────────────────────────────────────
-// IMPORTANT: These helpers search within the SAME shared folder used by useGoogleDrive.js
-// so that auth_registry.json and profile_pictures.json land alongside all other data files.
-const APP_SHARED_FOLDER_ID = '1MLKyzsfxH3vRb1lthOlN7aLp3bltb59C';
-
 async function driveFindFile(token, name) {
-  const q = encodeURIComponent(`name='${name}' and '${APP_SHARED_FOLDER_ID}' in parents and trashed=false`);
   const resp = await fetch(
-    `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
+    `https://www.googleapis.com/drive/v3/files?q=name%3D'${encodeURIComponent(name)}'+and+trashed%3Dfalse&spaces=drive&fields=files(id,name)`,
     { headers: { Authorization: `Bearer ${token}` } }
   ).then(r => r.json());
   return resp.files && resp.files.length > 0 ? resp.files[0] : null;
@@ -92,11 +85,10 @@ async function driveWriteJson(token, name, data) {
       body
     }).then(r => r.json());
   }
-  // Create new file inside the shared folder so it's visible to all users
   const meta = await fetch('https://www.googleapis.com/drive/v3/files', {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, mimeType: 'application/json', parents: [APP_SHARED_FOLDER_ID] })
+    body: JSON.stringify({ name, mimeType: 'application/json' })
   }).then(r => r.json());
   return fetch(`https://www.googleapis.com/upload/drive/v3/files/${meta.id}?uploadType=media`, {
     method: 'PATCH',
@@ -135,11 +127,67 @@ async function syncRegistryToDrive(driveToken, registry, users) {
   if (!driveToken) return;
   try {
     await driveWriteJson(driveToken, 'auth_registry.json', registry);
-    // Sync users to the master sheet (CloudOps-Data → "users" tab)
-    await syncUsersToMasterSheet(driveToken, users);
+    const sheetId = await syncUsersToSheet(driveToken, registry, users);
+    if (sheetId && sheetId !== registry.sheets_id) {
+      const updated = { ...registry, sheets_id: sheetId };
+      setRegistry(updated);
+      await driveWriteJson(driveToken, 'auth_registry.json', updated);
+    }
   } catch (e) { console.error('Registry sync error:', e); }
 }
 
+async function syncUsersToSheet(driveToken, registry, users) {
+  try {
+    let sheetId = registry.sheets_id;
+    if (!sheetId) {
+      const createResp = await fetch('https://sheets.googleapis.com/v4/spreadsheets', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${driveToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          properties: { title: 'CloudOps-UserRegistry' },
+          sheets: [{ properties: { title: 'Users', sheetId: 0 } }]
+        })
+      }).then(r => r.json());
+      sheetId = createResp.spreadsheetId;
+    }
+    const header = ['Username (ID)', 'Full Name', 'Role', 'Google Email', 'Mobile Number', 'Password (reset to this to unlock)', 'Avatar Initials', 'Colour'];
+    const rows = [header, ...users.map(u => [
+      u.id, u.name, u.role || 'Engineer',
+      u.google_email || '', u.mobile_number || '',
+      u.id.toLowerCase(), // default/reset password shown in plain text for manager reference
+      u.avatar || '', u.color || ''
+    ])];
+    await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/Users!A1:H${rows.length}?valueInputOption=RAW`,
+      { method: 'PUT', headers: { Authorization: `Bearer ${driveToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ values: rows }) }
+    );
+    // Bold header row
+    await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}:batchUpdate`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${driveToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requests: [{ repeatCell: { range: { sheetId: 0, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 0, endColumnIndex: 8 }, cell: { userEnteredFormat: { textFormat: { bold: true, foregroundColor: { red:1,green:1,blue:1 } }, backgroundColor: { red: 0.07, green: 0.21, blue: 0.37 } } }, fields: 'userEnteredFormat(textFormat,backgroundColor)' } }] })
+    });
+    return sheetId;
+  } catch (e) { console.error('Sheet sync error:', e); return registry.sheets_id || null; }
+}
+
+// Read rows back from the Sheet and apply any changes (name, email, mobile, role)
+async function syncUsersFromSheet(driveToken, registry, users, setUsers) {
+  if (!registry.sheets_id) return;
+  try {
+    const resp = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${registry.sheets_id}/values/Users!A2:H200`,
+      { headers: { Authorization: `Bearer ${driveToken}` } }
+    ).then(r => r.json());
+    const rows = resp.values || [];
+    const updated = users.map(u => {
+      const row = rows.find(r => r[0] === u.id);
+      if (!row) return u;
+      return { ...u, name: row[1] || u.name, role: row[2] || u.role, google_email: row[3] || u.google_email, mobile_number: row[4] || u.mobile_number, avatar: row[6] || u.avatar, color: row[7] || u.color };
+    });
+    setUsers(updated);
+  } catch (e) { console.error('Sync from sheet error:', e); }
+}
 
 async function loadRegistryFromDrive(driveToken) {
   try {
@@ -496,39 +544,53 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDri
   const [showForgot, setShowForgot] = useState(false);
   const [forgotUid, setForgotUid]   = useState('');
   const [forgotMsg, setForgotMsg]   = useState('');
-  const uidRef = useRef(null);
-
-  useEffect(() => {
-    if (driveReady && uidRef.current) uidRef.current.focus();
-  }, [driveReady]);
+  const [showHelp, setShowHelp]     = useState(false);
 
   const handle = () => {
     const id = uid.trim().toUpperCase();
-    if (!id) { setErr('Enter your username.'); return; }
-    if (!driveReady) { setErr('Still loading team data — please wait or click Connect.'); return; }
+    if (!id) { setErr('Please enter your username.'); return; }
     const userExists = users.find(u => u.id === id);
-    if (!userExists) { setErr('Username not found. Contact your manager.'); return; }
+    if (!userExists) { setErr('Username not found. Contact your manager if you need access.'); return; }
     if (checkPassword(id, pw)) {
       setErr('');
       if (id === 'MBA47') { setPending2FA(id); setShow2FA(true); }
       else onLogin(id);
     } else {
-      setErr('Incorrect password. Default is your username in lowercase (e.g. mva28).');
+      setErr('Incorrect password. If the Drive indicator above is not green, wait a moment for it to connect, then try again. Use Forgot Password if needed.');
     }
   };
 
   const verify2FA = () => {
     if (twoFACode.length === 6) { onLogin(pending2FA); }
-    else setErr('Enter the 6-digit code.');
+    else setErr('Enter a 6-digit code.');
   };
 
   const handleForgot = () => {
     const id = forgotUid.trim().toUpperCase();
-    if (!users.find(u => u.id === id)) { setForgotMsg('Username not found. Contact your manager.'); return; }
+    const userExists = users.find(u => u.id === id);
+    if (!userExists) { setForgotMsg('Username not found. Please contact your manager.'); return; }
     const reg = updatePasswordInRegistry(id, id.toLowerCase());
     if (driveToken) syncRegistryToDrive(driveToken, reg, users).catch(() => {});
-    setForgotMsg('Password reset. Sign in with your username in lowercase.');
+    setForgotMsg(`Password for ${id} has been reset. Sign in with your username in lowercase, then update it in My Account.`);
   };
+
+  if (showHelp) return (
+    <div className="login-screen">
+      <div className="login-box" style={{ maxWidth: 500 }}>
+        <div className="login-logo">
+          <div className="login-logo-icon">CR</div>
+          <div className="login-title">Sign-In Help</div>
+          <div className="login-sub">CloudOps Rota</div>
+        </div>
+        <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.9 }}>
+          <p><strong style={{ color: 'var(--text-primary)' }}>🔑 Default password</strong><br />Your initial password is your username in lowercase. You can change it inside the app under My Account.</p>
+          <p><strong style={{ color: 'var(--text-primary)' }}>🌐 Drive connection</strong><br />Google Drive connects automatically when you open the app. Wait for the green indicator before signing in if you have a custom password — it needs Drive to load your credentials.</p>
+          <p><strong style={{ color: 'var(--text-primary)' }}>❓ Still can't log in?</strong><br />Use <strong>Forgot Password?</strong> below, or ask your manager to reset your password in Settings.</p>
+        </div>
+        <button className="btn btn-primary" style={{ width: '100%', marginTop: 8 }} onClick={() => setShowHelp(false)}>← Back to Sign In</button>
+      </div>
+    </div>
+  );
 
   if (showForgot) return (
     <div className="login-screen">
@@ -539,16 +601,15 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDri
           <div className="login-sub">CloudOps Rota</div>
         </div>
         {forgotMsg
-          ? <Alert type="info">✅ {forgotMsg}</Alert>
-          : <Alert type="info">ℹ Your password resets to your username in lowercase.</Alert>}
-        <FormGroup label="Your Username">
-          <input className="input" placeholder="e.g. MVA28" value={forgotUid}
+          ? <Alert type="info">ℹ {forgotMsg}</Alert>
+          : <Alert type="info">ℹ Enter your username and your password will be reset to the default.</Alert>}
+        <FormGroup label="Username">
+          <input className="input" placeholder="Your username" value={forgotUid}
             onChange={e => setForgotUid(e.target.value.toUpperCase())}
             onKeyDown={e => e.key === 'Enter' && handleForgot()} autoFocus />
         </FormGroup>
         <button className="btn btn-primary" style={{ width: '100%', padding: 11 }} onClick={handleForgot}>Reset Password</button>
-        <button className="btn btn-secondary btn-sm" style={{ width: '100%', marginTop: 8 }}
-          onClick={() => { setShowForgot(false); setForgotMsg(''); setForgotUid(''); }}>← Back</button>
+        <button className="btn btn-secondary btn-sm" style={{ width: '100%', marginTop: 8 }} onClick={() => { setShowForgot(false); setForgotMsg(''); setForgotUid(''); }}>← Back to Sign In</button>
       </div>
     </div>
   );
@@ -562,77 +623,63 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDri
           <div className="login-sub">Cloud Run Operations Team</div>
         </div>
 
-        {/* Drive status — only shown while loading or if manual connect needed */}
-        {!driveReady && (
-          <div style={{ marginBottom: 18, padding: '11px 14px', borderRadius: 10,
-            border: '1px solid var(--border)', background: 'rgba(59,130,246,0.04)',
-            display: 'flex', alignItems: 'center', gap: 10 }}>
-            {connectingDrive ? (
-              <>
-                <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#f59e0b', flexShrink: 0 }} />
-                <span style={{ fontSize: 12, color: '#fcd34d' }}>Loading team data…</span>
-              </>
-            ) : (
-              <>
-                <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#ef4444', flexShrink: 0 }} />
-                <span style={{ fontSize: 12, color: 'var(--text-muted)', flex: 1 }}>
-                  Could not load automatically — click Connect
-                </span>
-                <button className="btn btn-primary btn-sm" onClick={onConnectDrive}
-                  style={{ whiteSpace: 'nowrap', fontSize: 11 }}>🔗 Connect</button>
-              </>
-            )}
-          </div>
-        )}
+        {/* Drive status */}
+        <div style={{ marginBottom: 16, padding: '10px 14px', border: '1px solid var(--border)', borderRadius: 8, background: 'rgba(59,130,246,0.05)', display: 'flex', alignItems: 'center', gap: 10 }}>
+          {driveToken ? (
+            <>
+              <div className="dot-live" />
+              <span style={{ fontSize: 12, color: '#6ee7b7' }}>Google Drive connected — team data loaded ✓</span>
+            </>
+          ) : connectingDrive ? (
+            <>
+              <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#f59e0b' }} />
+              <span style={{ fontSize: 12, color: '#fcd34d' }}>Connecting to Google Drive…</span>
+            </>
+          ) : (
+            <>
+              <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#6b7280' }} />
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Click Connect to load team data from Google Drive</div>
+              </div>
+              <button className="btn btn-secondary btn-sm" onClick={onConnectDrive} style={{ whiteSpace: 'nowrap', fontSize: 11 }}>
+                📁 Connect
+              </button>
+            </>
+          )}
+        </div>
 
-        {err && <Alert type="warning" style={{ marginBottom: 14 }}>⚠ {err}</Alert>}
+        {err && <Alert type="warning" style={{ marginBottom: 12 }}>⚠ {err}</Alert>}
 
-        {show2FA ? (
+        {!show2FA ? (
           <>
-            <Alert type="info" style={{ marginBottom: 14 }}>🔐 Manager sign-in requires a 2FA code.</Alert>
+            <FormGroup label="Username">
+              <input className="input" placeholder="Enter your username" value={uid}
+                onChange={e => setUid(e.target.value.toUpperCase())}
+                onKeyDown={e => e.key === 'Enter' && handle()} autoFocus />
+            </FormGroup>
+            <FormGroup label="Password">
+              <input className="input" type="password" placeholder="Password" value={pw}
+                onChange={e => setPw(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handle()} />
+            </FormGroup>
+            <button className="btn btn-primary" style={{ width: '100%', padding: 11, marginBottom: 8 }} onClick={handle}>
+              Sign In
+            </button>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button className="btn btn-secondary btn-sm" style={{ flex: 1 }} onClick={() => setShowForgot(true)}>🔑 Forgot Password?</button>
+              <button className="btn btn-secondary btn-sm" style={{ flex: 1 }} onClick={() => setShowHelp(true)}>❓ Help</button>
+            </div>
+          </>
+        ) : (
+          <>
+            <Alert type="info">🔐 Two-factor authentication required for manager access.</Alert>
             <FormGroup label="2FA Code">
               <input className="input" placeholder="6-digit code" maxLength={6} value={twoFACode}
                 onChange={e => setTwoFACode(e.target.value.replace(/\D/g, ''))}
                 onKeyDown={e => e.key === 'Enter' && verify2FA()} autoFocus />
             </FormGroup>
-            <button className="btn btn-primary" style={{ width: '100%', padding: 12 }} onClick={verify2FA}>Verify & Sign In</button>
-            <button className="btn btn-secondary btn-sm" style={{ width: '100%', marginTop: 8 }}
-              onClick={() => { setShow2FA(false); setErr(''); }}>← Back</button>
-          </>
-        ) : (
-          <>
-            <FormGroup label="Username">
-              <input ref={uidRef} className="input" placeholder="Your username (e.g. MVA28)"
-                value={uid} onChange={e => setUid(e.target.value.toUpperCase())}
-                onKeyDown={e => e.key === 'Enter' && handle()} />
-            </FormGroup>
-            <FormGroup label="Password">
-              <input className="input" type="password"
-                placeholder={driveReady ? 'Password' : 'Waiting for team data…'}
-                value={pw} onChange={e => setPw(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && handle()}
-                disabled={!driveReady} />
-            </FormGroup>
-            <button className="btn btn-primary"
-              style={{ width: '100%', padding: 13, marginBottom: 10, fontSize: 15,
-                opacity: driveReady ? 1 : 0.5 }}
-              onClick={handle} disabled={!driveReady}>
-              {driveReady ? 'Sign In' : '⏳ Loading…'}
-            </button>
-            <button className="btn btn-secondary btn-sm" style={{ width: '100%' }}
-              onClick={() => setShowForgot(true)}>🔑 Forgot Password?</button>
-            {driveReady && (
-              <div style={{ marginTop: 14, padding: '8px 12px', borderRadius: 8,
-                background: 'rgba(110,231,183,0.06)', border: '1px solid rgba(110,231,183,0.15)',
-                display: 'flex', alignItems: 'center', gap: 8 }}>
-                <div className="dot-live" />
-                <span style={{ fontSize: 11, color: '#6ee7b7' }}>Team data loaded — ready to sign in</span>
-              </div>
-            )}
-            <div style={{ marginTop: 14, fontSize: 11, color: 'var(--text-muted)', textAlign: 'center', lineHeight: 1.7 }}>
-              Default password is your username in lowercase.<br />
-              e.g. <strong style={{ color: 'var(--text-primary)' }}>MVA28</strong> → <strong style={{ color: 'var(--text-primary)' }}>mva28</strong>
-            </div>
+            <button className="btn btn-primary" style={{ width: '100%', padding: 11 }} onClick={verify2FA}>Verify & Sign In</button>
+            <button className="btn btn-secondary btn-sm" style={{ width: '100%', marginTop: 8 }} onClick={() => { setShow2FA(false); setErr(''); }}>← Back</button>
           </>
         )}
       </div>
@@ -3116,8 +3163,8 @@ function calcOncallPay(timesheetEntries, hourlyRate, upgradeHrs = 0, bankHolHrs 
     }
   });
 
-  // Bank holiday standby hours — pre-calculated hours
-  const bhStandby = bankHolHrs;
+  // Bank holiday hours (22h standby each, passed in as count of days)
+  const bhStandby = bankHolHrs * 22;
 
   // Incident hours from timesheets (entries with week starting "INC")
   let incidentHrs = 0;
@@ -5470,24 +5517,14 @@ function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, rota
       return sum + (et ? et.hours : 0);
     }, 0);
 
-    // Bank holiday standby hours — extended weekend rules
-    const bankHolHrs = (() => {
-      let total = 0;
-      bhList.forEach(bh => {
-        if (startDs && bh.date < startDs) return;
-        if (endDs   && bh.date > endDs)   return;
-        const s = safeRota[u.id]?.[bh.date];
-        if (!s || s === 'off') return;
-        const dow = new Date(bh.date).getDay();
-        const isWeekendOC = s === 'weekend' || s === 'bankholiday';
-        if (isWeekendOC) {
-          if (dow === 1) total += 24;
-          else if (dow === 5) total += 12;
-          else total += 22;
-        } else { total += 22; }
-      });
-      return total;
-    })();
+    // Count bank holiday OC days in range (where rota has this user assigned)
+    const bankHolDays = bhList.filter(bh => {
+      if (startDs && bh.date < startDs) return false;
+      if (endDs   && bh.date > endDs)   return false;
+      const s = safeRota[u.id]?.[bh.date];
+      return s && s !== 'off';
+    });
+    const bankHolHrs = bankHolDays.length;
 
     // Approved overtime hours in range
     const overtimeHrs = safeOT.filter(o =>
@@ -6306,44 +6343,43 @@ function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks, dri
   const [pushMsg, setPushMsg] = useState('');
 
   const syncFromSheet = async () => {
-    setSheetMsg('ℹ To edit data, open the master sheet, make changes, then use "Refresh from Drive" after saving back via the Sheets UI. Direct sheet-to-app sync is not yet supported for all data types.');
-    setTimeout(() => setSheetMsg(''), 8000);
+    if (!driveToken) { setSheetMsg('⚠ Connect Google Drive first.'); return; }
+    setSheetSyncing(true); setSheetMsg('⏳ Syncing users from Google Sheet…');
+    try {
+      await syncUsersFromSheet(driveToken, getRegistry(), users, setUsers);
+      setSheetMsg('✅ Users synced from Google Sheet successfully.');
+    } catch (e) { setSheetMsg('❌ Sync failed: ' + (e.message || e)); }
+    setSheetSyncing(false);
+    setTimeout(() => setSheetMsg(''), 6000);
   };
 
   const openSheet = async () => {
-    const sid = masterSheetId;
-    if (sid) {
-      window.open(`https://docs.google.com/spreadsheets/d/${sid}`, '_blank');
-      setSheetOpenMsg('✅ Opened CloudOps-Data master sheet in a new tab.');
+    const reg = getRegistry();
+    if (reg.sheets_id) {
+      const url = `https://docs.google.com/spreadsheets/d/${reg.sheets_id}`;
+      window.open(url, '_blank');
+      setSheetOpenMsg('✅ Opened Google Sheet in a new tab.');
     } else if (driveToken) {
-      setSheetOpenMsg('⏳ Creating master sheet…');
+      setSheetOpenMsg('⏳ Creating sheet…');
       try {
-        const sheetId = await getOrCreateMasterSheet(driveToken);
+        const sheetId = await syncUsersToSheet(driveToken, getRegistry(), users);
         if (sheetId) {
-          setMasterSheetId(sheetId);
           window.open(`https://docs.google.com/spreadsheets/d/${sheetId}`, '_blank');
-          setSheetOpenMsg('✅ Master sheet created and opened in a new tab.');
+          setSheetOpenMsg('✅ Sheet created and opened in a new tab.');
         }
       } catch (e) { setSheetOpenMsg('❌ Could not create sheet: ' + (e.message || e)); }
     } else {
-      setSheetOpenMsg('⚠ No sheet yet. Connect Google Drive and run "Push to Sheet" first.');
+      setSheetOpenMsg('⚠ No sheet yet. Connect Google Drive and push to sheet first.');
     }
     setTimeout(() => setSheetOpenMsg(''), 6000);
   };
 
   const pushToSheet = async () => {
     if (!driveToken) { setPushMsg('⚠ Connect Google Drive first.'); return; }
-    setPushMsg('⏳ Pushing all data to Google Sheet…');
+    setPushMsg('⏳ Pushing users to Google Sheet…');
     try {
-      const sheetId = masterSheetId || await getOrCreateMasterSheet(driveToken);
-      if (!masterSheetId && sheetId) setMasterSheetId(sheetId);
-      const allData = { users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, overtime, logbook, documents, obsidianNotes, whatsappChats };
-      if (sheetId) {
-        await syncAllToSheet(driveToken, sheetId, allData);
-        setPushMsg('✅ All data pushed to CloudOps-Data Google Sheet.');
-      } else {
-        setPushMsg('❌ Could not get/create master sheet.');
-      }
+      await syncRegistryToDrive(driveToken, getRegistry(), users);
+      setPushMsg('✅ Users pushed to Google Sheet successfully.');
     } catch (e) { setPushMsg('❌ Push failed: ' + (e.message || e)); }
     setTimeout(() => setPushMsg(''), 6000);
   };
@@ -6613,7 +6649,6 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState('');
   const [page, setPage]               = useState('oncall');
   const [driveToken, setDriveToken]   = useState(null);
-  const [masterSheetId, setMasterSheetId] = useState(null);
   const [syncing, setSyncing]         = useState(false);
   const [lastSync, setLastSync]       = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -6657,23 +6692,19 @@ export default function App() {
   const [loadStatus, setLoadStatus]               = useState('');
 
   // ── Auto-connect Google Drive on app load ─────────────────────────────────
-  // The app reads ALL data from a single shared Drive folder owned by the manager.
-  // Engineers don't need their own Drive access — they use a readonly token.
-  //
-  // Strategy (no popup ever from this function):
-  //   1. Try cached sessionStorage token first (fast, no network)
-  //   2. Try GIS silent flow (works if browser has active Google session)
-  //   3. If both fail → show Connect button (one click, one popup, then cached)
-  //
-  // CRITICAL: driveReady only becomes true when users.json ACTUALLY loaded.
-  // If it stays false, Sign In stays disabled — engineer sees "Loading…" and
-  // clicks Connect to trigger the manual flow. This prevents DEFAULT_USERS
-  // being used for authentication.
+  // Uses a silent token request (prompt:none) so users never see a Google popup.
+  // If silent auth fails (no active session) the indicator shows grey and they
+  // can manually click "Connect" which triggers the interactive flow.
   useEffect(() => {
     const autoConnect = async () => {
-      setConnectingDrive(true);
       try {
-        // Step 1: cached token
+        // ── Silent-only auto-connect using sessionStorage cached token ────────
+        // We deliberately do NOT call initGoogleAuth() here even with prompt:'none'
+        // because some browsers still show the Google account chooser popup for
+        // prompt:'none' requests (especially when third-party cookies are restricted).
+        // Rule: the Google popup ONLY ever appears when the user explicitly clicks
+        // the 📁 Connect button. On first load there is no cached token so we do
+        // nothing — the login screen shows the Connect button.
         let token = null;
         try {
           const cached = sessionStorage.getItem('gdrive_token');
@@ -6681,140 +6712,121 @@ export default function App() {
           if (cached && (Date.now() - ts) < 50 * 60 * 1000) token = cached;
         } catch (_) {}
 
-        // Step 2: silent GIS — no popup, fails gracefully in incognito/no session
         if (!token) {
-          token = await new Promise((resolve) => {
-            const tryAuth = () => {
-              try {
-                window.google.accounts.oauth2.initTokenClient({
-                  client_id: GOOGLE_CLIENT_ID,
-                  scope: SCOPES,
-                  prompt: '',
-                  callback: (resp) => {
-                    if (resp?.access_token) {
-                      try {
-                        sessionStorage.setItem('gdrive_token', resp.access_token);
-                        sessionStorage.setItem('gdrive_token_ts', String(Date.now()));
-                      } catch (_) {}
-                      resolve(resp.access_token);
-                    } else {
-                      resolve(null);
-                    }
-                  },
-                }).requestAccessToken({ prompt: '' });
-              } catch (_) { resolve(null); }
-            };
-            // Load GIS script if not already present
-            if (window.google?.accounts) {
-              tryAuth();
-            } else {
-              const s = document.createElement('script');
-              s.src = 'https://accounts.google.com/gsi/client';
-              s.onload = tryAuth;
-              s.onerror = () => resolve(null);
-              document.head.appendChild(s);
-            }
-            setTimeout(() => resolve(null), 8000); // 8s timeout
-          });
+          // No valid cached token — stay offline. User connects manually via button.
+          return;
         }
 
-        if (!token) {
-          // Silent auth failed — show Connect button, keep Sign In disabled
-          console.log('Drive: silent auth failed, showing Connect button');
-          setConnectingDrive(false);
-          return; // driveReady stays false — Sign In stays disabled ✓
-        }
-
-        // Got a token — now load the actual data
-        await loadDriveData(token);
-
+        // Valid cached token — load Drive data silently with no popup at all.
+        await gapiLoad();
+        setSyncing(true);
+        const [reg, pics] = await Promise.all([
+          loadRegistryFromDrive(token),
+          loadProfilePictures(token)
+        ]);
+        if (reg) setRegistry(reg);
+        if (pics) { setProfilePics(pics); setProfilePicsState(pics); }
+        const defaults = { users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, overtime, logbook, documents, obsidianNotes, whatsappChats };
+        const data = await loadAllFromDrive(token, defaults);
+        if (data.users != null) setUsers(data.users);
+        if (data.holidays != null) setHolidays(data.holidays);
+        if (data.incidents != null) setIncidents(data.incidents);
+        if (data.timesheets != null) setTimesheets(data.timesheets);
+        if (data.upgrades != null) setUpgrades(data.upgrades);
+        if (data.wiki != null) setWiki(data.wiki);
+        if (data.glossary != null) setGlossary(data.glossary);
+        if (data.contacts != null) setContacts(data.contacts);
+        if (data.payconfig != null) setPayconfig(data.payconfig);
+        if (data.rota != null) setRota(sanitiseRota(data.rota));
+        if (data.swapRequests != null) setSwapRequests(data.swapRequests);
+        if (data.toil != null) setToil(data.toil);
+        if (data.absences != null) setAbsences(data.absences);
+        if (data.overtime != null) setOvertime(data.overtime);
+        if (data.logbook != null) setLogbook(data.logbook);
+        if (data.documents != null) setDocuments(data.documents);
+        if (data.obsidianNotes != null) setObsidianNotes(data.obsidianNotes);
+        if (data.whatsappChats && Array.isArray(data.whatsappChats)) setWhatsappChats(data.whatsappChats);
+        setLastSync(new Date());
+        driveDataLoaded.current = true;
+        setDriveReady(true);
+        setDriveToken(token); // ← safe: real data is in state before token is exposed
       } catch (e) {
+        // Token expired or Drive error — clear cache so next login tries fresh auth
         try { sessionStorage.removeItem('gdrive_token'); sessionStorage.removeItem('gdrive_token_ts'); } catch (_) {}
-        console.warn('Auto Drive connect error:', e?.message || e);
+        if (e?.error !== 'interaction_required' && e?.error !== 'login_required') {
+          console.warn('Auto Drive connect:', e?.message || e);
+        }
+        // driveDataLoaded stays false — saves blocked until Drive properly loads.
+      } finally {
+        setSyncing(false);
         setConnectingDrive(false);
       }
     };
     autoConnect();
   }, []);
 
-  // ── Shared Drive data loader — used by both auto-connect and manual connect ─
-  // driveReady only becomes true here, after users.json has actually loaded.
-  const loadDriveData = async (token) => {
-    setSyncing(true);
+  const connectDrive = async () => {
     try {
+      setConnectingDrive(true);
       await gapiLoad();
+      // ── IMPORTANT: get the token but DO NOT call setDriveToken yet.
+      // Calling setDriveToken triggers all the save() useEffects immediately.
+      // If we set it before loading Drive data, those effects write DEFAULT_* values
+      // to Drive and overwrite everything the team has saved. We set it only AFTER
+      // all Drive data has been read into state and driveDataLoaded.current = true.
+      const token = await initGoogleAuth(GOOGLE_CLIENT_ID);
+      // Persist token for silent re-auth on next page load
+      try { sessionStorage.setItem('gdrive_token', token); sessionStorage.setItem('gdrive_token_ts', Date.now()); } catch (_) {}
+      setSyncing(true);
+
+      // Show progress bar during load
+      setLoadingAfterLogin(true);
+      setLoadProgress(5);
+      setLoadStatus('Connecting to Google Drive…');
+
+      // Always load the auth registry + profile pictures first (all users need this)
+      setLoadProgress(15); setLoadStatus('Loading user registry…');
       const [reg, pics] = await Promise.all([
         loadRegistryFromDrive(token),
-        loadProfilePictures(token),
+        loadProfilePictures(token)
       ]);
       if (reg) setRegistry(reg);
       if (pics) { setProfilePics(pics); setProfilePicsState(pics); }
 
+      // Load all app data from Drive with progress steps
+      setLoadProgress(30); setLoadStatus('Loading rota & schedules…');
       const defaults = { users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, overtime, logbook, documents, obsidianNotes, whatsappChats };
       const data = await loadAllFromDrive(token, defaults);
 
-      // Only mark driveReady if users actually loaded from Drive
-      // If users.json returned null (permission error, file missing) we keep
-      // driveReady false so the engineer cannot log in with DEFAULT_USERS
-      if (data.users == null) {
-        console.warn('Drive: users.json not loaded — keeping driveReady false');
-        setConnectingDrive(false);
-        setSyncing(false);
-        return;
-      }
-
-      if (data.users        != null) setUsers(data.users);
-      if (data.holidays     != null) setHolidays(data.holidays);
-      if (data.incidents    != null) setIncidents(data.incidents);
-      if (data.timesheets   != null) setTimesheets(data.timesheets);
-      if (data.upgrades     != null) setUpgrades(data.upgrades);
-      if (data.wiki         != null) setWiki(data.wiki);
-      if (data.glossary     != null) setGlossary(data.glossary);
-      if (data.contacts     != null) setContacts(data.contacts);
-      if (data.payconfig    != null) setPayconfig(data.payconfig);
-      if (data.rota         != null) setRota(sanitiseRota(data.rota));
+      setLoadProgress(65); setLoadStatus('Applying team data…');
+      if (data.users != null) setUsers(data.users);
+      if (data.holidays != null) setHolidays(data.holidays);
+      if (data.incidents != null) setIncidents(data.incidents);
+      if (data.timesheets != null) setTimesheets(data.timesheets);
+      if (data.upgrades != null) setUpgrades(data.upgrades);
+      if (data.wiki != null) setWiki(data.wiki);
+      if (data.glossary != null) setGlossary(data.glossary);
+      if (data.contacts != null) setContacts(data.contacts);
+      if (data.payconfig != null) setPayconfig(data.payconfig);
+      if (data.rota != null) setRota(sanitiseRota(data.rota));
       if (data.swapRequests != null) setSwapRequests(data.swapRequests);
-      if (data.toil         != null) setToil(data.toil);
-      if (data.absences     != null) setAbsences(data.absences);
-      if (data.overtime     != null) setOvertime(data.overtime);
-      if (data.logbook      != null) setLogbook(data.logbook);
-      if (data.documents    != null) setDocuments(data.documents);
-      if (data.obsidianNotes   != null) setObsidianNotes(data.obsidianNotes);
-      if (data.whatsappChats   != null) setWhatsappChats(data.whatsappChats);
+      if (data.toil != null) setToil(data.toil);
+      if (data.absences != null) setAbsences(data.absences);
+        if (data.overtime != null) setOvertime(data.overtime);
+      if (data.logbook != null) setLogbook(data.logbook);
+      if (data.documents != null) setDocuments(data.documents);
+      if (data.obsidianNotes != null) setObsidianNotes(data.obsidianNotes);
+      if (data.whatsappChats != null) setWhatsappChats(data.whatsappChats);
 
+      setLoadProgress(95); setLoadStatus('Finalising…');
       setLastSync(new Date());
+      // ── Set driveDataLoaded BEFORE setDriveToken so when the token state change
+      // triggers save useEffects they immediately pass the guard and write the
+      // real Drive data (now in state) rather than the defaults.
       driveDataLoaded.current = true;
-      setDriveReady(true);       // ← ONLY here, after real data confirmed
-      setDriveToken(token);      // ← after driveDataLoaded, safe to trigger saves
-
-      // Get or create the master "CloudOps-Data" Google Sheet in the shared folder.
-      // Done asynchronously — sheet availability doesn't block the rest of the app.
-      getOrCreateMasterSheet(token)
-        .then(sid => { if (sid) setMasterSheetId(sid); })
-        .catch(e => console.warn('Sheet: getOrCreateMasterSheet error:', e));
-
-      console.log('Drive: loaded successfully, driveReady = true');
-    } catch (e) {
-      console.error('Drive load error:', e?.message || e);
-      try { sessionStorage.removeItem('gdrive_token'); sessionStorage.removeItem('gdrive_token_ts'); } catch (_) {}
-    } finally {
-      setSyncing(false);
-      setConnectingDrive(false);
-    }
-  };
-
-  const connectDrive = async () => {
-    try {
-      setConnectingDrive(true);
-      // Interactive flow — shows Google account picker popup (one time only)
-      // Token is cached to sessionStorage so future loads are silent
-      const token = await initGoogleAuth(GOOGLE_CLIENT_ID);
-      try {
-        sessionStorage.setItem('gdrive_token', token);
-        sessionStorage.setItem('gdrive_token_ts', String(Date.now()));
-      } catch (_) {}
-      // Load all Drive data through the shared loader
-      await loadDriveData(token);
+      setDriveReady(true);
+      // NOW safe to expose token — saves will fire with the real loaded data
+      setDriveToken(token);
 
       setLoadProgress(100); setLoadStatus('✅ All data loaded from Google Drive');
       setTimeout(() => { setLoadingAfterLogin(false); setLoadProgress(0); setLoadStatus(''); }, 1500);
@@ -6877,29 +6889,15 @@ export default function App() {
     setManualSyncing(true); setSyncProgress(0); setSyncStatus('Starting sync…');
     const keys = ['users','holidays','incidents','timesheets','upgrades','wiki','glossary','contacts','payconfig','rota','swapRequests','toil','absences','overtime','logbook','documents','obsidianNotes','whatsappChats'];
     const vals  = [users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, overtime, logbook, documents, obsidianNotes, whatsappChats];
-
-    // Phase 1: write JSON files to Drive
     for (let i = 0; i < keys.length; i++) {
-      setSyncStatus(`Saving ${keys[i]} (JSON)…`);
-      setSyncProgress(Math.round(((i + 1) / keys.length) * 50));
+      setSyncStatus(`Saving ${keys[i]}…`);
+      setSyncProgress(Math.round(((i + 1) / keys.length) * 100));
       try { await driveWrite(driveToken, keys[i], vals[i]); } catch (e) { console.warn('sync fail', keys[i], e); }
     }
     try { await syncRegistryToDrive(driveToken, getRegistry(), users); } catch (_) {}
-
-    // Phase 2: mirror all data to the master Google Sheet
-    const sheetId = masterSheetId || await getOrCreateMasterSheet(driveToken).catch(() => null);
-    if (sheetId) {
-      if (!masterSheetId) setMasterSheetId(sheetId);
-      const allData = { users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, overtime, logbook, documents, obsidianNotes, whatsappChats };
-      await syncAllToSheet(driveToken, sheetId, allData, (key, i, total) => {
-        setSyncStatus(`Syncing sheet tab: ${key}…`);
-        setSyncProgress(50 + Math.round(((i + 1) / total) * 50));
-      });
-    }
-
     setLastSync(new Date());
     setSyncProgress(100);
-    setSyncStatus('✅ All data synced to Drive + Google Sheet');
+    setSyncStatus('✅ All data synced to Google Drive');
     setTimeout(() => { setManualSyncing(false); setSyncStatus(''); setSyncProgress(0); }, 3000);
   };
 
@@ -7314,21 +7312,12 @@ export default function App() {
           {/* Footer */}
           <div style={{ padding:'8px', borderTop:'1px solid var(--sidebar-border)', flexShrink:0 }}>
             {sidebarOpen && (
-              <>
-                <div style={{ display:'flex', alignItems:'center', gap:6, padding:'4px 4px 6px', fontSize:9, color: driveToken ? '#6ee7b7' : '#fcd34d' }}>
-                  <div style={{ width:6, height:6, borderRadius:'50%', background: driveToken ? '#22c55e' : '#f59e0b', flexShrink:0 }} />
-                  {driveToken
-                    ? (syncing ? 'Syncing…' : `Synced ${lastSync ? lastSync.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}) : ''}`)
-                    : connectingDrive ? 'Connecting…' : 'Drive offline'}
-                </div>
-                {driveToken && masterSheetId && (
-                  <a href={`https://docs.google.com/spreadsheets/d/${masterSheetId}`} target="_blank" rel="noreferrer"
-                    style={{ display:'block', fontSize:9, color:'#93c5fd', padding:'2px 4px', textDecoration:'none', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}
-                    title="Open CloudOps-Data master sheet">
-                    📊 View Data Sheet
-                  </a>
-                )}
-              </>
+              <div style={{ display:'flex', alignItems:'center', gap:6, padding:'4px 4px 6px', fontSize:9, color: driveToken ? '#6ee7b7' : '#fcd34d' }}>
+                <div style={{ width:6, height:6, borderRadius:'50%', background: driveToken ? '#22c55e' : '#f59e0b', flexShrink:0 }} />
+                {driveToken
+                  ? (syncing ? 'Syncing…' : `Synced ${lastSync ? lastSync.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}) : ''}`)
+                  : connectingDrive ? 'Connecting…' : 'Drive offline'}
+              </div>
             )}
             {!driveToken && !connectingDrive && (
               <button style={{ width:'100%', marginBottom:4, fontSize:9, padding:'3px 0', background:'rgba(251,191,36,0.1)', border:'1px solid rgba(251,191,36,0.3)', borderRadius:5, color:'#fcd34d', cursor:'pointer' }} onClick={connectDrive}>
