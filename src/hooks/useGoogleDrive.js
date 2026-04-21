@@ -1,11 +1,11 @@
 // src/hooks/useGoogleDrive.js
 // Google Drive API integration - stores all data as JSON files in Drive
 
-// READ scope — works for any Google account on publicly shared files
-// drive.file scope is only needed for the manager who creates/updates files
+// drive.file scope — lets any connected Google account create/update files
+// that were created by this app. Using readonly blocked all non-manager saves.
 const SCOPES_READ  = 'https://www.googleapis.com/auth/drive.readonly';
 const SCOPES_WRITE = 'https://www.googleapis.com/auth/drive.file';
-const SCOPES = SCOPES_READ; // default for initGoogleAuth (engineer connect button)
+const SCOPES = SCOPES_WRITE; // all users need write access to save their own data
 const FILES = {
   users: 'users.json',
   rota: 'rota.json',
@@ -18,6 +18,15 @@ const FILES = {
   contacts: 'contacts.json',
   payconfig: 'payconfig.json',
   reports: 'reports.json',
+  // Previously missing — caused silent save failures for these features:
+  swapRequests: 'swapRequests.json',
+  toil: 'toil.json',
+  absences: 'absences.json',
+  overtime: 'overtime.json',
+  logbook: 'logbook.json',
+  documents: 'documents.json',
+  obsidianNotes: 'obsidianNotes.json',
+  whatsappChats: 'whatsappChats.json',
 };
 
 // Hardcoded shared folder — never search for or create this
