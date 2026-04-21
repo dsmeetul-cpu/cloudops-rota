@@ -20,7 +20,7 @@ import {
 // Drive account: dsmeetul@gmail.com  |  Folder: CloudOps-Rota
 // All app data is stored in this Drive. Engineers never need to connect manually.
 // ─────────────────────────────────────────────────────────────────────────────
-const GOOGLE_CLIENT_ID = process.env.REACT_APP_GOOGLE_CLIENT_ID || 'YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com';
+const GOOGLE_CLIENT_ID = process.env.REACT_APP_GOOGLE_CLIENT_ID || '771489989549-di3h0cglt71ed7hmgtknksm3ks0afdtj.apps.googleusercontent.com';
 
 // ── AUTH & DRIVE HELPERS ────────────────────────────────────────────────────
 // Architecture:
