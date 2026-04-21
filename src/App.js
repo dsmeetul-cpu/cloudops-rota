@@ -1,6 +1,6 @@
 // src/App.js
 // CloudOps Rota — Full Production Build v2
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 21st April 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 22nd April 2026
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
@@ -14,6 +14,9 @@ import {
   DEFAULT_PAYCONFIG, SHIFTS, UK_BANK_HOLIDAYS, generateRota,
   generateTrigramId, TRICOLORS
 } from './utils/defaults';
+import {
+  PERMISSION_SECTIONS, DEFAULT_PERMISSIONS, canDo, buildDefaultPerms, PermissionsManager
+} from './permissions';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Google Drive auto-connects on page load using the OAuth Client ID below.
@@ -6204,8 +6207,9 @@ function PayConfig({ users, payconfig, setPayconfig, isManager }) {
 
 
 // ── Settings (Manager only, all settings here) ─────────────────────────────
-function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks, driveToken, profilePics, setProfilePicsState, rota, setRota }) {
+function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks, driveToken, profilePics, setProfilePicsState, rota, setRota, permissions, setPermissions }) {
   const BLANK_FORM = { name: '', trigram: '', role: 'Engineer', mobile_number: '', google_email: '', profile_picture: '', avatar: '', color: '' };
+  const [settingsTab, setSettingsTab] = useState('team'); // 'team' | 'permissions' | 'other'
   const [showAdd, setShowAdd]         = useState(false);
   const [showLink, setShowLink]       = useState(false);
   const [editingUserId, setEditingUserId] = useState(null);
@@ -6253,6 +6257,17 @@ function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks, dri
     const newUser = { id, name: form.name, role: form.role, tri: id.slice(0,3), avatar, color,
       mobile_number: form.mobile_number || '', google_email: form.google_email || '',
       profile_picture: form.profile_picture || '' };
+    // Apply permissions from copy source or template if selected
+    if (form._copyPermsFrom && permissions?.[form._copyPermsFrom]) {
+      setPermissions(prev => ({ ...prev, [id]: JSON.parse(JSON.stringify(permissions[form._copyPermsFrom])) }));
+    } else if (form._applyTemplate) {
+      try {
+        const templates = JSON.parse(localStorage.getItem('cr_perm_templates') || '{}');
+        if (templates[form._applyTemplate]) {
+          setPermissions(prev => ({ ...prev, [id]: JSON.parse(JSON.stringify(templates[form._applyTemplate])) }));
+        }
+      } catch {}
+    }
     const updatedUsers = [...users, newUser];
     setUsers(updatedUsers);
     // Auto-extend rota for the new engineer — inherit existing date range from rota
@@ -6314,6 +6329,13 @@ function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks, dri
         if (next[userId]) { next[newId] = next[userId]; delete next[userId]; }
         return next;
       });
+      // Remap permissions to new ID
+      setPermissions(prev => {
+        if (!prev[userId]) return prev;
+        const next = { ...prev };
+        next[newId] = next[userId]; delete next[userId];
+        return next;
+      });
     }
 
     if (driveToken) {
@@ -6332,6 +6354,8 @@ function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks, dri
     if (window.confirm('⚠️  Delete this engineer? Cannot be undone.')) {
       const updatedUsers = users.filter(u => u.id !== userId);
       setUsers(updatedUsers);
+      // Clean up their permissions entry
+      setPermissions(prev => { const n = { ...prev }; delete n[userId]; return n; });
       if (driveToken) syncRegistryToDrive(driveToken, getRegistry(), updatedUsers);
     }
   };
@@ -6451,6 +6475,19 @@ function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks, dri
           <button className="btn btn-primary" onClick={() => { setForm(BLANK_FORM); setShowAdd(true); }}>+ Add Engineer</button>
         </div>} />
 
+      {/* ── Settings tab bar ── */}
+      <div style={{ display: 'flex', gap: 6, marginBottom: 16 }}>
+        {[['team','👥 Team & Drive'],['permissions','🔒 Permissions'],['other','🎨 Other']].map(([id, label]) => (
+          <button key={id} onClick={() => setSettingsTab(id)}
+            className={settingsTab === id ? 'btn btn-primary btn-sm' : 'btn btn-secondary btn-sm'}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {/* ══ TAB: TEAM & DRIVE ══ */}
+      {settingsTab === 'team' && (<>
+
       {/* Google Drive & Sheet Panel */}
       <div className="card mb-16">
         <div className="card-title">📁 Google Drive &amp; User Registry</div>
@@ -6498,10 +6535,12 @@ function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks, dri
                   {u.mobile_number && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>📱 {u.mobile_number}</div>}
                   {u.google_email && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>✉️ {u.google_email}</div>}
                   {resetPwUid === u.id && <div style={{ fontSize: 11, color: '#6ee7b7' }}>✅ Password reset to "{u.id.toLowerCase()}"</div>}
+                {permissions?.[u.id] && <div style={{ display:'inline-flex', alignItems:'center', gap:4, marginTop:2, fontSize:10, color:'#f59e0b', background:'rgba(245,158,11,0.1)', border:'1px solid rgba(245,158,11,0.25)', borderRadius:4, padding:'1px 6px' }}>● Custom permissions</div>}
                 </div>
                 <Tag label={u.role} type={u.role === 'Manager' ? 'amber' : 'blue'} />
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                   <button className="btn btn-secondary btn-sm" onClick={() => { setEditForm({ name: u.name, trigram: u.id, role: u.role||'Engineer', mobile_number: u.mobile_number||'', google_email: u.google_email||'', profile_picture: u.profile_picture||'', avatar: u.avatar||'', color: u.color||'' }); setEditingUserId(u.id); }}>✎ Edit</button>
+                  <button className="btn btn-secondary btn-sm" onClick={() => setSettingsTab('permissions')} title="Manage permissions for this engineer">🔒 Perms</button>
                   <button className="btn btn-secondary btn-sm" onClick={() => resetPassword(u.id)} title="Reset password to default (lowercase ID)">🔑 Reset PW</button>
                   <button className="btn btn-danger btn-sm" onClick={() => deleteUser(u.id)}>🗑</button>
                 </div>
@@ -6511,6 +6550,28 @@ function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks, dri
           );
         })}
       </div>
+
+      </>)}
+
+      {/* ══ TAB: PERMISSIONS ══ */}
+      {settingsTab === 'permissions' && (
+        <div className="card mb-16">
+          <div className="card-title" style={{ marginBottom: 6 }}>🔒 Engineer Permissions</div>
+          <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 16, lineHeight: 1.6 }}>
+            Control exactly what each engineer can&nbsp;
+            <strong style={{ color: '#3b82f6' }}>read</strong>,&nbsp;
+            <strong style={{ color: '#10b981' }}>write</strong>, and&nbsp;
+            <strong style={{ color: '#ef4444' }}>delete</strong> across every section of the app.
+            Managers always retain full access. A&nbsp;<span style={{ color: '#f59e0b' }}>●</span>&nbsp;dot
+            next to an engineer means custom overrides are active.
+            All permissions are saved to Google Drive automatically.
+          </p>
+          <PermissionsManager users={users} permissions={permissions} setPermissions={setPermissions} />
+        </div>
+      )}
+
+      {/* ══ TAB: OTHER ══ */}
+      {settingsTab === 'other' && (<>
 
       {/* Shift Colours Reference */}
       <div className="card mb-16">
@@ -6544,10 +6605,38 @@ function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks, dri
         </div>
       )}
 
+      </>)}
+
+      {/* ── Modals (outside tabs) ── */}
       {showAdd && (
         <Modal title="Add Engineer" onClose={() => setShowAdd(false)} wide>
           <UserFields fv={form} setFv={setForm} uid={null} isEdit={false} />
           <Alert style={{ marginTop: 12 }}>Username auto-generated from name (e.g. SAJ04). Default password = lowercase username. They can change it via My Account.</Alert>
+          {/* ── Permissions on add ── */}
+          <div style={{ marginTop: 14, padding: '12px 14px', borderRadius: 10, background: 'rgba(59,130,246,0.06)', border: '1px solid rgba(59,130,246,0.2)' }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 10 }}>🔒 Initial Permissions (optional)</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 3 }}>Copy permissions from an existing engineer</div>
+                <select className="select" value={form._copyPermsFrom||''} onChange={e => setForm(f => ({...f, _copyPermsFrom: e.target.value, _applyTemplate: ''}))}>
+                  <option value="">— Use {form.role||'Engineer'} role defaults —</option>
+                  {users.map(u => <option key={u.id} value={u.id}>{u.name} ({u.id}){permissions?.[u.id] ? ' ★ custom' : ''}</option>)}
+                </select>
+              </div>
+              {Object.keys((() => { try { return JSON.parse(localStorage.getItem('cr_perm_templates') || '{}'); } catch { return {}; } })()).length > 0 && (
+                <div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 3 }}>Or apply a saved template</div>
+                  <select className="select" value={form._applyTemplate||''} onChange={e => setForm(f => ({...f, _applyTemplate: e.target.value, _copyPermsFrom: ''}))}>
+                    <option value="">— No template —</option>
+                    {Object.keys((() => { try { return JSON.parse(localStorage.getItem('cr_perm_templates') || '{}'); } catch { return {}; } })()).map(n => <option key={n} value={n}>{n}</option>)}
+                  </select>
+                </div>
+              )}
+              {!form._copyPermsFrom && !form._applyTemplate && (
+                <p style={{ fontSize: 11, color: 'var(--text-muted)', fontStyle: 'italic' }}>No selection — will use {form.role||'Engineer'} role defaults. Refine later in Settings → Permissions.</p>
+              )}
+            </div>
+          </div>
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
             <button className="btn btn-secondary" onClick={() => setShowAdd(false)}>Cancel</button>
             <button className="btn btn-primary" onClick={add} disabled={!form.name}>Add Engineer</button>
@@ -6685,6 +6774,7 @@ export default function App() {
   const [obsidianNotes, setObsidianNotes] = useState([]);
   const [whatsappChats, setWhatsappChats] = useState([]);
   const [secureLinks, setSecureLinks] = useState([]);
+  const [permissions, setPermissions]   = useState({});
 
   const isManager = currentUser === 'MBA47';
   const [connectingDrive, setConnectingDrive] = useState(false);
@@ -6827,6 +6917,7 @@ export default function App() {
       if (data.documents    != null) setDocuments(data.documents);
       if (data.obsidianNotes   != null) setObsidianNotes(data.obsidianNotes);
       if (data.whatsappChats   != null) setWhatsappChats(data.whatsappChats);
+      if (data.permissions     != null) setPermissions(data.permissions);
 
       setLastSync(new Date());
       driveDataLoaded.current = true;
@@ -6906,6 +6997,7 @@ export default function App() {
   useEffect(() => { save('documents', documents); },       [documents]);
   useEffect(() => { save('obsidianNotes', obsidianNotes); },[obsidianNotes]);
   useEffect(() => { save('whatsappChats', whatsappChats); },[whatsappChats]);
+  useEffect(() => { save('permissions', permissions); },   [permissions]);
 
   const [manualSyncing, setManualSyncing] = useState(false);
   const [syncProgress, setSyncProgress]   = useState(0);
@@ -6914,8 +7006,8 @@ export default function App() {
   const syncAllToDrive = async () => {
     if (!driveToken) { alert('Connect Google Drive first.'); return; }
     setManualSyncing(true); setSyncProgress(0); setSyncStatus('Starting sync…');
-    const keys = ['users','holidays','incidents','timesheets','upgrades','wiki','glossary','contacts','payconfig','rota','swapRequests','toil','absences','overtime','logbook','documents','obsidianNotes','whatsappChats'];
-    const vals  = [users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, overtime, logbook, documents, obsidianNotes, whatsappChats];
+    const keys = ['users','holidays','incidents','timesheets','upgrades','wiki','glossary','contacts','payconfig','rota','swapRequests','toil','absences','overtime','logbook','documents','obsidianNotes','whatsappChats','permissions'];
+    const vals  = [users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, overtime, logbook, documents, obsidianNotes, whatsappChats, permissions];
     for (let i = 0; i < keys.length; i++) {
       setSyncStatus(`Saving ${keys[i]}…`);
       setSyncProgress(Math.round(((i + 1) / keys.length) * 100));
@@ -7003,6 +7095,7 @@ export default function App() {
         if (data.documents != null) setDocuments(data.documents);
         if (data.obsidianNotes != null) setObsidianNotes(data.obsidianNotes);
         if (data.whatsappChats != null) setWhatsappChats(data.whatsappChats);
+        if (data.permissions   != null) setPermissions(data.permissions);
         setLastSync(new Date());
         // Mark data loaded BEFORE setting token so saves don't fire with stale state
         driveDataLoaded.current = true;
@@ -7181,6 +7274,7 @@ export default function App() {
     isManager,
     profilePics,
     user,
+    permissions, setPermissions,
   };
 
   const renderPage = () => {
@@ -7411,6 +7505,7 @@ export default function App() {
                       if (has(data.documents))     setDocuments(data.documents);
                       if (has(data.obsidianNotes)) setObsidianNotes(data.obsidianNotes);
                       if (has(data.whatsappChats)) setWhatsappChats(data.whatsappChats);
+                      if (has(data.permissions))  setPermissions(data.permissions);
                       setLastSync(new Date());
                     } catch(e) { console.warn('Refresh failed:', e); }
                     finally { setSyncing(false); }
