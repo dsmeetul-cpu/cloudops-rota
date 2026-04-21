@@ -1,6 +1,6 @@
 // src/App.js
 // CloudOps Rota — Full Production Build v2
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 20th April 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 21st April 2026
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
@@ -61,9 +61,41 @@ function updatePasswordInRegistry(uid, newPw) {
 }
 
 // ── Drive API helpers ──────────────────────────────────────────────────────
-async function driveFindFile(token, name) {
+// These helpers are used for auth_registry.json, profile_pictures.json,
+// absences.json, and overtime.json.
+//
+// ── BUG FIX: previously driveFindFile searched ALL of Drive with no parent
+// constraint, so files were created at Drive root. But driveRead (in
+// useGoogleDrive.js) looks inside the CloudOps-Rota subfolder. Files written
+// here were never found on reload. Now all files go into the same folder.
+const APP_FOLDER_NAME = 'CloudOps-Rota';
+let _appFolderId = null;
+
+async function getAppFolderId(token) {
+  if (_appFolderId) return _appFolderId;
+  const q = encodeURIComponent(
+    `name='${APP_FOLDER_NAME}' and mimeType='application/vnd.google-apps.folder' and trashed=false`
+  );
   const resp = await fetch(
-    `https://www.googleapis.com/drive/v3/files?q=name%3D'${encodeURIComponent(name)}'+and+trashed%3Dfalse&spaces=drive&fields=files(id,name)`,
+    `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  ).then(r => r.json());
+  if (resp.files && resp.files.length > 0) {
+    _appFolderId = resp.files[0].id;
+    return _appFolderId;
+  }
+  // Folder doesn't exist yet — useGoogleDrive.js will create it on first driveWrite
+  return null;
+}
+
+async function driveFindFile(token, name) {
+  const fid = await getAppFolderId(token);
+  // Search inside the folder if we know it, otherwise fall back to all of Drive
+  const q = fid
+    ? encodeURIComponent(`name='${name}' and '${fid}' in parents and trashed=false`)
+    : encodeURIComponent(`name='${name}' and trashed=false`);
+  const resp = await fetch(
+    `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`,
     { headers: { Authorization: `Bearer ${token}` } }
   ).then(r => r.json());
   return resp.files && resp.files.length > 0 ? resp.files[0] : null;
@@ -85,10 +117,12 @@ async function driveWriteJson(token, name, data) {
       body
     }).then(r => r.json());
   }
+  // Create inside the folder so driveRead can find it on next load
+  const fid = await getAppFolderId(token);
   const meta = await fetch('https://www.googleapis.com/drive/v3/files', {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, mimeType: 'application/json' })
+    body: JSON.stringify({ name, mimeType: 'application/json', ...(fid ? { parents: [fid] } : {}) })
   }).then(r => r.json());
   return fetch(`https://www.googleapis.com/upload/drive/v3/files/${meta.id}?uploadType=media`, {
     method: 'PATCH',
