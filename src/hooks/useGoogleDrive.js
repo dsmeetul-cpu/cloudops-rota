@@ -1,21 +1,11 @@
 // src/hooks/useGoogleDrive.js
 // Google Drive API integration - stores all data as JSON files in Drive
-//
-// ── KEY ARCHITECTURE DECISION ────────────────────────────────────────────────
-// All app data lives in ONE shared folder owned by dsmeetul@gmail.com.
-// The folder ID is hardcoded — reads ALWAYS come from this folder regardless
-// of which Google account the engineer authenticates with.
-// The folder must be shared as "Anyone with the link → Viewer" in Drive.
-// Only the manager (MBA47) needs write access — engineers are read-only.
-// ─────────────────────────────────────────────────────────────────────────────
 
-const SCOPES = 'https://www.googleapis.com/auth/drive.file';
-
-// ── Hardcoded shared folder — NEVER search for or create this ────────────────
-// To find this ID: open the folder in Google Drive, copy the ID from the URL.
-// URL format: https://drive.google.com/drive/folders/FOLDER_ID_HERE
-const SHARED_FOLDER_ID = '1MLKyzsfxH3vRb1lthOlN7aLp3bltb59C';
-
+// READ scope — works for any Google account on publicly shared files
+// drive.file scope is only needed for the manager who creates/updates files
+const SCOPES_READ  = 'https://www.googleapis.com/auth/drive.readonly';
+const SCOPES_WRITE = 'https://www.googleapis.com/auth/drive.file';
+const SCOPES = SCOPES_READ; // default for initGoogleAuth (engineer connect button)
 const FILES = {
   users: 'users.json',
   rota: 'rota.json',
@@ -30,7 +20,8 @@ const FILES = {
   reports: 'reports.json',
 };
 
-// Cache file IDs so we don't re-query Drive on every read/write
+// Hardcoded shared folder — never search for or create this
+const SHARED_FOLDER_ID = '1MLKyzsfxH3vRb1lthOlN7aLp3bltb59C';
 let fileIds = {};
 
 // ── Auth ────────────────────────────────────────────────────────────────────
@@ -70,11 +61,7 @@ export async function gapiLoad() {
   });
 }
 
-// ── File ID lookup — always inside the hardcoded shared folder ───────────────
-// getOrCreateFolder() has been intentionally removed.
-// We never search for a folder by name — that would find the engineer's own
-// Drive (which is empty) instead of the manager's shared folder.
-
+// ── File lookup — always inside the hardcoded shared folder ─────────────────
 async function getFileId(token, filename) {
   const res = await fetch(
     `https://www.googleapis.com/drive/v3/files?q=name='${filename}' and '${SHARED_FOLDER_ID}' in parents and trashed=false&fields=files(id,name)`,
@@ -90,15 +77,14 @@ export async function driveRead(token, key) {
   try {
     const filename = FILES[key];
     if (!filename) throw new Error('Unknown key: ' + key);
-    // Always look inside the shared folder — never the engineer's own Drive
     let fileId = fileIds[key] || await getFileId(token, filename);
-    if (!fileId) return null;
+    if (!fileId) { console.warn('Drive: file not found:', filename); return null; }
     fileIds[key] = fileId;
     const res = await fetch(
       `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
       { headers: { Authorization: `Bearer ${token}` } }
     );
-    if (!res.ok) return null;
+    if (!res.ok) { console.warn('Drive read failed:', res.status, filename); return null; }
     return await res.json();
   } catch (e) {
     console.error('Drive read error:', e);
@@ -110,7 +96,6 @@ export async function driveWrite(token, key, data) {
   try {
     const filename = FILES[key];
     if (!filename) throw new Error('Unknown key: ' + key);
-    // Always write to the shared folder — never the engineer's own Drive
     let fileId = fileIds[key] || await getFileId(token, filename);
     const body = JSON.stringify(data, null, 2);
     const blob = new Blob([body], { type: 'application/json' });
