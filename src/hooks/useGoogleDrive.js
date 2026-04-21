@@ -1,17 +1,19 @@
 // src/hooks/useGoogleDrive.js
 // Google Drive API integration - stores all data as JSON files in Drive
 //
-// ── IMPORTANT ───────────────────────────────────────────────────────────────
+// ── KEY ARCHITECTURE DECISION ────────────────────────────────────────────────
 // All app data lives in ONE shared folder owned by dsmeetul@gmail.com.
-// The folder ID is hardcoded below — reads always come from this folder
-// regardless of which Google account the user authenticates with.
+// The folder ID is hardcoded — reads ALWAYS come from this folder regardless
+// of which Google account the engineer authenticates with.
 // The folder must be shared as "Anyone with the link → Viewer" in Drive.
-// Writes (manager only) still require a valid OAuth token with drive.file scope.
-// ────────────────────────────────────────────────────────────────────────────
+// Only the manager (MBA47) needs write access — engineers are read-only.
+// ─────────────────────────────────────────────────────────────────────────────
 
 const SCOPES = 'https://www.googleapis.com/auth/drive.file';
 
-// ── Hardcoded shared folder — never search for or create this ───────────────
+// ── Hardcoded shared folder — NEVER search for or create this ────────────────
+// To find this ID: open the folder in Google Drive, copy the ID from the URL.
+// URL format: https://drive.google.com/drive/folders/FOLDER_ID_HERE
 const SHARED_FOLDER_ID = '1MLKyzsfxH3vRb1lthOlN7aLp3bltb59C';
 
 const FILES = {
@@ -68,11 +70,12 @@ export async function gapiLoad() {
   });
 }
 
-// ── File ID lookup ───────────────────────────────────────────────────────────
-// Always searches inside the hardcoded shared folder.
+// ── File ID lookup — always inside the hardcoded shared folder ───────────────
+// getOrCreateFolder() has been intentionally removed.
+// We never search for a folder by name — that would find the engineer's own
+// Drive (which is empty) instead of the manager's shared folder.
 
 async function getFileId(token, filename) {
-  // Use the shared folder ID directly — never the authenticated user's Drive
   const res = await fetch(
     `https://www.googleapis.com/drive/v3/files?q=name='${filename}' and '${SHARED_FOLDER_ID}' in parents and trashed=false&fields=files(id,name)`,
     { headers: { Authorization: `Bearer ${token}` } }
@@ -81,20 +84,16 @@ async function getFileId(token, filename) {
   return data.files && data.files.length > 0 ? data.files[0].id : null;
 }
 
-// ── Read ─────────────────────────────────────────────────────────────────────
-// Reads always come from the shared folder. The token just needs to be any
-// valid Google OAuth token — the folder's public sharing handles the access.
+// ── Read / Write ─────────────────────────────────────────────────────────────
 
 export async function driveRead(token, key) {
   try {
     const filename = FILES[key];
     if (!filename) throw new Error('Unknown key: ' + key);
-
-    // Use cached file ID if available, otherwise look it up
+    // Always look inside the shared folder — never the engineer's own Drive
     let fileId = fileIds[key] || await getFileId(token, filename);
-    if (!fileId) return null; // File doesn't exist yet
+    if (!fileId) return null;
     fileIds[key] = fileId;
-
     const res = await fetch(
       `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
       { headers: { Authorization: `Bearer ${token}` } }
@@ -107,15 +106,11 @@ export async function driveRead(token, key) {
   }
 }
 
-// ── Write ────────────────────────────────────────────────────────────────────
-// Writes always target the shared folder. Only the manager (MBA47) should
-// call this — their token has drive.file scope over the shared folder.
-
 export async function driveWrite(token, key, data) {
   try {
     const filename = FILES[key];
     if (!filename) throw new Error('Unknown key: ' + key);
-
+    // Always write to the shared folder — never the engineer's own Drive
     let fileId = fileIds[key] || await getFileId(token, filename);
     const body = JSON.stringify(data, null, 2);
     const blob = new Blob([body], { type: 'application/json' });
@@ -123,15 +118,13 @@ export async function driveWrite(token, key, data) {
     form.append('metadata', new Blob([JSON.stringify(
       fileId
         ? { name: filename }
-        : { name: filename, parents: [SHARED_FOLDER_ID] } // always write to shared folder
+        : { name: filename, parents: [SHARED_FOLDER_ID] }
     )], { type: 'application/json' }));
     form.append('file', blob);
-
     const url = fileId
       ? `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=multipart`
       : 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart';
     const method = fileId ? 'PATCH' : 'POST';
-
     const res = await fetch(url, {
       method,
       headers: { Authorization: `Bearer ${token}` },
