@@ -5,7 +5,9 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
 import {
+  SCOPES,
   initGoogleAuth, gapiLoad, loadAllFromDrive, driveWrite,
+  getOrCreateMasterSheet, syncAllToSheet, syncUsersToMasterSheet,
   generateICalFeed, downloadIcal
 } from './hooks/useGoogleDrive';
 import {
@@ -133,67 +135,11 @@ async function syncRegistryToDrive(driveToken, registry, users) {
   if (!driveToken) return;
   try {
     await driveWriteJson(driveToken, 'auth_registry.json', registry);
-    const sheetId = await syncUsersToSheet(driveToken, registry, users);
-    if (sheetId && sheetId !== registry.sheets_id) {
-      const updated = { ...registry, sheets_id: sheetId };
-      setRegistry(updated);
-      await driveWriteJson(driveToken, 'auth_registry.json', updated);
-    }
+    // Sync users to the master sheet (CloudOps-Data → "users" tab)
+    await syncUsersToMasterSheet(driveToken, users);
   } catch (e) { console.error('Registry sync error:', e); }
 }
 
-async function syncUsersToSheet(driveToken, registry, users) {
-  try {
-    let sheetId = registry.sheets_id;
-    if (!sheetId) {
-      const createResp = await fetch('https://sheets.googleapis.com/v4/spreadsheets', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${driveToken}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          properties: { title: 'CloudOps-UserRegistry' },
-          sheets: [{ properties: { title: 'Users', sheetId: 0 } }]
-        })
-      }).then(r => r.json());
-      sheetId = createResp.spreadsheetId;
-    }
-    const header = ['Username (ID)', 'Full Name', 'Role', 'Google Email', 'Mobile Number', 'Password (reset to this to unlock)', 'Avatar Initials', 'Colour'];
-    const rows = [header, ...users.map(u => [
-      u.id, u.name, u.role || 'Engineer',
-      u.google_email || '', u.mobile_number || '',
-      u.id.toLowerCase(), // default/reset password shown in plain text for manager reference
-      u.avatar || '', u.color || ''
-    ])];
-    await fetch(
-      `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/Users!A1:H${rows.length}?valueInputOption=RAW`,
-      { method: 'PUT', headers: { Authorization: `Bearer ${driveToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ values: rows }) }
-    );
-    // Bold header row
-    await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}:batchUpdate`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${driveToken}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ requests: [{ repeatCell: { range: { sheetId: 0, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 0, endColumnIndex: 8 }, cell: { userEnteredFormat: { textFormat: { bold: true, foregroundColor: { red:1,green:1,blue:1 } }, backgroundColor: { red: 0.07, green: 0.21, blue: 0.37 } } }, fields: 'userEnteredFormat(textFormat,backgroundColor)' } }] })
-    });
-    return sheetId;
-  } catch (e) { console.error('Sheet sync error:', e); return registry.sheets_id || null; }
-}
-
-// Read rows back from the Sheet and apply any changes (name, email, mobile, role)
-async function syncUsersFromSheet(driveToken, registry, users, setUsers) {
-  if (!registry.sheets_id) return;
-  try {
-    const resp = await fetch(
-      `https://sheets.googleapis.com/v4/spreadsheets/${registry.sheets_id}/values/Users!A2:H200`,
-      { headers: { Authorization: `Bearer ${driveToken}` } }
-    ).then(r => r.json());
-    const rows = resp.values || [];
-    const updated = users.map(u => {
-      const row = rows.find(r => r[0] === u.id);
-      if (!row) return u;
-      return { ...u, name: row[1] || u.name, role: row[2] || u.role, google_email: row[3] || u.google_email, mobile_number: row[4] || u.mobile_number, avatar: row[6] || u.avatar, color: row[7] || u.color };
-    });
-    setUsers(updated);
-  } catch (e) { console.error('Sync from sheet error:', e); }
-}
 
 async function loadRegistryFromDrive(driveToken) {
   try {
@@ -6360,43 +6306,44 @@ function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks, dri
   const [pushMsg, setPushMsg] = useState('');
 
   const syncFromSheet = async () => {
-    if (!driveToken) { setSheetMsg('⚠ Connect Google Drive first.'); return; }
-    setSheetSyncing(true); setSheetMsg('⏳ Syncing users from Google Sheet…');
-    try {
-      await syncUsersFromSheet(driveToken, getRegistry(), users, setUsers);
-      setSheetMsg('✅ Users synced from Google Sheet successfully.');
-    } catch (e) { setSheetMsg('❌ Sync failed: ' + (e.message || e)); }
-    setSheetSyncing(false);
-    setTimeout(() => setSheetMsg(''), 6000);
+    setSheetMsg('ℹ To edit data, open the master sheet, make changes, then use "Refresh from Drive" after saving back via the Sheets UI. Direct sheet-to-app sync is not yet supported for all data types.');
+    setTimeout(() => setSheetMsg(''), 8000);
   };
 
   const openSheet = async () => {
-    const reg = getRegistry();
-    if (reg.sheets_id) {
-      const url = `https://docs.google.com/spreadsheets/d/${reg.sheets_id}`;
-      window.open(url, '_blank');
-      setSheetOpenMsg('✅ Opened Google Sheet in a new tab.');
+    const sid = masterSheetId;
+    if (sid) {
+      window.open(`https://docs.google.com/spreadsheets/d/${sid}`, '_blank');
+      setSheetOpenMsg('✅ Opened CloudOps-Data master sheet in a new tab.');
     } else if (driveToken) {
-      setSheetOpenMsg('⏳ Creating sheet…');
+      setSheetOpenMsg('⏳ Creating master sheet…');
       try {
-        const sheetId = await syncUsersToSheet(driveToken, getRegistry(), users);
+        const sheetId = await getOrCreateMasterSheet(driveToken);
         if (sheetId) {
+          setMasterSheetId(sheetId);
           window.open(`https://docs.google.com/spreadsheets/d/${sheetId}`, '_blank');
-          setSheetOpenMsg('✅ Sheet created and opened in a new tab.');
+          setSheetOpenMsg('✅ Master sheet created and opened in a new tab.');
         }
       } catch (e) { setSheetOpenMsg('❌ Could not create sheet: ' + (e.message || e)); }
     } else {
-      setSheetOpenMsg('⚠ No sheet yet. Connect Google Drive and push to sheet first.');
+      setSheetOpenMsg('⚠ No sheet yet. Connect Google Drive and run "Push to Sheet" first.');
     }
     setTimeout(() => setSheetOpenMsg(''), 6000);
   };
 
   const pushToSheet = async () => {
     if (!driveToken) { setPushMsg('⚠ Connect Google Drive first.'); return; }
-    setPushMsg('⏳ Pushing users to Google Sheet…');
+    setPushMsg('⏳ Pushing all data to Google Sheet…');
     try {
-      await syncRegistryToDrive(driveToken, getRegistry(), users);
-      setPushMsg('✅ Users pushed to Google Sheet successfully.');
+      const sheetId = masterSheetId || await getOrCreateMasterSheet(driveToken);
+      if (!masterSheetId && sheetId) setMasterSheetId(sheetId);
+      const allData = { users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, overtime, logbook, documents, obsidianNotes, whatsappChats };
+      if (sheetId) {
+        await syncAllToSheet(driveToken, sheetId, allData);
+        setPushMsg('✅ All data pushed to CloudOps-Data Google Sheet.');
+      } else {
+        setPushMsg('❌ Could not get/create master sheet.');
+      }
     } catch (e) { setPushMsg('❌ Push failed: ' + (e.message || e)); }
     setTimeout(() => setPushMsg(''), 6000);
   };
@@ -6666,6 +6613,7 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState('');
   const [page, setPage]               = useState('oncall');
   const [driveToken, setDriveToken]   = useState(null);
+  const [masterSheetId, setMasterSheetId] = useState(null);
   const [syncing, setSyncing]         = useState(false);
   const [lastSync, setLastSync]       = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -6740,7 +6688,7 @@ export default function App() {
               try {
                 window.google.accounts.oauth2.initTokenClient({
                   client_id: GOOGLE_CLIENT_ID,
-                  scope: 'https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.file',
+                  scope: SCOPES,
                   prompt: '',
                   callback: (resp) => {
                     if (resp?.access_token) {
@@ -6838,6 +6786,13 @@ export default function App() {
       driveDataLoaded.current = true;
       setDriveReady(true);       // ← ONLY here, after real data confirmed
       setDriveToken(token);      // ← after driveDataLoaded, safe to trigger saves
+
+      // Get or create the master "CloudOps-Data" Google Sheet in the shared folder.
+      // Done asynchronously — sheet availability doesn't block the rest of the app.
+      getOrCreateMasterSheet(token)
+        .then(sid => { if (sid) setMasterSheetId(sid); })
+        .catch(e => console.warn('Sheet: getOrCreateMasterSheet error:', e));
+
       console.log('Drive: loaded successfully, driveReady = true');
     } catch (e) {
       console.error('Drive load error:', e?.message || e);
@@ -6922,15 +6877,29 @@ export default function App() {
     setManualSyncing(true); setSyncProgress(0); setSyncStatus('Starting sync…');
     const keys = ['users','holidays','incidents','timesheets','upgrades','wiki','glossary','contacts','payconfig','rota','swapRequests','toil','absences','overtime','logbook','documents','obsidianNotes','whatsappChats'];
     const vals  = [users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, overtime, logbook, documents, obsidianNotes, whatsappChats];
+
+    // Phase 1: write JSON files to Drive
     for (let i = 0; i < keys.length; i++) {
-      setSyncStatus(`Saving ${keys[i]}…`);
-      setSyncProgress(Math.round(((i + 1) / keys.length) * 100));
+      setSyncStatus(`Saving ${keys[i]} (JSON)…`);
+      setSyncProgress(Math.round(((i + 1) / keys.length) * 50));
       try { await driveWrite(driveToken, keys[i], vals[i]); } catch (e) { console.warn('sync fail', keys[i], e); }
     }
     try { await syncRegistryToDrive(driveToken, getRegistry(), users); } catch (_) {}
+
+    // Phase 2: mirror all data to the master Google Sheet
+    const sheetId = masterSheetId || await getOrCreateMasterSheet(driveToken).catch(() => null);
+    if (sheetId) {
+      if (!masterSheetId) setMasterSheetId(sheetId);
+      const allData = { users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, overtime, logbook, documents, obsidianNotes, whatsappChats };
+      await syncAllToSheet(driveToken, sheetId, allData, (key, i, total) => {
+        setSyncStatus(`Syncing sheet tab: ${key}…`);
+        setSyncProgress(50 + Math.round(((i + 1) / total) * 50));
+      });
+    }
+
     setLastSync(new Date());
     setSyncProgress(100);
-    setSyncStatus('✅ All data synced to Google Drive');
+    setSyncStatus('✅ All data synced to Drive + Google Sheet');
     setTimeout(() => { setManualSyncing(false); setSyncStatus(''); setSyncProgress(0); }, 3000);
   };
 
@@ -7351,6 +7320,13 @@ export default function App() {
                   ? (syncing ? 'Syncing…' : `Synced ${lastSync ? lastSync.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}) : ''}`)
                   : connectingDrive ? 'Connecting…' : 'Drive offline'}
               </div>
+              {driveToken && masterSheetId && (
+                <a href={`https://docs.google.com/spreadsheets/d/${masterSheetId}`} target="_blank" rel="noreferrer"
+                  style={{ display:'block', fontSize:9, color:'#93c5fd', padding:'2px 4px', textDecoration:'none', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}
+                  title="Open CloudOps-Data master sheet">
+                  📊 View Data Sheet
+                </a>
+              )}
             )}
             {!driveToken && !connectingDrive && (
               <button style={{ width:'100%', marginBottom:4, fontSize:9, padding:'3px 0', background:'rgba(251,191,36,0.1)', border:'1px solid rgba(251,191,36,0.3)', borderRadius:5, color:'#fcd34d', cursor:'pointer' }} onClick={connectDrive}>
