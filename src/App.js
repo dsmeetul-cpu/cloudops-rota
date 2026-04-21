@@ -1,6 +1,6 @@
 // src/App.js
 // CloudOps Rota — Full Production Build v2
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 21st April 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 20th April 2026
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
@@ -534,14 +534,9 @@ function useBulkSelect(items) {
 }
 
 // ── Login Screen ───────────────────────────────────────────────────────────
-// Simplified flow:
-//   1. App auto-connects Drive silently on load (no popup, no button needed)
-//   2. If silent connect fails → show ONE "Connect to Google" button (manager popup)
-//   3. Once Drive is ready → just username + password, nothing else
-//
-// Engineers should never need to touch the Drive connect step at all —
-// the auto-connect handles it transparently every time the page loads.
-
+// Flow: page loads → Drive auto-connects silently → username + password → done.
+// The Connect button is a last-resort fallback only — engineers should never
+// need to click it if they have an active Google session in their browser.
 function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDrive, driveReady }) {
   const [uid, setUid]               = useState('');
   const [pw, setPw]                 = useState('');
@@ -554,7 +549,7 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDri
   const [forgotMsg, setForgotMsg]   = useState('');
   const uidRef = useRef(null);
 
-  // Auto-focus username once Drive is ready
+  // Auto-focus username field the moment Drive is ready
   useEffect(() => {
     if (driveReady && uidRef.current) uidRef.current.focus();
   }, [driveReady]);
@@ -562,18 +557,15 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDri
   const handle = () => {
     const id = uid.trim().toUpperCase();
     if (!id) { setErr('Enter your username.'); return; }
-    if (!driveReady) {
-      setErr('Loading team data, please wait a moment…');
-      return;
-    }
+    if (!driveReady) { setErr('Loading team data — please wait a moment and try again.'); return; }
     const userExists = users.find(u => u.id === id);
-    if (!userExists) { setErr('Username not found — contact your manager.'); return; }
+    if (!userExists) { setErr('Username not found. Contact your manager.'); return; }
     if (checkPassword(id, pw)) {
       setErr('');
       if (id === 'MBA47') { setPending2FA(id); setShow2FA(true); }
       else onLogin(id);
     } else {
-      setErr('Incorrect password. Your default password is your username in lowercase (e.g. mba47). Use Forgot Password to reset.');
+      setErr('Incorrect password. Default is your username in lowercase (e.g. mva28). Use Forgot Password to reset.');
     }
   };
 
@@ -584,14 +576,12 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDri
 
   const handleForgot = () => {
     const id = forgotUid.trim().toUpperCase();
-    const userExists = users.find(u => u.id === id);
-    if (!userExists) { setForgotMsg('Username not found. Contact your manager.'); return; }
+    if (!users.find(u => u.id === id)) { setForgotMsg('Username not found. Contact your manager.'); return; }
     const reg = updatePasswordInRegistry(id, id.toLowerCase());
     if (driveToken) syncRegistryToDrive(driveToken, reg, users).catch(() => {});
-    setForgotMsg(`Password reset. Sign in with your username in lowercase, then update it in My Account.`);
+    setForgotMsg('Password reset. Sign in with your username in lowercase, then update it in My Account.');
   };
 
-  // ── Forgot password screen ─────────────────────────────────────────────────
   if (showForgot) return (
     <div className="login-screen">
       <div className="login-box">
@@ -604,134 +594,101 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDri
           ? <Alert type="info">✅ {forgotMsg}</Alert>
           : <Alert type="info">ℹ Your password will be reset to your username in lowercase.</Alert>}
         <FormGroup label="Your Username">
-          <input className="input" placeholder="e.g. MBA47" value={forgotUid}
+          <input className="input" placeholder="e.g. MVA28" value={forgotUid}
             onChange={e => setForgotUid(e.target.value.toUpperCase())}
             onKeyDown={e => e.key === 'Enter' && handleForgot()} autoFocus />
         </FormGroup>
-        <button className="btn btn-primary" style={{ width: '100%', padding: 11 }} onClick={handleForgot}>
-          Reset Password
-        </button>
+        <button className="btn btn-primary" style={{ width: '100%', padding: 11 }} onClick={handleForgot}>Reset Password</button>
         <button className="btn btn-secondary btn-sm" style={{ width: '100%', marginTop: 8 }}
-          onClick={() => { setShowForgot(false); setForgotMsg(''); setForgotUid(''); }}>
-          ← Back to Sign In
-        </button>
+          onClick={() => { setShowForgot(false); setForgotMsg(''); setForgotUid(''); }}>← Back to Sign In</button>
       </div>
     </div>
   );
 
-  // ── Main login screen ──────────────────────────────────────────────────────
   return (
     <div className="login-screen">
       <div className="login-box">
-
-        {/* Logo */}
         <div className="login-logo">
           <div className="login-logo-icon">CR</div>
           <div className="login-title">CloudOps Rota</div>
           <div className="login-sub">Cloud Run Operations Team</div>
         </div>
 
-        {/* ── Drive status bar — minimal, auto-hides when ready ── */}
+        {/* Drive status — only visible while loading or if manual connect needed */}
         {!driveReady && (
-          <div style={{ marginBottom: 20, padding: '12px 14px', borderRadius: 10,
+          <div style={{ marginBottom: 18, padding: '11px 14px', borderRadius: 10,
             border: '1px solid var(--border)', background: 'rgba(59,130,246,0.04)',
             display: 'flex', alignItems: 'center', gap: 10 }}>
             {connectingDrive ? (
               <>
-                <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#f59e0b', flexShrink: 0,
-                  animation: 'pulse 1.5s ease-in-out infinite' }} />
+                <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#f59e0b',
+                  flexShrink: 0, animation: 'pulse 1.5s ease-in-out infinite' }} />
                 <span style={{ fontSize: 12, color: '#fcd34d' }}>Loading team data…</span>
               </>
             ) : (
               <>
                 <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#6b7280', flexShrink: 0 }} />
                 <span style={{ fontSize: 12, color: 'var(--text-muted)', flex: 1 }}>
-                  Team data not loaded
+                  Could not load team data automatically
                 </span>
                 <button className="btn btn-secondary btn-sm" onClick={onConnectDrive}
-                  style={{ whiteSpace: 'nowrap', fontSize: 11 }}>
-                  🔗 Connect
-                </button>
+                  style={{ whiteSpace: 'nowrap', fontSize: 11 }}>🔗 Connect</button>
               </>
             )}
           </div>
         )}
 
-        {/* Error */}
         {err && <Alert type="warning" style={{ marginBottom: 14 }}>⚠ {err}</Alert>}
 
-        {/* ── 2FA view (manager only) ── */}
         {show2FA ? (
           <>
-            <Alert type="info" style={{ marginBottom: 14 }}>
-              🔐 Manager sign-in requires a 2FA code.
-            </Alert>
+            <Alert type="info" style={{ marginBottom: 14 }}>🔐 Manager sign-in requires a 2FA code.</Alert>
             <FormGroup label="2FA Code">
               <input className="input" placeholder="6-digit code" maxLength={6} value={twoFACode}
                 onChange={e => setTwoFACode(e.target.value.replace(/\D/g, ''))}
                 onKeyDown={e => e.key === 'Enter' && verify2FA()} autoFocus />
             </FormGroup>
-            <button className="btn btn-primary" style={{ width: '100%', padding: 12 }} onClick={verify2FA}>
-              Verify & Sign In
-            </button>
+            <button className="btn btn-primary" style={{ width: '100%', padding: 12 }} onClick={verify2FA}>Verify & Sign In</button>
             <button className="btn btn-secondary btn-sm" style={{ width: '100%', marginTop: 8 }}
-              onClick={() => { setShow2FA(false); setErr(''); }}>
-              ← Back
-            </button>
+              onClick={() => { setShow2FA(false); setErr(''); }}>← Back</button>
           </>
         ) : (
-          /* ── Normal login view ── */
           <>
             <FormGroup label="Username">
-              <input
-                ref={uidRef}
-                className="input"
-                placeholder="Your username (e.g. MBA47)"
-                value={uid}
-                onChange={e => setUid(e.target.value.toUpperCase())}
-                onKeyDown={e => e.key === 'Enter' && handle()}
-                autoFocus={driveReady}
-              />
+              <input ref={uidRef} className="input" placeholder="Your username (e.g. MVA28)"
+                value={uid} onChange={e => setUid(e.target.value.toUpperCase())}
+                onKeyDown={e => e.key === 'Enter' && handle()} />
             </FormGroup>
             <FormGroup label="Password">
               <input className="input" type="password"
                 placeholder={driveReady ? 'Password' : 'Waiting for team data…'}
-                value={pw}
-                onChange={e => setPw(e.target.value)}
+                value={pw} onChange={e => setPw(e.target.value)}
                 onKeyDown={e => e.key === 'Enter' && handle()}
-                disabled={!driveReady}
-              />
+                disabled={!driveReady} />
             </FormGroup>
 
-            <button
-              className="btn btn-primary"
+            <button className="btn btn-primary"
               style={{ width: '100%', padding: 13, marginBottom: 10, fontSize: 15,
-                opacity: driveReady ? 1 : 0.5, cursor: driveReady ? 'pointer' : 'not-allowed' }}
-              onClick={handle}
-              disabled={!driveReady}
-            >
+                opacity: driveReady ? 1 : 0.5, cursor: driveReady ? 'pointer' : 'default' }}
+              onClick={handle} disabled={!driveReady}>
               {driveReady ? 'Sign In' : '⏳ Loading…'}
             </button>
 
             <button className="btn btn-secondary btn-sm" style={{ width: '100%' }}
-              onClick={() => setShowForgot(true)}>
-              🔑 Forgot Password?
-            </button>
+              onClick={() => setShowForgot(true)}>🔑 Forgot Password?</button>
 
             {driveReady && (
-              <div style={{ marginTop: 16, padding: '10px 12px', borderRadius: 8,
+              <div style={{ marginTop: 14, padding: '8px 12px', borderRadius: 8,
                 background: 'rgba(110,231,183,0.06)', border: '1px solid rgba(110,231,183,0.15)',
                 display: 'flex', alignItems: 'center', gap: 8 }}>
                 <div className="dot-live" />
-                <span style={{ fontSize: 11, color: '#6ee7b7' }}>
-                  Team data loaded — ready to sign in
-                </span>
+                <span style={{ fontSize: 11, color: '#6ee7b7' }}>Team data loaded — ready to sign in</span>
               </div>
             )}
 
-            <div style={{ marginTop: 14, fontSize: 11, color: 'var(--text-muted)', textAlign: 'center', lineHeight: 1.6 }}>
+            <div style={{ marginTop: 14, fontSize: 11, color: 'var(--text-muted)', textAlign: 'center', lineHeight: 1.7 }}>
               Default password is your username in lowercase.<br />
-              e.g. username <strong style={{ color: 'var(--text-primary)' }}>MVA28</strong> → password <strong style={{ color: 'var(--text-primary)' }}>mva28</strong>
+              e.g. <strong style={{ color: 'var(--text-primary)' }}>MVA28</strong> → <strong style={{ color: 'var(--text-primary)' }}>mva28</strong>
             </div>
           </>
         )}
@@ -3216,7 +3173,7 @@ function calcOncallPay(timesheetEntries, hourlyRate, upgradeHrs = 0, bankHolHrs 
     }
   });
 
-  // Bank holiday standby hours — pre-calculated (not a day count)
+  // Bank holiday standby hours — pre-calculated hours (not a day count)
   const bhStandby = bankHolHrs;
 
   // Incident hours from timesheets (entries with week starting "INC")
@@ -5570,7 +5527,7 @@ function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, rota
       return sum + (et ? et.hours : 0);
     }, 0);
 
-    // ── Bank holiday standby hours — extended weekend rules ─────────────────
+    // Bank holiday standby hours — extended weekend rules
     const bankHolHrs = (() => {
       let totalBHHours = 0;
       bhList.forEach(bh => {
@@ -5584,9 +5541,7 @@ function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, rota
           if (dow === 1) totalBHHours += 24;
           else if (dow === 5) totalBHHours += 12;
           else totalBHHours += 22;
-        } else {
-          totalBHHours += 22;
-        }
+        } else { totalBHHours += 22; }
       });
       return totalBHHours;
     })();
@@ -6757,13 +6712,12 @@ export default function App() {
   const [loadStatus, setLoadStatus]               = useState('');
 
   // ── Auto-connect Google Drive on app load ─────────────────────────────────
-  // Strategy (in order, no popup at any step):
-  //   1. Check sessionStorage for a cached token (still valid within 50 min)
-  //   2. If no cache, try Google Identity Services silent flow (prompt:'none')
-  //      This works if the user already has an active Google session in the browser.
-  //      It never shows a popup — if it can't get a token silently it just fails.
-  //   3. If both fail → show the "Connect" button as a last resort fallback.
-  //      Only clicking that button triggers the Google account chooser popup.
+  // Strategy (no popup at any step):
+  //   1. Check sessionStorage for a recently cached token (< 50 min old)
+  //   2. If no cache → try GIS silent flow (prompt:'') — works if the browser
+  //      already has an active Google session. Fails fast with no popup if not.
+  //   3. If both fail → show "Connect" button as last-resort fallback.
+  //      Only that button press ever triggers a Google popup.
   useEffect(() => {
     const autoConnect = async () => {
       setConnectingDrive(true);
@@ -6776,44 +6730,51 @@ export default function App() {
           if (cached && (Date.now() - ts) < 50 * 60 * 1000) token = cached;
         } catch (_) {}
 
-        // Step 2: silent GIS token request (no popup, fails fast if no session)
+        // Step 2: silent GIS token request
         if (!token) {
           token = await new Promise((resolve) => {
-            const script = document.createElement('script');
-            script.src = 'https://accounts.google.com/gsi/client';
-            script.onload = () => {
-              const client = window.google.accounts.oauth2.initTokenClient({
-                client_id: GOOGLE_CLIENT_ID,
-                scope: 'https://www.googleapis.com/auth/drive.file',
-                prompt: '',          // empty string = silent, no popup
-                callback: (resp) => {
-                  if (resp?.access_token) {
-                    try {
-                      sessionStorage.setItem('gdrive_token', resp.access_token);
-                      sessionStorage.setItem('gdrive_token_ts', Date.now());
-                    } catch (_) {}
-                    resolve(resp.access_token);
-                  } else {
-                    resolve(null); // silent auth failed — no popup, just null
-                  }
-                },
-              });
-              client.requestAccessToken({ prompt: '' });
+            const existing = document.querySelector('script[src="https://accounts.google.com/gsi/client"]');
+            const tryAuth = () => {
+              try {
+                window.google.accounts.oauth2.initTokenClient({
+                  client_id: GOOGLE_CLIENT_ID,
+                  scope: 'https://www.googleapis.com/auth/drive.file',
+                  prompt: '',
+                  callback: (resp) => {
+                    if (resp?.access_token) {
+                      try {
+                        sessionStorage.setItem('gdrive_token', resp.access_token);
+                        sessionStorage.setItem('gdrive_token_ts', String(Date.now()));
+                      } catch (_) {}
+                      resolve(resp.access_token);
+                    } else {
+                      resolve(null);
+                    }
+                  },
+                }).requestAccessToken({ prompt: '' });
+              } catch (_) { resolve(null); }
             };
-            script.onerror = () => resolve(null);
-            // Timeout safety: if GIS doesn't respond in 8s, give up silently
+            if (existing && window.google?.accounts) {
+              tryAuth();
+            } else {
+              const script = document.createElement('script');
+              script.src = 'https://accounts.google.com/gsi/client';
+              script.onload = tryAuth;
+              script.onerror = () => resolve(null);
+              document.head.appendChild(script);
+            }
+            // 8-second timeout — if GIS doesn't respond, give up silently
             setTimeout(() => resolve(null), 8000);
-            document.head.appendChild(script);
           });
         }
 
         if (!token) {
-          // Silent auth failed — show Connect button as fallback, no error shown
+          // Both silent methods failed — show Connect button, no error
           setConnectingDrive(false);
           return;
         }
 
-        // Valid token obtained silently — load Drive data with no popup at all.
+        // Got a token silently — load Drive data
         await gapiLoad();
         setSyncing(true);
         const [reg, pics] = await Promise.all([
