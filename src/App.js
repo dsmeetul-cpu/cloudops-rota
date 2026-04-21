@@ -7314,19 +7314,21 @@ export default function App() {
           {/* Footer */}
           <div style={{ padding:'8px', borderTop:'1px solid var(--sidebar-border)', flexShrink:0 }}>
             {sidebarOpen && (
-              <div style={{ display:'flex', alignItems:'center', gap:6, padding:'4px 4px 6px', fontSize:9, color: driveToken ? '#6ee7b7' : '#fcd34d' }}>
-                <div style={{ width:6, height:6, borderRadius:'50%', background: driveToken ? '#22c55e' : '#f59e0b', flexShrink:0 }} />
-                {driveToken
-                  ? (syncing ? 'Syncing…' : `Synced ${lastSync ? lastSync.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}) : ''}`)
-                  : connectingDrive ? 'Connecting…' : 'Drive offline'}
-              </div>
-              {driveToken && masterSheetId && (
-                <a href={`https://docs.google.com/spreadsheets/d/${masterSheetId}`} target="_blank" rel="noreferrer"
-                  style={{ display:'block', fontSize:9, color:'#93c5fd', padding:'2px 4px', textDecoration:'none', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}
-                  title="Open CloudOps-Data master sheet">
-                  📊 View Data Sheet
-                </a>
-              )}
+              <>
+                <div style={{ display:'flex', alignItems:'center', gap:6, padding:'4px 4px 6px', fontSize:9, color: driveToken ? '#6ee7b7' : '#fcd34d' }}>
+                  <div style={{ width:6, height:6, borderRadius:'50%', background: driveToken ? '#22c55e' : '#f59e0b', flexShrink:0 }} />
+                  {driveToken
+                    ? (syncing ? 'Syncing…' : `Synced ${lastSync ? lastSync.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}) : ''}`)
+                    : connectingDrive ? 'Connecting…' : 'Drive offline'}
+                </div>
+                {driveToken && masterSheetId && (
+                  <a href={`https://docs.google.com/spreadsheets/d/${masterSheetId}`} target="_blank" rel="noreferrer"
+                    style={{ display:'block', fontSize:9, color:'#93c5fd', padding:'2px 4px', textDecoration:'none', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}
+                    title="Open CloudOps-Data master sheet">
+                    📊 View Data Sheet
+                  </a>
+                )}
+              </>
             )}
             {!driveToken && !connectingDrive && (
               <button style={{ width:'100%', marginBottom:4, fontSize:9, padding:'3px 0', background:'rgba(251,191,36,0.1)', border:'1px solid rgba(251,191,36,0.3)', borderRadius:5, color:'#fcd34d', cursor:'pointer' }} onClick={connectDrive}>
