@@ -1,30 +1,29 @@
 // src/hooks/useGoogleDrive.js
 // Google Drive API integration - stores all data as JSON files in Drive
 
-// drive.file scope — lets any connected Google account create/update files
-// that were created by this app. Using readonly blocked all non-manager saves.
-const SCOPES_READ  = 'https://www.googleapis.com/auth/drive.readonly';
-const SCOPES_WRITE = 'https://www.googleapis.com/auth/drive.file';
-const SCOPES = SCOPES_WRITE; // all users need write access to save their own data
+// drive.readonly  — lets the app LIST and READ files in the shared folder
+// drive.file      — lets the app CREATE and UPDATE files it owns
+// Both scopes are needed: readonly to search/read shared files, drive.file to write.
+const SCOPES = 'https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.file';
+
 const FILES = {
-  users: 'users.json',
-  rota: 'rota.json',
-  holidays: 'holidays.json',
-  incidents: 'incidents.json',
-  timesheets: 'timesheets.json',
-  upgrades: 'upgrades.json',
-  wiki: 'wiki.json',
-  glossary: 'glossary.json',
-  contacts: 'contacts.json',
-  payconfig: 'payconfig.json',
-  reports: 'reports.json',
-  // Previously missing — caused silent save failures for these features:
-  swapRequests: 'swapRequests.json',
-  toil: 'toil.json',
-  absences: 'absences.json',
-  overtime: 'overtime.json',
-  logbook: 'logbook.json',
-  documents: 'documents.json',
+  users:         'users.json',
+  rota:          'rota.json',
+  holidays:      'holidays.json',
+  incidents:     'incidents.json',
+  timesheets:    'timesheets.json',
+  upgrades:      'upgrades.json',
+  wiki:          'wiki.json',
+  glossary:      'glossary.json',
+  contacts:      'contacts.json',
+  payconfig:     'payconfig.json',
+  reports:       'reports.json',
+  swapRequests:  'swapRequests.json',
+  toil:          'toil.json',
+  absences:      'absences.json',
+  overtime:      'overtime.json',
+  logbook:       'logbook.json',
+  documents:     'documents.json',
   obsidianNotes: 'obsidianNotes.json',
   whatsappChats: 'whatsappChats.json',
 };
@@ -71,13 +70,27 @@ export async function gapiLoad() {
 }
 
 // ── File lookup — always inside the hardcoded shared folder ─────────────────
+// NOTE: query params must be properly URL-encoded — unencoded quotes/spaces
+// silently fail or return wrong results from the Drive API.
 async function getFileId(token, filename) {
+  const q = encodeURIComponent(
+    `name='${filename}' and '${SHARED_FOLDER_ID}' in parents and trashed=false`
+  );
   const res = await fetch(
-    `https://www.googleapis.com/drive/v3/files?q=name='${filename}' and '${SHARED_FOLDER_ID}' in parents and trashed=false&fields=files(id,name)`,
+    `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
     { headers: { Authorization: `Bearer ${token}` } }
   );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    console.error(`Drive: getFileId failed for "${filename}":`, res.status, err?.error?.message || err);
+    return null;
+  }
   const data = await res.json();
-  return data.files && data.files.length > 0 ? data.files[0].id : null;
+  if (data.files && data.files.length > 0) {
+    return data.files[0].id;
+  }
+  console.warn(`Drive: "${filename}" not found in folder ${SHARED_FOLDER_ID}`);
+  return null;
 }
 
 // ── Read / Write ─────────────────────────────────────────────────────────────
@@ -93,7 +106,11 @@ export async function driveRead(token, key) {
       `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
       { headers: { Authorization: `Bearer ${token}` } }
     );
-    if (!res.ok) { console.warn('Drive read failed:', res.status, filename); return null; }
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      console.error(`Drive: read failed for "${filename}":`, res.status, err?.error?.message || err);
+      return null;
+    }
     return await res.json();
   } catch (e) {
     console.error('Drive read error:', e);
@@ -124,6 +141,11 @@ export async function driveWrite(token, key, data) {
       headers: { Authorization: `Bearer ${token}` },
       body: form,
     });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      console.error(`Drive: write failed for "${filename}":`, res.status, err?.error?.message || err);
+      return null;
+    }
     const result = await res.json();
     if (result.id) fileIds[key] = result.id;
     return result;
