@@ -24,6 +24,8 @@ const FILES = {
   documents:     'documents.json',
   obsidianNotes: 'obsidianNotes.json',
   whatsappChats: 'whatsappChats.json',
+  // ── Permissions (added) ──────────────────────────────────────────────────
+  permissions:   'permissions.json',
 };
 
 let folderId = null;
