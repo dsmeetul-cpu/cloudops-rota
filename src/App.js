@@ -3203,8 +3203,11 @@ function calcTOILBalance(timesheetEntries, toilEntries, userId) {
   // Accrual: worked on-call hours beyond contracted hours → TOIL at 1:1 (UK WTR)
   const workedOC = (timesheetEntries || []).reduce((a, e) => a + (e.worked_wd||0) + (e.worked_we||0), 0);
   const autoToil = workedOC * TOIL_ACCRUAL_RATE;
-  const manualAccrued = (toilEntries || []).filter(t => t.userId === userId && t.type === 'Accrued').reduce((a,t) => a + t.hours, 0);
-  const used  = (toilEntries || []).filter(t => t.userId === userId && t.type === 'Used').reduce((a,t) => a + t.hours, 0);
+  // Guard: toilEntries must be an array — it can be corrupted to a plain object if
+  // the user-ID remap code ran on a previous version. Recover with Object.values().
+  const safeEntries = Array.isArray(toilEntries) ? toilEntries : Object.values(toilEntries || {});
+  const manualAccrued = safeEntries.filter(t => t.userId === userId && t.type === 'Accrued').reduce((a,t) => a + t.hours, 0);
+  const used  = safeEntries.filter(t => t.userId === userId && t.type === 'Used').reduce((a,t) => a + t.hours, 0);
   const total = autoToil + manualAccrued;
   const balance = Math.min(total - used, TOIL_MAX_CARRYOVER_HOURS); // cap at WTR max carryover
   return { autoToil, manualAccrued, total, used, balance, workedOC, cappedAt: TOIL_MAX_CARRYOVER_HOURS };
@@ -3212,7 +3215,8 @@ function calcTOILBalance(timesheetEntries, toilEntries, userId) {
 
 // ── TOIL ──────────────────────────────────────────────────────────────────
 function TOIL({ users, timesheets, toil, setToil, currentUser, isManager }) {
-  const manualToil = isManager ? toil : toil.filter(t => t.userId === currentUser);
+  const safeToil = Array.isArray(toil) ? toil : Object.values(toil || {});
+  const manualToil = isManager ? safeToil : safeToil.filter(t => t.userId === currentUser);
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState({ userId: currentUser, hours: '', reason: '', date: '', type: 'Used' });
 
@@ -6297,11 +6301,12 @@ function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks, dri
         if (next[userId]) { next[newId] = next[userId]; delete next[userId]; }
         return next;
       });
-      // Remap toil
+      // Remap toil — toil is an ARRAY of entries, not an object keyed by userId.
+      // The previous { ...prev } spread converted the array to a plain object,
+      // which broke every subsequent .filter() call and caused a blank screen after login.
       setToil(prev => {
-        const next = { ...prev };
-        if (next[userId]) { next[newId] = next[userId]; delete next[userId]; }
-        return next;
+        const arr = Array.isArray(prev) ? prev : Object.values(prev);
+        return arr.map(t => t.userId === userId ? { ...t, userId: newId } : t);
       });
       // Remap profile pics
       setProfilePics(prev => {
@@ -6820,7 +6825,7 @@ export default function App() {
       if (data.payconfig    != null) setPayconfig(data.payconfig);
       if (data.rota         != null) setRota(sanitiseRota(data.rota));
       if (data.swapRequests != null) setSwapRequests(data.swapRequests);
-      if (data.toil         != null) setToil(data.toil);
+      if (data.toil         != null) setToil(Array.isArray(data.toil) ? data.toil : Object.values(data.toil));
       if (data.absences     != null) setAbsences(data.absences);
       if (data.overtime     != null) setOvertime(data.overtime);
       if (data.logbook      != null) setLogbook(data.logbook);
@@ -7106,7 +7111,7 @@ export default function App() {
         if (data.payconfig != null) setPayconfig(data.payconfig);
         if (data.rota != null) setRota(sanitiseRota(data.rota));
         if (data.swapRequests != null) setSwapRequests(data.swapRequests);
-        if (data.toil != null) setToil(data.toil);
+        if (data.toil != null) setToil(Array.isArray(data.toil) ? data.toil : Object.values(data.toil));
         if (data.absences != null) setAbsences(data.absences);
         if (data.overtime != null) setOvertime(data.overtime);
         if (data.logbook != null) setLogbook(data.logbook);
@@ -7514,7 +7519,7 @@ export default function App() {
                       if (has(data.payconfig))     setPayconfig(data.payconfig);
                       if (has(data.rota))          setRota(sanitiseRota(data.rota));
                       if (has(data.swapRequests))  setSwapRequests(data.swapRequests);
-                      if (has(data.toil))          setToil(data.toil);
+                      if (has(data.toil))          setToil(Array.isArray(data.toil) ? data.toil : Object.values(data.toil));
                       if (has(data.absences))      setAbsences(data.absences);
                       if (has(data.overtime))      setOvertime(data.overtime);
                       if (has(data.logbook))       setLogbook(data.logbook);
