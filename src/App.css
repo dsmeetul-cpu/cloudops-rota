@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════════════════════
-   CloudOps Rota — Integrated App.css
+   CloudOps Rota — FULL INTEGRATED App.css
    Aesthetic: Mission Control — deep space ops, electric precision
    Structure: Restored Sidebar/Main layout logic
    ═══════════════════════════════════════════════════════════════════════════ */
@@ -63,10 +63,11 @@ body {
   background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
 }
 
-/* ── Layout Structure (Restored) ────────────────────────────────────────── */
+/* ── Layout (The Critical Fix) ─────────────────────────────────────────── */
 .app { 
   display: flex; 
   min-height: 100vh; 
+  background: var(--bg);
 }
 
 .sidebar { 
@@ -89,6 +90,7 @@ body {
   display: flex; 
   flex-direction: column; 
   min-height: 100vh; 
+  background: var(--bg);
 }
 
 .content { 
@@ -110,32 +112,51 @@ body {
 }
 
 /* ── Sidebar Components ─────────────────────────────────────────────────── */
-.logo { padding: 20px 16px; border-bottom: 1px solid var(--sidebar-border); display: flex; align-items: center; gap: 10px; }
-.logo-icon { width: 32px; height: 32px; background: linear-gradient(135deg, #0099cc, var(--accent)); border-radius: 8px; display: flex; align-items: center; justify-content: center; font-family: 'Syne'; font-weight: 800; color: #000; }
-.nav-item { display: flex; align-items: center; gap: 10px; padding: 10px 16px; cursor: pointer; color: var(--text-secondary); transition: 0.2s; font-size: 13px; margin: 2px 10px; border-radius: var(--radius-sm); }
-.nav-item:hover { background: var(--bg-card2); color: var(--accent); }
-.nav-item.active { background: var(--accent-dim); color: var(--accent); font-weight: 600; }
+.logo        { padding: 20px 16px; border-bottom: 1px solid var(--sidebar-border); display: flex; align-items: center; gap: 10px; }
+.logo-icon   { width: 32px; height: 32px; background: linear-gradient(135deg, #0099cc, var(--accent)); border-radius: 8px; display: flex; align-items: center; justify-content: center; font-family: 'Syne'; font-weight: 800; color: #000; flex-shrink: 0; }
+.logo-text   { font-size: 13px; font-weight: 600; color: var(--text-primary); font-family: 'Syne'; }
+.logo-sub    { font-size: 10px; color: var(--text-muted); font-family: 'DM Mono'; }
 
-/* ── Typography & Cards ──────────────────────────────────────────────────── */
-h1, h2, h3 { font-family: 'Syne', sans-serif; }
+.user-pill   { margin: 12px; background: var(--bg-card2); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; display: flex; align-items: center; gap: 10px; }
+.user-info   { flex: 1; min-width: 0; }
+.user-name   { font-size: 12px; font-weight: 500; color: var(--text-primary); }
+.user-role   { font-size: 10px; color: var(--accent); font-family: 'DM Mono'; }
+
+.nav-section { padding: 12px 16px 6px; font-size: 10px; font-weight: 700; color: var(--text-muted); letter-spacing: 1px; text-transform: uppercase; }
+.nav-item    { display: flex; align-items: center; gap: 10px; padding: 10px 16px; cursor: pointer; color: var(--text-secondary); transition: 0.2s; font-size: 13px; margin: 2px 10px; border-radius: var(--radius-sm); }
+.nav-item:hover  { background: var(--bg-card2); color: var(--accent); }
+.nav-item.active { background: var(--accent-dim); color: var(--accent); font-weight: 600; border-left: 3px solid var(--accent); }
+.nav-icon    { font-size: 14px; width: 18px; text-align: center; }
+
+/* ── Cards & Tables ──────────────────────────────────────────────────────── */
 .card {
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 20px;
-  box-shadow: var(--shadow-card);
+  box-shadow: 0 2px 12px rgba(0,0,0,0.4);
 }
-
 .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
 .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
 .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
 
-/* ── Tables ────────────────────────────────────────────────────────────── */
-table { width: 100%; border-collapse: collapse; }
-th { text-align: left; padding: 12px; color: var(--text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 1px; border-bottom: 1px solid var(--border); }
-td { padding: 12px; border-bottom: 1px solid rgba(30,58,95,.4); color: var(--text-secondary); font-size: 13px; }
+table   { width: 100%; border-collapse: collapse; }
+th      { text-align: left; padding: 12px; color: var(--text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 1px; border-bottom: 1px solid var(--border); }
+td      { padding: 12px; border-bottom: 1px solid rgba(30,58,95,.4); color: var(--text-secondary); font-size: 13px; }
 
-/* ── Login Screen (Mission Control Style) ───────────────────────────────── */
+/* ── Typography ──────────────────────────────────────────────────────────── */
+h1, h2, h3, .page-title, .modal-title { font-family: 'Syne', sans-serif; font-weight: 800; color: var(--text-primary); }
+.mono, .stat-value, .cal-day-num { font-family: 'DM Mono', monospace; }
+
+/* ── Buttons ────────────────────────────────────────────────────────────── */
+.btn {
+  display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; border-radius: var(--radius-sm); 
+  font-size: 13px; font-weight: 600; cursor: pointer; transition: 0.2s; border: 1px solid transparent;
+}
+.btn-primary { background: var(--accent); color: #000d1a; }
+.btn-primary:hover { box-shadow: 0 0 15px var(--accent-glow); opacity: 0.9; }
+
+/* ── Login Screen (Fixed Overlay) ───────────────────────────────────────── */
 .login-screen {
   min-height: 100vh;
   display: flex;
@@ -143,42 +164,17 @@ td { padding: 12px; border-bottom: 1px solid rgba(30,58,95,.4); color: var(--tex
   justify-content: center;
   background: var(--bg);
   position: relative;
-  overflow: hidden;
+  z-index: 1000; /* Ensure it stays above content during login */
 }
 .login-box {
-  width: 100%;
-  max-width: 400px;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: 18px;
-  padding: 40px;
-  z-index: 1;
-  box-shadow: 0 32px 80px rgba(0, 0, 0, 0.6);
+  width: 100%; max-width: 400px; background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: 18px; padding: 40px; box-shadow: 0 32px 80px rgba(0, 0, 0, 0.6);
 }
-
-/* ── Buttons ────────────────────────────────────────────────────────────── */
-.btn {
-  display: inline-flex;
-  align-items: center;
-  padding: 8px 16px;
-  border-radius: var(--radius-sm);
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: 0.2s;
-  border: 1px solid transparent;
-}
-.btn-primary { background: var(--accent); color: #000d1a; }
-.btn-primary:hover { box-shadow: 0 0 15px var(--accent-glow); opacity: 0.9; }
-
-/* ── Rota / Shift Styling ───────────────────────────────────────────────── */
-.rota-cell { border: 1px solid var(--border); padding: 8px; border-radius: 4px; text-align: center; font-family: 'DM Mono'; font-size: 11px; }
-.shift-daily { background: rgba(0, 194, 255, 0.1); color: var(--accent); border-color: var(--accent-dim); }
 
 /* ── Responsive ─────────────────────────────────────────────────────────── */
 @media (max-width: 900px) {
-  .sidebar { width: 70px; }
-  .sidebar span:not(.logo-icon) { display: none; }
-  .main { margin-left: 70px; }
+  .sidebar { width: 72px; }
+  .sidebar .logo-text, .sidebar .logo-sub, .sidebar .user-info, .sidebar span:not(.logo-icon, .nav-icon), .sidebar .nav-section { display: none; }
+  .main { margin-left: 72px; }
   .grid-3, .grid-4 { grid-template-columns: 1fr; }
 }
