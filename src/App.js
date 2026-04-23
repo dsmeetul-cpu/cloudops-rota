@@ -2652,18 +2652,41 @@ function Holidays({ users, holidays, setHolidays, currentUser, isManager }) {
 }
 
 // ── Shift Swaps ────────────────────────────────────────────────────────────
-function ShiftSwaps({ users, swapRequests, setSwapRequests, rota, setRota, currentUser, isManager }) {
-  const all = swapRequests || [];
+function ShiftSwaps({ users, swapRequests, setSwapRequests, rota, setRota, currentUser, isManager, driveToken }) {
+  const all = Array.isArray(swapRequests) ? swapRequests : [];
   const { selected, toggleOne, toggleAll, clearAll } = useBulkSelect(all);
-  const [editId, setEditId] = useState(null);
-  const [editForm, setEditForm] = useState({});
+  const [editId,    setEditId]    = useState(null);
+  const [editForm,  setEditForm]  = useState({});
+  const [showNew,   setShowNew]   = useState(false);
+  const [filter,    setFilter]    = useState('all');
+  const [newForm,   setNewForm]   = useState({
+    type: 'swap', requesterId: currentUser, targetId: '',
+    reqDate: '', tgtDate: '', reason: '', urgent: false,
+  });
+
+  const persist = (next) => {
+    setSwapRequests(next);
+    if (driveToken) driveWriteJson(driveToken, 'swapRequests.json', next).catch(()=>{});
+  };
+
+  const submitRequest = () => {
+    if (!newForm.reqDate || !newForm.requesterId) return;
+    if (newForm.type === 'swap' && !newForm.targetId) return;
+    const req = {
+      id: 'swap-' + Date.now(), type: newForm.type,
+      requesterId: newForm.requesterId, targetId: newForm.targetId || null,
+      reqDate: newForm.reqDate, tgtDate: newForm.tgtDate || null,
+      reason: newForm.reason, urgent: newForm.urgent,
+      status: 'pending', created: new Date().toISOString().slice(0, 10),
+      createdAt: new Date().toISOString(), coverOnly: newForm.type === 'cover', managerNote: '',
+    };
+    persist([req, ...all]);
+    setShowNew(false);
+    setNewForm({ type:'swap', requesterId:currentUser, targetId:'', reqDate:'', tgtDate:'', reason:'', urgent:false });
+  };
 
   const openEdit = (s, e) => { e.stopPropagation(); setEditForm({ ...s }); setEditId(s.id); };
-
-  const saveEdit = () => {
-    setSwapRequests(all.map(s => s.id === editId ? { ...s, ...editForm } : s));
-    setEditId(null);
-  };
+  const saveEdit = () => { persist(all.map(s => s.id === editId ? { ...s, ...editForm } : s)); setEditId(null); };
 
   const approve = (swapId) => {
     if (!isManager) return;
@@ -2672,72 +2695,118 @@ function ShiftSwaps({ users, swapRequests, setSwapRequests, rota, setRota, curre
     const newRota = JSON.parse(JSON.stringify(rota));
     const reqShift = newRota[swap.requesterId]?.[swap.reqDate];
     const tgtShift = swap.tgtDate ? newRota[swap.targetId]?.[swap.tgtDate] : null;
-    if (reqShift) { newRota[swap.targetId] = { ...(newRota[swap.targetId]||{}), [swap.reqDate]: reqShift }; delete newRota[swap.requesterId][swap.reqDate]; }
-    if (tgtShift && swap.tgtDate) { newRota[swap.requesterId] = { ...(newRota[swap.requesterId]||{}), [swap.tgtDate]: tgtShift }; delete newRota[swap.targetId][swap.tgtDate]; }
+    if (reqShift && swap.targetId) {
+      newRota[swap.targetId] = { ...(newRota[swap.targetId]||{}), [swap.reqDate]: reqShift };
+      delete newRota[swap.requesterId][swap.reqDate];
+    }
+    if (tgtShift && swap.tgtDate) {
+      newRota[swap.requesterId] = { ...(newRota[swap.requesterId]||{}), [swap.tgtDate]: tgtShift };
+      delete newRota[swap.targetId][swap.tgtDate];
+    }
     setRota(newRota);
-    setSwapRequests(all.map(s => s.id === swapId ? { ...s, status: 'approved' } : s));
+    persist(all.map(s => s.id === swapId ? { ...s, status:'approved', approvedAt:new Date().toISOString() } : s));
   };
 
-  const cancelRequest = (id) => {
-    if (!window.confirm('Cancel this request?')) return;
-    setSwapRequests(all.filter(s => s.id !== id));
-  };
+  const reject   = (id) => persist(all.map(s => s.id===id ? { ...s, status:'rejected' } : s));
+  const cancel   = (id) => { if (window.confirm('Cancel this request?')) persist(all.filter(s => s.id!==id)); };
+  const deleteOne  = (id, e) => { e.stopPropagation(); persist(all.filter(s => s.id!==id)); };
+  const deleteBulk = () => { persist(all.filter(s => !selected.has(s.id))); clearAll(); };
 
-  const deleteOne  = (id, e) => { e.stopPropagation(); setSwapRequests(all.filter(s => s.id !== id)); };
-  const deleteBulk = () => { setSwapRequests(all.filter(s => !selected.has(s.id))); clearAll(); };
+  const uName = id => users.find(u=>u.id===id)?.name || id || '—';
+  const uObj  = id => users.find(u=>u.id===id);
+  const shiftOnDate = (uid, date) => rota?.[uid]?.[date] || '—';
+  const visible = all.filter(s => filter === 'all' ? true : s.status === filter);
 
   return (
     <div>
-      <PageHeader title="Shift Swaps &amp; Cover Requests" sub="All shift swap and cover requests — managers approve/reject" />
-      <div className="grid-3 mb-16">
-        <StatCard label="Pending"  value={all.filter(s=>s.status==='pending').length}  sub="Awaiting decision" accent="#f59e0b" />
-        <StatCard label="Approved" value={all.filter(s=>s.status==='approved').length} sub="Completed"         accent="#10b981" />
-        <StatCard label="Rejected" value={all.filter(s=>s.status==='rejected').length} sub="Declined"          accent="#ef4444" />
+      <PageHeader
+        title="Shift Swaps &amp; Cover Requests"
+        sub="Request and manage shift swaps or cover — both engineers and managers can raise requests"
+        actions={<button className="btn btn-primary" onClick={()=>setShowNew(true)}>+ New Request</button>}
+      />
+      <div className="grid-4 mb-16">
+        <StatCard label="Pending"  value={all.filter(s=>s.status==='pending').length}  sub="Awaiting manager" accent="#f59e0b" />
+        <StatCard label="Approved" value={all.filter(s=>s.status==='approved').length} sub="Rota updated"     accent="#10b981" />
+        <StatCard label="Rejected" value={all.filter(s=>s.status==='rejected').length} sub="Not approved"     accent="#ef4444" />
+        <StatCard label="Total"    value={all.length}                                   sub="All time"         accent="#818cf8" />
       </div>
-      {isManager && selected.size > 0 && (
-        <div style={{ marginBottom: 12, display: 'flex', gap: 8 }}>
-          <button className="btn btn-success btn-sm" onClick={() => { selected.forEach(id => approve(id)); clearAll(); }}>✓ Approve {selected.size}</button>
-          <button className="btn btn-danger btn-sm" onClick={deleteBulk}>🗑 Delete {selected.size}</button>
-          <button className="btn btn-secondary btn-sm" onClick={clearAll}>✕ Clear</button>
+      <div className="flex-between mb-12">
+        <div className="tab-bar" style={{ marginBottom:0 }}>
+          {['all','pending','approved','rejected'].map(f => (
+            <button key={f} className={`btn ${filter===f?'btn-primary':'btn-secondary'}`}
+              onClick={()=>setFilter(f)} style={{ textTransform:'capitalize' }}>
+              {f} ({f==='all' ? all.length : all.filter(s=>s.status===f).length})
+            </button>
+          ))}
         </div>
-      )}
-      <div className="card" style={{ overflowX: 'auto' }}>
+        {isManager && selected.size > 0 && (
+          <div style={{ display:'flex', gap:8 }}>
+            <button className="btn btn-success btn-sm" onClick={()=>{ selected.forEach(id=>approve(id)); clearAll(); }}>✓ Approve {selected.size}</button>
+            <button className="btn btn-danger  btn-sm" onClick={deleteBulk}>🗑 Delete {selected.size}</button>
+            <button className="btn btn-secondary btn-sm" onClick={clearAll}>✕ Clear</button>
+          </div>
+        )}
+      </div>
+      <div className="card" style={{ overflowX:'auto' }}>
         <table>
           <thead>
             <tr>
-              {isManager && <th style={{ width: 32 }}><input type="checkbox" checked={selected.size === all.length && all.length > 0} onChange={toggleAll} /></th>}
-              <th>Requester</th><th>Date Needed</th><th>Ask</th><th>Swap Date</th><th>Type</th><th>Reason</th><th>Status</th><th>Actions</th>
+              {isManager && <th style={{ width:32 }}><input type="checkbox" checked={selected.size===all.length&&all.length>0} onChange={toggleAll} /></th>}
+              <th>Requester</th><th>Their Date</th><th>Shift</th><th>Type</th>
+              <th>Cover / Swap With</th><th>Their Date</th><th>Shift</th>
+              <th>Reason</th><th>Status</th><th>Actions</th>
             </tr>
           </thead>
           <tbody>
-            {all.length === 0 && <tr><td colSpan={9} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 20 }}>No swap or cover requests yet</td></tr>}
-            {[...all].sort((a,b) => new Date(b.created) - new Date(a.created)).map(s => {
-              const req = users.find(u => u.id === s.requesterId);
-              const tgt = users.find(u => u.id === s.targetId);
+            {visible.length === 0 && (
+              <tr><td colSpan={11} style={{ textAlign:'center', color:'var(--text-muted)', padding:28 }}>
+                {filter==='all' ? 'No requests yet — click "+ New Request" to raise one.' : `No ${filter} requests.`}
+              </td></tr>
+            )}
+            {[...visible].sort((a,b)=>new Date(b.createdAt||b.created)-new Date(a.createdAt||a.created)).map(s => {
               const isMine = s.requesterId === currentUser;
+              const reqShift = shiftOnDate(s.requesterId, s.reqDate);
+              const tgtShift = s.targetId && s.tgtDate ? shiftOnDate(s.targetId, s.tgtDate) : '—';
               return (
-                <tr key={s.id}>
-                  {isManager && <td><input type="checkbox" checked={selected.has(s.id)} onChange={() => toggleOne(s.id)} /></td>}
-                  <td><div style={{ display: 'flex', gap: 6, alignItems: 'center' }}><Avatar user={req} size={22} /><span style={{ fontSize: 12 }}>{req?.name}</span></div></td>
-                  <td style={{ fontFamily: 'DM Mono', fontSize: 12, color: 'var(--accent)' }}>{s.reqDate}</td>
-                  <td><div style={{ display: 'flex', gap: 6, alignItems: 'center' }}><Avatar user={tgt} size={22} /><span style={{ fontSize: 12 }}>{tgt?.name}</span></div></td>
-                  <td style={{ fontFamily: 'DM Mono', fontSize: 12 }}>{s.tgtDate || <span style={{ color: 'var(--text-muted)' }}>—</span>}</td>
-                  <td><Tag label={s.coverOnly ? 'Cover Only' : 'Swap'} type={s.coverOnly ? 'purple' : 'blue'} /></td>
-                  <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>{s.reason || '—'}</td>
-                  <td><Tag label={s.status} type={s.status==='approved'?'green':s.status==='pending'?'amber':'red'} /></td>
+                <tr key={s.id} style={{ background: s.urgent ? 'rgba(239,68,68,0.04)' : 'transparent' }}>
+                  {isManager && <td><input type="checkbox" checked={selected.has(s.id)} onChange={()=>toggleOne(s.id)} /></td>}
                   <td>
-                    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                      {isManager && s.status === 'pending' && <>
-                        <button className="btn btn-success btn-sm" onClick={() => approve(s.id)}>✓</button>
-                        <button className="btn btn-danger btn-sm" onClick={() => setSwapRequests(all.map(x => x.id===s.id?{...x,status:'rejected'}:x))}>✗</button>
+                    <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+                      <Avatar user={uObj(s.requesterId)} size={22} />
+                      <span style={{ fontSize:12 }}>{uName(s.requesterId)}</span>
+                      {s.urgent && <span style={{ fontSize:10 }}>🔴</span>}
+                    </div>
+                  </td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:'var(--accent)' }}>{s.reqDate}</td>
+                  <td><Tag label={reqShift} type={reqShift==='daily'?'blue':reqShift==='weekend'?'purple':'gray'} /></td>
+                  <td><Tag label={s.coverOnly||s.type==='cover'?'Cover Only':'Swap'} type={s.coverOnly||s.type==='cover'?'purple':'blue'} /></td>
+                  <td>
+                    {s.targetId
+                      ? <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+                          <Avatar user={uObj(s.targetId)} size={22} />
+                          <span style={{ fontSize:12 }}>{uName(s.targetId)}</span>
+                        </div>
+                      : <span style={{ color:'var(--text-muted)', fontSize:12 }}>Any volunteer</span>}
+                  </td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12 }}>{s.tgtDate||'—'}</td>
+                  <td><Tag label={tgtShift} type={tgtShift==='daily'?'blue':tgtShift==='weekend'?'purple':'gray'} /></td>
+                  <td style={{ fontSize:11, color:'var(--text-muted)', maxWidth:140, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{s.reason||'—'}</td>
+                  <td>
+                    <Tag label={s.status} type={s.status==='approved'?'green':s.status==='pending'?'amber':'red'} />
+                    {s.managerNote && <div style={{ fontSize:10, color:'var(--text-muted)', marginTop:2 }}>💬 {s.managerNote}</div>}
+                  </td>
+                  <td>
+                    <div style={{ display:'flex', gap:4 }}>
+                      {isManager && s.status==='pending' && <>
+                        <button className="btn btn-success btn-sm" onClick={()=>approve(s.id)} title="Approve">✓</button>
+                        <button className="btn btn-danger  btn-sm" onClick={()=>reject(s.id)}  title="Reject">✗</button>
                       </>}
                       {isManager && <>
-                        <button className="btn btn-secondary btn-sm" onClick={e => openEdit(s, e)}>✏</button>
-                        <button className="btn btn-danger btn-sm" onClick={e => deleteOne(s.id, e)}>🗑</button>
+                        <button className="btn btn-secondary btn-sm" onClick={e=>openEdit(s,e)}>✏</button>
+                        <button className="btn btn-danger    btn-sm" onClick={e=>deleteOne(s.id,e)}>🗑</button>
                       </>}
-                      {/* Engineer can cancel their own pending request */}
-                      {!isManager && isMine && s.status === 'pending' && (
-                        <button className="btn btn-danger btn-sm" onClick={() => cancelRequest(s.id)}>✕ Cancel</button>
+                      {!isManager && isMine && s.status==='pending' && (
+                        <button className="btn btn-danger btn-sm" onClick={()=>cancel(s.id)}>✕</button>
                       )}
                     </div>
                   </td>
@@ -2747,18 +2816,88 @@ function ShiftSwaps({ users, swapRequests, setSwapRequests, rota, setRota, curre
           </tbody>
         </table>
       </div>
+
+      {showNew && (
+        <Modal title="+ New Swap / Cover Request" onClose={()=>setShowNew(false)}>
+          <FormGroup label="Request Type">
+            <div style={{ display:'flex', gap:8 }}>
+              {[{val:'swap',label:'🔄 Shift Swap',desc:'Exchange shifts with another engineer'},{val:'cover',label:'🙋 Cover Request',desc:'Ask someone to cover — no swap needed'}].map(opt=>(
+                <div key={opt.val} onClick={()=>setNewForm(f=>({...f,type:opt.val}))}
+                  style={{ flex:1, padding:'10px 12px', borderRadius:8, cursor:'pointer',
+                    border:`2px solid ${newForm.type===opt.val?'var(--accent)':'var(--border)'}`,
+                    background:newForm.type===opt.val?'rgba(0,194,255,0.07)':'var(--bg-card2)' }}>
+                  <div style={{ fontWeight:600, fontSize:13, color:newForm.type===opt.val?'var(--accent)':'var(--text-primary)' }}>{opt.label}</div>
+                  <div style={{ fontSize:11, color:'var(--text-muted)', marginTop:2 }}>{opt.desc}</div>
+                </div>
+              ))}
+            </div>
+          </FormGroup>
+          {isManager && (
+            <FormGroup label="Requester (raising on behalf of)">
+              <select className="select" value={newForm.requesterId} onChange={e=>setNewForm(f=>({...f,requesterId:e.target.value}))}>
+                {users.map(u=><option key={u.id} value={u.id}>{u.name}</option>)}
+              </select>
+            </FormGroup>
+          )}
+          <FormGroup label={newForm.type==='swap'?'Their Date to Swap Away':'Date Needing Cover'}>
+            <input type="date" className="input" value={newForm.reqDate} onChange={e=>setNewForm(f=>({...f,reqDate:e.target.value}))} />
+            {newForm.reqDate && newForm.requesterId && (
+              <div style={{ fontSize:11, color:'var(--text-muted)', marginTop:4 }}>
+                Current shift: <strong style={{ color:'var(--accent)' }}>{shiftOnDate(newForm.requesterId, newForm.reqDate)}</strong>
+              </div>
+            )}
+          </FormGroup>
+          <FormGroup label={newForm.type==='swap'?'Swap With':'Preferred Cover Engineer (optional)'}>
+            <select className="select" value={newForm.targetId} onChange={e=>setNewForm(f=>({...f,targetId:e.target.value}))}>
+              <option value="">— Any volunteer —</option>
+              {users.filter(u=>u.id!==newForm.requesterId).map(u=>(
+                <option key={u.id} value={u.id}>{u.name}</option>
+              ))}
+            </select>
+          </FormGroup>
+          {newForm.type==='swap' && newForm.targetId && (
+            <FormGroup label="Their Date to Swap Back (leave blank for cover only)">
+              <input type="date" className="input" value={newForm.tgtDate} onChange={e=>setNewForm(f=>({...f,tgtDate:e.target.value}))} />
+              {newForm.tgtDate && newForm.targetId && (
+                <div style={{ fontSize:11, color:'var(--text-muted)', marginTop:4 }}>
+                  {uName(newForm.targetId)}'s shift: <strong style={{ color:'var(--accent)' }}>{shiftOnDate(newForm.targetId, newForm.tgtDate)}</strong>
+                </div>
+              )}
+            </FormGroup>
+          )}
+          <FormGroup label="Reason">
+            <textarea className="textarea" rows={3} placeholder="Why are you requesting this?"
+              value={newForm.reason} onChange={e=>setNewForm(f=>({...f,reason:e.target.value}))} style={{ minHeight:70 }} />
+          </FormGroup>
+          <label style={{ display:'flex', alignItems:'center', gap:8, fontSize:13, cursor:'pointer', marginBottom:14 }}>
+            <input type="checkbox" checked={newForm.urgent} onChange={e=>setNewForm(f=>({...f,urgent:e.target.checked}))} />
+            <span>🔴 Mark as urgent</span>
+          </label>
+          <div style={{ display:'flex', gap:8, justifyContent:'flex-end' }}>
+            <button className="btn btn-secondary" onClick={()=>setShowNew(false)}>Cancel</button>
+            <button className="btn btn-primary"
+              disabled={!newForm.reqDate || (newForm.type==='swap' && !newForm.targetId)}
+              onClick={submitRequest}>Submit Request</button>
+          </div>
+        </Modal>
+      )}
+
       {editId && (
-        <Modal title="Edit Swap Request" onClose={() => setEditId(null)}>
+        <Modal title="Edit Swap Request" onClose={()=>setEditId(null)}>
           <FormGroup label="Status">
-            <select className="select" value={editForm.status} onChange={e => setEditForm({ ...editForm, status: e.target.value })}>
+            <select className="select" value={editForm.status} onChange={e=>setEditForm({...editForm,status:e.target.value})}>
               <option value="pending">Pending</option>
               <option value="approved">Approved</option>
               <option value="rejected">Rejected</option>
             </select>
           </FormGroup>
-          <FormGroup label="Reason"><input className="input" value={editForm.reason || ''} onChange={e => setEditForm({ ...editForm, reason: e.target.value })} /></FormGroup>
-          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
-            <button className="btn btn-secondary" onClick={() => setEditId(null)}>Cancel</button>
+          <FormGroup label="Reason"><input className="input" value={editForm.reason||''} onChange={e=>setEditForm({...editForm,reason:e.target.value})} /></FormGroup>
+          <FormGroup label="Manager Note">
+            <input className="input" placeholder="Optional note shown to engineer…"
+              value={editForm.managerNote||''} onChange={e=>setEditForm({...editForm,managerNote:e.target.value})} />
+          </FormGroup>
+          <div style={{ display:'flex', gap:8, justifyContent:'flex-end', marginTop:12 }}>
+            <button className="btn btn-secondary" onClick={()=>setEditId(null)}>Cancel</button>
             <button className="btn btn-primary" onClick={saveEdit}>Update</button>
           </div>
         </Modal>
@@ -2766,6 +2905,7 @@ function ShiftSwaps({ users, swapRequests, setSwapRequests, rota, setRota, curre
     </div>
   );
 }
+
 
 // ── Upgrade Days ───────────────────────────────────────────────────────────
 function UpgradeDays({ users, upgrades, setUpgrades, isManager, currentUser, timesheets, setTimesheets }) {
@@ -3633,7 +3773,10 @@ function Absence({ users, absences, setAbsences, currentUser, isManager, driveTo
 }
 
 // ── Overtime ───────────────────────────────────────────────────────────────
-function Overtime({ users, overtime, setOvertime, currentUser, isManager, driveToken }) {
+function Overtime({ users, overtime: overtimeProp, setOvertime, currentUser, isManager, driveToken }) {
+  // Guard against overtime being undefined or non-array (e.g. loaded as object from corrupted Drive file)
+  const overtime = Array.isArray(overtimeProp) ? overtimeProp : [];
+
   const fmtUK = d => d ? new Date(d + 'T12:00:00').toLocaleDateString('en-GB', { day:'2-digit', month:'2-digit', year:'numeric' }) : '—';
   const BLANK = { userId: currentUser, date: '', hours: '', reason: '', notes: '' };
   const [showModal, setShowModal]     = useState(false);
@@ -4624,257 +4767,399 @@ function Documents({ documents, setDocuments, isManager }) {
 }
 
 // ── Obsidian Notes ────────────────────────────────────────────────────────
-function Notes({ obsidianNotes, setObsidianNotes, users, currentUser, isManager }) {
-  const [activeTab, setActiveTab]   = useState('personal');
-  const [showModal, setShowModal]   = useState(false);
-  const [editId, setEditId]         = useState(null);
-  const [form, setForm]             = useState({ title: '', content: '', type: 'personal', tags: '' });
-  const [search, setSearch]         = useState('');
-  const [viewNote, setViewNote]     = useState(null);
-  const importRef                   = useRef(null);
-  const exportRef                   = useRef(null);
+function Notes({ obsidianNotes: notesProp, setObsidianNotes, users, currentUser, isManager }) {
+  const obsidianNotes = Array.isArray(notesProp) ? notesProp : [];
 
-  // Personal = only the author can see. Shared = whole team including manager.
-  const personalNotes = obsidianNotes.filter(n => n.type === 'personal' && n.engineerId === currentUser);
-  const sharedNotes   = obsidianNotes.filter(n => n.type === 'shared');
+  // ── State ──────────────────────────────────────────────────────────────────
+  const [activeTab,   setActiveTab]  = useState('personal');
+  const [showModal,   setShowModal]  = useState(false);
+  const [editId,      setEditId]     = useState(null);
+  const [form,        setForm]       = useState({ title:'', content:'', type:'personal', tags:'' });
+  const [search,      setSearch]     = useState('');
+  const [viewNote,    setViewNote]   = useState(null);
+  const [splitView,   setSplitView]  = useState(false);   // edit + preview side-by-side
+  const [sidebarTab,  setSidebarTab] = useState('files'); // 'files' | 'tags' | 'backlinks'
+  const [tagFilter,   setTagFilter]  = useState('');
+  const importRef = useRef(null);
 
-  const visibleNotes  = activeTab === 'personal' ? personalNotes : sharedNotes;
-  const filtered      = visibleNotes.filter(n =>
-    n.title?.toLowerCase().includes(search.toLowerCase()) ||
-    (n.content||'').toLowerCase().includes(search.toLowerCase())
+  // ── Filtered data ──────────────────────────────────────────────────────────
+  const personalNotes = obsidianNotes.filter(n => n.type==='personal' && n.engineerId===currentUser);
+  const sharedNotes   = obsidianNotes.filter(n => n.type==='shared');
+  const visibleNotes  = activeTab==='personal' ? personalNotes : sharedNotes;
+  const allTags = [...new Set(obsidianNotes.flatMap(n => (n.tags||'').split(',').map(t=>t.trim()).filter(Boolean)))].sort();
+  const filtered = visibleNotes.filter(n => {
+    const matchSearch = !search || n.title?.toLowerCase().includes(search.toLowerCase()) || (n.content||'').toLowerCase().includes(search.toLowerCase());
+    const matchTag = !tagFilter || (n.tags||'').split(',').map(t=>t.trim()).includes(tagFilter);
+    return matchSearch && matchTag;
+  });
+
+  // ── Word / char count ──────────────────────────────────────────────────────
+  const wordCount = (html) => (html||'').replace(/<[^>]+>/g,'').trim().split(/\s+/).filter(Boolean).length;
+  const charCount = (html) => (html||'').replace(/<[^>]+>/g,'').length;
+
+  // ── Backlinks: notes that mention the current note title ──────────────────
+  const backlinks = (note) => obsidianNotes.filter(n =>
+    n.id !== note.id && (n.content||'').includes(note.title)
   );
 
+  // ── CRUD ───────────────────────────────────────────────────────────────────
   const openAdd = () => {
-    setForm({ title: '', content: '', type: activeTab === 'personal' ? 'personal' : 'shared', tags: '' });
-    setEditId(null);
-    setShowModal(true);
+    setForm({ title:'', content:'', type: activeTab==='personal' ? 'personal' : 'shared', tags:'' });
+    setEditId(null); setShowModal(true);
   };
-
   const openEdit = (note, e) => {
     e?.stopPropagation();
     if (note.engineerId !== currentUser && !isManager) { alert('You can only edit your own notes.'); return; }
-    setForm({ title: note.title, content: note.content||'', type: note.type||'personal', tags: note.tags||'' });
-    setEditId(note.id);
-    setShowModal(true);
+    setForm({ title:note.title, content:note.content||'', type:note.type||'personal', tags:note.tags||'' });
+    setEditId(note.id); setShowModal(true);
   };
-
   const save = () => {
     if (!form.title) return;
     if (editId) {
-      setObsidianNotes(obsidianNotes.map(n => n.id === editId ? { ...n, ...form, updated: new Date().toISOString().slice(0,10) } : n));
+      setObsidianNotes(obsidianNotes.map(n => n.id===editId ? { ...n, ...form, updated:new Date().toISOString().slice(0,10) } : n));
     } else {
-      setObsidianNotes([...obsidianNotes, {
-        id: 'note-' + Date.now(),
-        engineerId: currentUser,
-        ...form,
-        created: new Date().toISOString().slice(0, 10)
-      }]);
+      setObsidianNotes([...obsidianNotes, { id:'note-'+Date.now(), engineerId:currentUser, ...form, created:new Date().toISOString().slice(0,10) }]);
     }
     setShowModal(false);
   };
-
   const deleteNote = (noteId, e) => {
     e?.stopPropagation();
-    const note = obsidianNotes.find(n => n.id === noteId);
+    const note = obsidianNotes.find(n=>n.id===noteId);
     if (!note) return;
     if (note.engineerId !== currentUser && !isManager) { alert('You can only delete your own notes.'); return; }
     if (window.confirm('Delete this note?')) {
-      setObsidianNotes(obsidianNotes.filter(n => n.id !== noteId));
-      if (viewNote?.id === noteId) setViewNote(null);
+      setObsidianNotes(obsidianNotes.filter(n=>n.id!==noteId));
+      if (viewNote === noteId) setViewNote(null);
     }
   };
 
-  // Import .md files
+  // ── Import .md / .txt ──────────────────────────────────────────────────────
   const handleImport = async (e) => {
-    const files = Array.from(e.target.files || []);
+    const files = Array.from(e.target.files||[]);
     const imported = [];
     for (const file of files) {
       const ext = file.name.split('.').pop().toLowerCase();
       const text = await file.text();
       let content = text;
-      if (ext === 'md') {
-        // Convert basic markdown to HTML for the rich editor
+      if (ext==='md') {
         content = text
-          .replace(/^### (.+)$/gm, '<h3>$1</h3>')
-          .replace(/^## (.+)$/gm, '<h2>$1</h2>')
-          .replace(/^# (.+)$/gm, '<h1>$1</h1>')
-          .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-          .replace(/\*(.+?)\*/g, '<em>$1</em>')
-          .replace(/\n\n/g, '</p><p>')
-          .replace(/\n/g, '<br>');
+          .replace(/^### (.+)$/gm,'<h3>$1</h3>').replace(/^## (.+)$/gm,'<h2>$1</h2>').replace(/^# (.+)$/gm,'<h1>$1</h1>')
+          .replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>').replace(/\*(.+?)\*/g,'<em>$1</em>')
+          .replace(/`(.+?)`/g,'<code>$1</code>').replace(/^- (.+)$/gm,'<li>$1</li>')
+          .replace(/\n\n/g,'</p><p>').replace(/\n/g,'<br>');
         content = '<p>' + content + '</p>';
       }
-      imported.push({
-        id: 'note-' + Date.now() + Math.random(),
-        engineerId: currentUser,
-        title: file.name.replace(/\.(md|txt)$/, ''),
-        content,
-        type: activeTab === 'personal' ? 'personal' : 'shared',
-        tags: 'imported',
-        created: new Date().toISOString().slice(0, 10),
-        sourceFile: file.name
-      });
+      imported.push({ id:'note-'+Date.now()+Math.random(), engineerId:currentUser, title:file.name.replace(/\.(md|txt)$/,''),
+        content, type:activeTab==='personal'?'personal':'shared', tags:'imported', created:new Date().toISOString().slice(0,10), sourceFile:file.name });
     }
-    if (imported.length > 0) setObsidianNotes([...obsidianNotes, ...imported]);
-    e.target.value = '';
+    if (imported.length>0) setObsidianNotes([...obsidianNotes, ...imported]);
+    e.target.value='';
   };
 
-  // Export visible notes as .md files (zip-like: one file per note)
+  // ── Export .md ─────────────────────────────────────────────────────────────
   const handleExport = () => {
     filtered.forEach(note => {
-      const text = (note.content || '').replace(/<[^>]+>/g, '').replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>');
-      const blob = new Blob([`# ${note.title}\n\n${text}`], { type: 'text/markdown' });
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = `${note.title.replace(/[^a-z0-9]/gi,'_')}.md`;
-      a.click();
+      const text = (note.content||'').replace(/<[^>]+>/g,'').replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>');
+      const blob = new Blob([`# ${note.title}\n\nTags: ${note.tags||''}\nCreated: ${note.created}\n\n${text}`], { type:'text/markdown' });
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+      a.download = `${note.title.replace(/[^a-z0-9]/gi,'_')}.md`; a.click();
     });
   };
 
-  // Note detail view
+  // ── Note detail / reading view ─────────────────────────────────────────────
   if (viewNote) {
-    const note = obsidianNotes.find(n => n.id === viewNote);
+    const note = obsidianNotes.find(n=>n.id===viewNote);
     if (!note) { setViewNote(null); return null; }
-    const canEdit = note.engineerId === currentUser || isManager;
-    const author  = users.find(u => u.id === note.engineerId);
+    const canEdit = note.engineerId===currentUser || isManager;
+    const author  = users.find(u=>u.id===note.engineerId);
+    const bl = backlinks(note);
+    const wc = wordCount(note.content); const cc = charCount(note.content);
     return (
-      <div>
-        <div style={{ display: 'flex', gap: 8, marginBottom: 16, alignItems: 'center', flexWrap: 'wrap' }}>
-          <button className="btn btn-secondary btn-sm" onClick={() => setViewNote(null)}>← Back</button>
-          {canEdit && <button className="btn btn-secondary btn-sm" onClick={e => { openEdit(note, e); setViewNote(null); }}>✏ Edit</button>}
-          {canEdit && <button className="btn btn-danger btn-sm" onClick={e => { deleteNote(note.id, e); }}>🗑 Delete</button>}
-          <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
-            <Tag label={note.type === 'personal' ? '🔒 Personal' : '🌐 Shared'} type={note.type === 'personal' ? 'red' : 'green'} />
-            <span className="muted-xs">{note.created}</span>
+      <div style={{ display:'flex', gap:0, height:'calc(100vh - 160px)', minHeight:500,
+        border:'1px solid var(--border)', borderRadius:12, overflow:'hidden', background:'var(--bg-card)' }}>
+        {/* Reading pane */}
+        <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden' }}>
+          {/* Toolbar */}
+          <div style={{ display:'flex', alignItems:'center', gap:8, padding:'10px 16px',
+            borderBottom:'1px solid var(--border)', background:'var(--bg-card2)', flexShrink:0 }}>
+            <button className="btn btn-secondary btn-sm" onClick={()=>setViewNote(null)}>← Back</button>
+            {canEdit && <button className="btn btn-secondary btn-sm" onClick={e=>{openEdit(note,e);setViewNote(null);}}>✏ Edit</button>}
+            {canEdit && <button className="btn btn-danger btn-sm" onClick={e=>deleteNote(note.id,e)}>🗑</button>}
+            <div style={{ flex:1 }} />
+            <span style={{ fontSize:10, color:'var(--text-muted)', fontFamily:'DM Mono' }}>{wc} words · {cc} chars</span>
+            <Tag label={note.type==='personal'?'🔒 Personal':'🌐 Shared'} type={note.type==='personal'?'red':'green'} />
+          </div>
+          {/* Content */}
+          <div style={{ flex:1, overflowY:'auto', padding:'28px 40px' }}>
+            <h1 style={{ fontFamily:'Syne,sans-serif', fontSize:26, fontWeight:800,
+              color:'var(--text-primary)', marginBottom:12, letterSpacing:'-0.5px' }}>{note.title}</h1>
+            {note.tags && (
+              <div style={{ display:'flex', gap:6, flexWrap:'wrap', marginBottom:14 }}>
+                {note.tags.split(',').filter(Boolean).map(t=><Tag key={t} label={t.trim()} type="purple" />)}
+              </div>
+            )}
+            {author && (
+              <div style={{ fontSize:12, color:'var(--text-muted)', marginBottom:20, display:'flex', gap:12 }}>
+                <span>✍️ {author.name}</span>
+                <span>{note.updated ? `Updated ${note.updated}` : `Created ${note.created}`}</span>
+              </div>
+            )}
+            <div style={{ fontSize:14, lineHeight:1.9, color:'var(--text-secondary)',
+              fontFamily:'Georgia, serif' }}
+              dangerouslySetInnerHTML={{ __html: note.content||'' }} />
           </div>
         </div>
-        <div className="card">
-          <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 10 }}>{note.title}</div>
-          {note.tags && (
-            <div style={{ marginBottom: 12, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-              {note.tags.split(',').map(t => <Tag key={t} label={t.trim()} type="purple" />)}
-            </div>
-          )}
-          {author && note.type === 'shared' && (
-            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 14 }}>
-              ✍️ {author.name} · {note.updated ? `Updated ${note.updated}` : `Created ${note.created}`}
-            </div>
-          )}
-          <div style={{ fontSize: 14, lineHeight: 1.85, color: 'var(--text-secondary)' }}
-            dangerouslySetInnerHTML={{ __html: note.content || '' }} />
+        {/* Right panel: backlinks */}
+        <div style={{ width:220, borderLeft:'1px solid var(--border)', background:'var(--sidebar-bg)',
+          display:'flex', flexDirection:'column', overflow:'hidden', flexShrink:0 }}>
+          <div style={{ padding:'10px 12px', borderBottom:'1px solid var(--sidebar-border)',
+            fontSize:11, fontWeight:700, color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.5px' }}>
+            🔗 Backlinks ({bl.length})
+          </div>
+          <div style={{ flex:1, overflowY:'auto', padding:'8px' }}>
+            {bl.length===0
+              ? <div style={{ fontSize:11, color:'var(--text-muted)', padding:'8px 4px' }}>No backlinks yet</div>
+              : bl.map(b=>(
+                  <div key={b.id} onClick={()=>setViewNote(b.id)}
+                    style={{ fontSize:12, color:'var(--accent)', cursor:'pointer', padding:'5px 6px',
+                      borderRadius:5, marginBottom:2 }}
+                    onMouseEnter={e=>e.target.style.background='rgba(0,194,255,0.08)'}
+                    onMouseLeave={e=>e.target.style.background='transparent'}>
+                    {b.title}
+                  </div>
+                ))}
+          </div>
         </div>
       </div>
     );
   }
 
-  const TAB_STYLE = (id) => ({
-    padding: '8px 20px', border: 'none', borderBottom: `2px solid ${activeTab === id ? 'var(--accent)' : 'transparent'}`,
-    background: 'transparent', color: activeTab === id ? 'var(--accent)' : 'var(--text-muted)',
-    fontWeight: activeTab === id ? 700 : 400, cursor: 'pointer', fontSize: 14, transition: 'all 0.15s'
-  });
-
-  const NoteCard = ({ note }) => {
-    const author  = users.find(u => u.id === note.engineerId);
-    const canEdit = note.engineerId === currentUser || isManager;
-    const preview = (note.content || '').replace(/<[^>]+>/g, '').slice(0, 120);
-    return (
-      <div className="card card-sm" onClick={() => setViewNote(note.id)} style={{ cursor: 'pointer', transition: 'border-color 0.15s' }}>
-        <div className="flex-between mb-8">
-          <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', flex: 1, paddingRight: 8 }}>
-            {note.type === 'shared' ? '🌐' : '🔒'} {note.title}
-          </div>
-          <div style={{ display: 'flex', gap: 4 }} onClick={e => e.stopPropagation()}>
-            {canEdit && <button className="btn btn-secondary btn-sm" onClick={e => openEdit(note, e)}>✏</button>}
-            {canEdit && <button className="btn btn-danger btn-sm" onClick={e => deleteNote(note.id, e)}>🗑</button>}
-          </div>
-        </div>
-        {note.tags && <div style={{ marginBottom: 6, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-          {note.tags.split(',').filter(Boolean).map(t => <Tag key={t} label={t.trim()} type="purple" />)}
-        </div>}
-        <div className="muted-xs" style={{ lineHeight: 1.5 }}>{preview}{preview.length >= 120 ? '…' : ''}</div>
-        <div style={{ marginTop: 8, display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-muted)' }}>
-          {note.type === 'shared' && author ? <span>✍️ {author.name}</span> : <span />}
-          <span>{note.updated || note.created}</span>
-        </div>
-      </div>
-    );
-  };
-
+  // ── Main list view ─────────────────────────────────────────────────────────
   return (
-    <div>
-      <PageHeader title="📝 Notes"
-        sub="Personal notes are private to you · Shared notes are visible to the whole team"
-        actions={<>
-          <button className="btn btn-secondary btn-sm" onClick={() => importRef.current?.click()}>📥 Import</button>
-          <button className="btn btn-secondary btn-sm" onClick={handleExport} disabled={filtered.length === 0}>📤 Export</button>
-          <button className="btn btn-primary" onClick={openAdd}>+ New Note</button>
-        </>} />
-      <input ref={importRef} type="file" multiple accept=".md,.txt" onChange={handleImport} style={{ display: 'none' }} />
+    <div style={{ display:'flex', gap:0, height:'calc(100vh - 160px)', minHeight:500,
+      border:'1px solid var(--border)', borderRadius:12, overflow:'hidden', background:'var(--bg-card)' }}>
+      <input ref={importRef} type="file" multiple accept=".md,.txt" onChange={handleImport} style={{ display:'none' }} />
 
-      {/* Tab bar */}
-      <div style={{ display: 'flex', borderBottom: '1px solid var(--border)', marginBottom: 16 }}>
-        <button style={TAB_STYLE('personal')} onClick={() => setActiveTab('personal')}>
-          🔒 Personal ({personalNotes.length})
-        </button>
-        <button style={TAB_STYLE('shared')} onClick={() => setActiveTab('shared')}>
-          🌐 Shared ({sharedNotes.length})
-        </button>
+      {/* ── Left sidebar ──────────────────────────────────────────────────── */}
+      <div style={{ width:220, borderRight:'1px solid var(--sidebar-border)', background:'var(--sidebar-bg)',
+        display:'flex', flexDirection:'column', overflow:'hidden', flexShrink:0 }}>
+
+        {/* Vault header */}
+        <div style={{ padding:'12px 12px 8px', borderBottom:'1px solid var(--sidebar-border)' }}>
+          <div style={{ fontFamily:'Syne,sans-serif', fontWeight:800, fontSize:13,
+            color:'var(--text-primary)', letterSpacing:'-0.2px', marginBottom:6 }}>📓 CloudOps Vault</div>
+          <input className="input" placeholder="🔍 Search…" value={search}
+            onChange={e=>setSearch(e.target.value)}
+            style={{ fontSize:11, padding:'4px 8px', background:'rgba(255,255,255,0.05)' }} />
+        </div>
+
+        {/* Sidebar tabs */}
+        <div style={{ display:'flex', borderBottom:'1px solid var(--sidebar-border)' }}>
+          {[['files','📄'],['tags','🏷'],['backlinks','🔗']].map(([id,icon])=>(
+            <button key={id} onClick={()=>setSidebarTab(id)}
+              style={{ flex:1, padding:'6px 0', background:'transparent', border:'none', cursor:'pointer',
+                fontSize:14, color:sidebarTab===id ? 'var(--accent)' : 'var(--text-muted)',
+                borderBottom:`2px solid ${sidebarTab===id ? 'var(--accent)' : 'transparent'}` }}>
+              {icon}
+            </button>
+          ))}
+        </div>
+
+        {/* Sidebar content */}
+        <div style={{ flex:1, overflowY:'auto', padding:'6px' }}>
+          {sidebarTab==='files' && (
+            <>
+              {/* Personal folder */}
+              <div style={{ fontSize:10, fontWeight:700, color:'var(--text-muted)', textTransform:'uppercase',
+                letterSpacing:'0.5px', padding:'8px 6px 4px', display:'flex', justifyContent:'space-between' }}>
+                <span>🔒 Personal ({personalNotes.length})</span>
+              </div>
+              {personalNotes.filter(n=>!search||(n.title||'').toLowerCase().includes(search.toLowerCase())).map(n=>(
+                <div key={n.id} onClick={()=>setViewNote(n.id)}
+                  style={{ fontSize:12, padding:'4px 8px', borderRadius:5, cursor:'pointer',
+                    color: viewNote===n.id ? 'var(--accent)' : 'var(--nav-text)',
+                    background: viewNote===n.id ? 'var(--nav-active-bg)' : 'transparent',
+                    overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', marginBottom:1 }}>
+                  📄 {n.title}
+                </div>
+              ))}
+              <div style={{ fontSize:10, fontWeight:700, color:'var(--text-muted)', textTransform:'uppercase',
+                letterSpacing:'0.5px', padding:'10px 6px 4px' }}>
+                🌐 Shared ({sharedNotes.length})
+              </div>
+              {sharedNotes.filter(n=>!search||(n.title||'').toLowerCase().includes(search.toLowerCase())).map(n=>(
+                <div key={n.id} onClick={()=>setViewNote(n.id)}
+                  style={{ fontSize:12, padding:'4px 8px', borderRadius:5, cursor:'pointer',
+                    color: viewNote===n.id ? 'var(--accent)' : 'var(--nav-text)',
+                    background: viewNote===n.id ? 'var(--nav-active-bg)' : 'transparent',
+                    overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', marginBottom:1 }}>
+                  📄 {n.title}
+                </div>
+              ))}
+            </>
+          )}
+          {sidebarTab==='tags' && (
+            <>
+              <div style={{ fontSize:10, fontWeight:700, color:'var(--text-muted)', textTransform:'uppercase',
+                letterSpacing:'0.5px', padding:'8px 6px 6px' }}>All Tags</div>
+              {allTags.length===0
+                ? <div style={{ fontSize:11, color:'var(--text-muted)', padding:'4px 8px' }}>No tags yet</div>
+                : allTags.map(tag=>{
+                    const count = obsidianNotes.filter(n=>(n.tags||'').split(',').map(t=>t.trim()).includes(tag)).length;
+                    return (
+                      <div key={tag} onClick={()=>setTagFilter(tagFilter===tag ? '' : tag)}
+                        style={{ display:'flex', justifyContent:'space-between', alignItems:'center',
+                          fontSize:12, padding:'4px 8px', borderRadius:5, cursor:'pointer', marginBottom:1,
+                          background: tagFilter===tag ? 'var(--nav-active-bg)' : 'transparent',
+                          color: tagFilter===tag ? 'var(--accent)' : 'var(--nav-text)' }}>
+                        <span>🏷 {tag}</span>
+                        <span style={{ fontSize:10, fontFamily:'DM Mono', color:'var(--text-muted)' }}>{count}</span>
+                      </div>
+                    );
+                  })}
+            </>
+          )}
+          {sidebarTab==='backlinks' && (
+            <div style={{ fontSize:11, color:'var(--text-muted)', padding:'8px 8px' }}>
+              Open a note to see its backlinks
+            </div>
+          )}
+        </div>
+
+        {/* Sidebar footer stats */}
+        <div style={{ padding:'8px 10px', borderTop:'1px solid var(--sidebar-border)',
+          fontSize:10, color:'var(--text-muted)', fontFamily:'DM Mono' }}>
+          {obsidianNotes.length} notes · {allTags.length} tags
+        </div>
       </div>
 
-      {/* Tab description */}
-      <Alert type="info" style={{ marginBottom: 16 }}>
-        {activeTab === 'personal'
-          ? '🔒 Personal notes are only visible to you. Nobody else can see these, not even the manager.'
-          : '🌐 Shared notes are visible to everyone on the team including the manager. Anyone can add a shared note.'}
-      </Alert>
+      {/* ── Main content area ─────────────────────────────────────────────── */}
+      <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden' }}>
 
-      {/* Search */}
-      <input className="input" placeholder="🔍 Search notes…" value={search}
-        onChange={e => setSearch(e.target.value)} style={{ marginBottom: 16, width: '100%' }} />
+        {/* Toolbar */}
+        <div style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 14px',
+          borderBottom:'1px solid var(--border)', background:'var(--bg-card2)', flexShrink:0, flexWrap:'wrap' }}>
 
-      {/* Notes grid */}
-      {filtered.length === 0
-        ? <div className="card" style={{ padding: 32, textAlign: 'center', color: 'var(--text-muted)' }}>
-            No {activeTab} notes yet. Click <strong>+ New Note</strong> to create one.
+          {/* Tab bar */}
+          <div style={{ display:'flex', gap:0 }}>
+            {[['personal','🔒 Personal'],['shared','🌐 Shared']].map(([id,label])=>(
+              <button key={id} onClick={()=>{ setActiveTab(id); setTagFilter(''); }}
+                style={{ padding:'5px 14px', border:'none', cursor:'pointer', fontSize:12, fontWeight:500,
+                  background: activeTab===id ? 'var(--bg-card)' : 'transparent',
+                  color: activeTab===id ? 'var(--accent)' : 'var(--text-muted)',
+                  borderBottom:`2px solid ${activeTab===id ? 'var(--accent)' : 'transparent'}` }}>
+                {label} ({(id==='personal'?personalNotes:sharedNotes).length})
+              </button>
+            ))}
           </div>
-        : <div className="grid-2">
-            {filtered.map(note => <NoteCard key={note.id} note={note} />)}
-          </div>
-      }
+          <div style={{ flex:1 }} />
+          {tagFilter && (
+            <div style={{ display:'flex', alignItems:'center', gap:4, fontSize:11,
+              background:'rgba(168,85,247,0.1)', border:'1px solid rgba(168,85,247,0.3)',
+              borderRadius:5, padding:'2px 8px', color:'#d8b4fe' }}>
+              🏷 {tagFilter}
+              <button onClick={()=>setTagFilter('')} style={{ background:'transparent', border:'none',
+                cursor:'pointer', color:'#d8b4fe', fontSize:13, lineHeight:1 }}>✕</button>
+            </div>
+          )}
+          <button className="btn btn-secondary btn-sm" onClick={()=>importRef.current?.click()}>📥 Import .md</button>
+          <button className="btn btn-secondary btn-sm" onClick={handleExport} disabled={filtered.length===0}>📤 Export</button>
+          <button className="btn btn-primary" onClick={openAdd}>+ New Note</button>
+        </div>
 
-      {/* New / Edit modal */}
+        {/* Notes grid */}
+        <div style={{ flex:1, overflowY:'auto', padding:'16px' }}>
+          {filtered.length===0 ? (
+            <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center',
+              height:'100%', color:'var(--text-muted)', textAlign:'center', gap:12 }}>
+              <div style={{ fontSize:48 }}>📓</div>
+              <div style={{ fontFamily:'Syne,sans-serif', fontWeight:700, fontSize:16 }}>
+                {search || tagFilter ? 'No notes match your filter' : `No ${activeTab} notes yet`}
+              </div>
+              {!search && !tagFilter && <button className="btn btn-primary" onClick={openAdd}>+ Create your first note</button>}
+            </div>
+          ) : (
+            <div className="grid-2">
+              {filtered.map(note => {
+                const author  = users.find(u=>u.id===note.engineerId);
+                const canEdit = note.engineerId===currentUser || isManager;
+                const preview = (note.content||'').replace(/<[^>]+>/g,'').slice(0,100);
+                const wc = wordCount(note.content);
+                return (
+                  <div key={note.id} className="card card-sm" onClick={()=>setViewNote(note.id)}
+                    style={{ cursor:'pointer' }}>
+                    <div className="flex-between mb-8">
+                      <div style={{ fontSize:14, fontWeight:600, color:'var(--text-primary)', flex:1, paddingRight:8,
+                        overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                        📄 {note.title}
+                      </div>
+                      <div style={{ display:'flex', gap:4, flexShrink:0 }} onClick={e=>e.stopPropagation()}>
+                        {canEdit && <button className="btn btn-secondary btn-sm" onClick={e=>openEdit(note,e)}>✏</button>}
+                        {canEdit && <button className="btn btn-danger btn-sm" onClick={e=>deleteNote(note.id,e)}>🗑</button>}
+                      </div>
+                    </div>
+                    {note.tags && (
+                      <div style={{ display:'flex', gap:4, flexWrap:'wrap', marginBottom:6 }}>
+                        {note.tags.split(',').filter(Boolean).map(t=>(
+                          <span key={t} onClick={e=>{e.stopPropagation();setTagFilter(t.trim());}}
+                            className="tag tag-purple" style={{ cursor:'pointer' }}>
+                            {t.trim()}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    <div className="muted-xs" style={{ lineHeight:1.5 }}>{preview}{preview.length>=100?'…':''}</div>
+                    <div style={{ marginTop:8, display:'flex', justifyContent:'space-between',
+                      fontSize:10, color:'var(--text-muted)', fontFamily:'DM Mono' }}>
+                      <span>{note.type==='shared' && author ? `✍️ ${author.name.split(' ')[0]}` : ''}</span>
+                      <span>{wc}w · {note.updated||note.created}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── New / Edit modal ──────────────────────────────────────────────── */}
       {showModal && (
-        <Modal title={editId ? 'Edit Note' : 'New Note'} onClose={() => setShowModal(false)} wide>
+        <Modal title={editId ? '✏ Edit Note' : '📄 New Note'} onClose={()=>setShowModal(false)} wide>
           <FormGroup label="Title">
-            <input className="input" value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} placeholder="Note title…" autoFocus />
+            <input className="input" value={form.title} onChange={e=>setForm({...form,title:e.target.value})}
+              placeholder="Note title…" autoFocus />
           </FormGroup>
-          <FormGroup label="Note Type">
-            <div style={{ display: 'flex', gap: 8 }}>
-              {[
-                { val: 'personal', label: '🔒 Personal', sub: 'Only you can see this' },
-                { val: 'shared',   label: '🌐 Shared',   sub: 'Whole team can see this' }
-              ].map(opt => (
-                <div key={opt.val} onClick={() => setForm({ ...form, type: opt.val })}
-                  style={{
-                    flex: 1, padding: '10px 14px', borderRadius: 8, cursor: 'pointer',
-                    border: `2px solid ${form.type === opt.val ? 'var(--accent)' : 'var(--border)'}`,
-                    background: form.type === opt.val ? 'rgba(59,130,246,0.1)' : 'var(--bg-card2)'
-                  }}>
-                  <div style={{ fontWeight: 600, fontSize: 13, color: form.type === opt.val ? 'var(--accent)' : 'var(--text-primary)' }}>{opt.label}</div>
-                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{opt.sub}</div>
+          <FormGroup label="Visibility">
+            <div style={{ display:'flex', gap:8 }}>
+              {[{val:'personal',label:'🔒 Personal',sub:'Only you'},{val:'shared',label:'🌐 Shared',sub:'Whole team'}].map(opt=>(
+                <div key={opt.val} onClick={()=>setForm({...form,type:opt.val})}
+                  style={{ flex:1, padding:'10px 14px', borderRadius:8, cursor:'pointer',
+                    border:`2px solid ${form.type===opt.val?'var(--accent)':'var(--border)'}`,
+                    background:form.type===opt.val?'rgba(0,194,255,0.07)':'var(--bg-card2)' }}>
+                  <div style={{ fontWeight:600, fontSize:13, color:form.type===opt.val?'var(--accent)':'var(--text-primary)' }}>{opt.label}</div>
+                  <div style={{ fontSize:11, color:'var(--text-muted)', marginTop:2 }}>{opt.sub}</div>
                 </div>
               ))}
             </div>
           </FormGroup>
-          <FormGroup label="Tags" hint="comma separated">
-            <input className="input" placeholder="e.g. important, runbook, learning" value={form.tags} onChange={e => setForm({ ...form, tags: e.target.value })} />
+          <FormGroup label="Tags" hint="comma-separated — click tags in sidebar to filter">
+            <input className="input" placeholder="e.g. runbook, incident, learning"
+              value={form.tags} onChange={e=>setForm({...form,tags:e.target.value})} />
           </FormGroup>
           <FormGroup label="Content">
-            <RichEditor value={form.content} onChange={v => setForm(f => ({ ...f, content: v }))} placeholder="Write your note…" rows={10} />
+            <RichEditor value={form.content} onChange={v=>setForm(f=>({...f,content:v}))}
+              placeholder="Start writing… supports **bold**, *italic*, headings, tables, links" rows={14} />
           </FormGroup>
-          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
-            <button className="btn btn-secondary" onClick={() => setShowModal(false)}>Cancel</button>
-            <button className="btn btn-primary" onClick={save} disabled={!form.title}>{editId ? 'Update Note' : 'Save Note'}</button>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginTop:12 }}>
+            <span style={{ fontSize:11, color:'var(--text-muted)', fontFamily:'DM Mono' }}>
+              {wordCount(form.content)} words · {charCount(form.content)} chars
+            </span>
+            <div style={{ display:'flex', gap:8 }}>
+              <button className="btn btn-secondary" onClick={()=>setShowModal(false)}>Cancel</button>
+              <button className="btn btn-primary" onClick={save} disabled={!form.title}>
+                {editId ? 'Update Note' : 'Save Note'}
+              </button>
+            </div>
           </div>
         </Modal>
       )}
@@ -5842,8 +6127,6 @@ function WeeklyReports({ users, incidents, timesheets, holidays, isManager }) {
 
 // ── Payroll (Manager only) ─────────────────────────────────────────────────
 function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, rota, holidays, isManager, overtime: overtimeArr, driveToken }) {
-  if (!isManager) return <Alert type="warning">⚠ Payroll is restricted to managers.</Alert>;
-
   const [showExport, setShowExport] = React.useState(false);
   const [exportStart, setExportStart] = React.useState('');
   const [exportEnd,   setExportEnd]   = React.useState('');
@@ -5858,14 +6141,14 @@ function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, rota
   const safePay       = payconfig || {};
   const safeToil      = Array.isArray(toil) ? toil : Object.values(toil || {});
   const safeUpgrades  = upgrades  || [];
-  const safeOT        = overtimeArr || [];
+  const safeOT        = Array.isArray(overtimeArr) ? overtimeArr : [];
   const safeRota      = rota      || {};
-  const safeHolidays  = holidays  || [];
+  const safeHolidays  = Array.isArray(holidays) ? holidays : [];
   const bhList        = (typeof UK_BANK_HOLIDAYS !== 'undefined') ? UK_BANK_HOLIDAYS : [];
 
-  // Load export logs from Drive on mount
+  // Load export logs from Drive on mount — MUST be before early return
   React.useEffect(() => {
-    if (!driveToken) return;
+    if (!driveToken || !isManager) return;
     (async () => {
       try {
         const folderId = await driveGetOrCreateSubfolder(driveToken, 'CloudOps-Payroll-Exports');
@@ -5876,7 +6159,10 @@ function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, rota
         }
       } catch(e) { console.warn('Payroll: could not load export log', e); }
     })();
-  }, [driveToken]); // eslint-disable-line
+  }, [driveToken, isManager]); // eslint-disable-line
+
+  // Guard AFTER all hooks
+  if (!isManager) return <Alert type="warning">⚠ Payroll is restricted to managers.</Alert>;
 
   // ── Per-user helpers ──────────────────────────────────────────────────────
   const getUserData = (u, startDs, endDs) => {
@@ -6741,7 +7027,7 @@ function PayConfig({ users, payconfig, setPayconfig, isManager, timesheets, over
 
 
 // ── Settings (Manager only, all settings here) ─────────────────────────────
-function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks, driveToken, profilePics, setProfilePicsState, rota, setRota }) {
+function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks, driveToken, profilePics, setProfilePicsState, rota, setRota, permissions, setPermissions }) {
   const BLANK_FORM = { name: '', trigram: '', role: 'Engineer', mobile_number: '', google_email: '', profile_picture: '', avatar: '', color: '' };
   const [showAdd, setShowAdd]         = useState(false);
   const [showLink, setShowLink]       = useState(false);
@@ -6753,8 +7039,74 @@ function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks, dri
   const [sheetSyncing, setSheetSyncing] = useState(false);
   const [sheetMsg, setSheetMsg]       = useState('');
   const [resetPwUid, setResetPwUid]   = useState('');
+  const [settingsTab, setSettingsTab] = useState('team');  // 'team' | 'permissions' | 'drive'
   const picInputRef = useRef(null);
   const addPicInputRef = useRef(null);
+
+  // ── All pages/features that can have per-engineer permissions ────────────
+  const ALL_PAGES = [
+    { id:'dashboard',  label:'Dashboard'       },
+    { id:'whocall',    label:'Who\'s On Call'  },
+    { id:'myshift',    label:'My Shift'        },
+    { id:'calendar',   label:'Calendar'        },
+    { id:'rota',       label:'Rota'            },
+    { id:'incidents',  label:'Incidents'       },
+    { id:'timesheets', label:'Timesheets'      },
+    { id:'holidays',   label:'Holidays'        },
+    { id:'swaps',      label:'Shift Swaps'     },
+    { id:'upgrades',   label:'Upgrade Days'    },
+    { id:'stress',     label:'Stress Score'    },
+    { id:'toil',       label:'TOIL'            },
+    { id:'absences',   label:'Absence / Sick'  },
+    { id:'overtime',   label:'Overtime'        },
+    { id:'logbook',    label:'Logbook'         },
+    { id:'wiki',       label:'Wiki'            },
+    { id:'glossary',   label:'Glossary'        },
+    { id:'contacts',   label:'Contacts'        },
+    { id:'notes',      label:'Notes'           },
+    { id:'documents',  label:'Documents'       },
+    { id:'chat',       label:'Team Chat'       },
+    { id:'whatsapp',   label:'WhatsApp Chat'   },
+    { id:'reports',    label:'Reports'         },
+    { id:'payroll',    label:'Payroll'         },
+    { id:'payconfig',  label:'Pay Config'      },
+  ];
+
+  // Default template: engineers get all non-manager pages
+  const MANAGER_ONLY = new Set(['stress','payroll','payconfig']);
+  const defaultPerms = (role) => {
+    const p = {};
+    ALL_PAGES.forEach(pg => {
+      p[pg.id] = role === 'Manager' ? true : !MANAGER_ONLY.has(pg.id);
+    });
+    return p;
+  };
+
+  const safePerms = permissions || {};
+  const getPerms = (uid) => safePerms[uid] || defaultPerms(users.find(u=>u.id===uid)?.role || 'Engineer');
+  const setUserPerm = (uid, pageId, val) => {
+    const updated = { ...safePerms, [uid]: { ...getPerms(uid), [pageId]: val } };
+    setPermissions(updated);
+    if (driveToken) driveWriteJson(driveToken, 'permissions.json', updated).catch(()=>{});
+  };
+  const setAllPerms = (uid, val) => {
+    const p = {}; ALL_PAGES.forEach(pg => { p[pg.id] = val; });
+    const updated = { ...safePerms, [uid]: p };
+    setPermissions(updated);
+    if (driveToken) driveWriteJson(driveToken, 'permissions.json', updated).catch(()=>{});
+  };
+  const applyTemplate = (uid) => {
+    const role = users.find(u=>u.id===uid)?.role || 'Engineer';
+    const updated = { ...safePerms, [uid]: defaultPerms(role) };
+    setPermissions(updated);
+    if (driveToken) driveWriteJson(driveToken, 'permissions.json', updated).catch(()=>{});
+  };
+  const applyTemplateAll = () => {
+    const updated = {};
+    users.forEach(u => { updated[u.id] = defaultPerms(u.role || 'Engineer'); });
+    setPermissions(updated);
+    if (driveToken) driveWriteJson(driveToken, 'permissions.json', updated).catch(()=>{});
+  };
 
   if (!isManager) return <Alert type="warning">⚠ Settings are restricted to managers.</Alert>;
 
@@ -6989,7 +7341,16 @@ function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks, dri
           <button className="btn btn-primary" onClick={() => { setForm(BLANK_FORM); setShowAdd(true); }}>+ Add Engineer</button>
         </div>} />
 
-      {/* Google Drive & Sheet Panel */}
+      {/* Settings tab bar */}
+      <div className="tab-bar mb-16">
+        {[['team','👥 Team'],['permissions','🔐 Permissions'],['drive','📁 Drive & Registry']].map(([id,label])=>(
+          <button key={id} className={`btn ${settingsTab===id?'btn-primary':'btn-secondary'}`}
+            onClick={()=>setSettingsTab(id)}>{label}</button>
+        ))}
+      </div>
+
+      {/* ── Drive tab ─────────────────────────────────────────────────── */}
+      {settingsTab==='drive' && (<>
       <div className="card mb-16">
         <div className="card-title">📁 Google Drive &amp; User Registry</div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', marginBottom: 10 }}>
@@ -7006,7 +7367,10 @@ function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks, dri
         {pushMsg && <Alert type={pushMsg.startsWith('✅') ? 'info' : 'warning'} style={{ marginTop: 8 }}>{pushMsg}</Alert>}
       </div>
 
-      {/* Team Members */}
+      </>)}
+
+      {/* ── Team Members tab ──────────────────────────────────────────── */}
+      {settingsTab==='team' && (<>
       <div className="card mb-16">
         <div className="card-title">Team Members ({users.length} total)</div>
         {users.map(u => {
@@ -7092,6 +7456,107 @@ function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks, dri
           </div>
         </Modal>
       )}
+      </>)}
+
+      {/* ── Permissions tab ───────────────────────────────────────────── */}
+      {settingsTab==='permissions' && (<>
+        <div className="flex-between mb-12">
+          <div>
+            <div style={{ fontSize:14, fontWeight:700, color:'var(--text-primary)' }}>🔐 Page &amp; Feature Permissions</div>
+            <div style={{ fontSize:12, color:'var(--text-muted)', marginTop:2 }}>Control which pages each engineer can access. Managers always have full access.</div>
+          </div>
+          <div style={{ display:'flex', gap:8 }}>
+            <button className="btn btn-secondary btn-sm" onClick={applyTemplateAll}>
+              🔄 Reset All to Role Defaults
+            </button>
+          </div>
+        </div>
+
+        {/* New Engineer Template card */}
+        <div className="card mb-16" style={{ border:'2px dashed rgba(0,194,255,0.3)', background:'rgba(0,194,255,0.03)' }}>
+          <div className="flex-between mb-12">
+            <div>
+              <div style={{ fontWeight:700, fontSize:13, color:'var(--accent)' }}>📋 New Engineer Template</div>
+              <div style={{ fontSize:11, color:'var(--text-muted)', marginTop:2 }}>Default permissions applied when a new engineer is added. Toggle to customise what new starters can see.</div>
+            </div>
+          </div>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(170px,1fr))', gap:6 }}>
+            {ALL_PAGES.map(pg => {
+              const defaultVal = !MANAGER_ONLY.has(pg.id);
+              return (
+                <label key={pg.id} style={{ display:'flex', alignItems:'center', gap:7, padding:'5px 8px',
+                  borderRadius:6, cursor:'pointer', background:'var(--bg-card2)',
+                  border:'1px solid var(--border)', fontSize:12 }}>
+                  <input type="checkbox" defaultChecked={defaultVal} style={{ accentColor:'var(--accent)' }} readOnly />
+                  <span style={{ color: defaultVal ? 'var(--text-primary)' : 'var(--text-muted)' }}>{pg.label}</span>
+                  {MANAGER_ONLY.has(pg.id) && <span style={{ fontSize:9, color:'#f59e0b' }}>mgr</span>}
+                </label>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Per-engineer permission grid */}
+        {users.map(u => {
+          const perms = getPerms(u.id);
+          const enabledCount = ALL_PAGES.filter(pg => perms[pg.id]).length;
+          const isAllOn  = enabledCount === ALL_PAGES.length;
+          const isAllOff = enabledCount === 0;
+          return (
+            <div key={u.id} className="card mb-12">
+              <div className="flex-between mb-12">
+                <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+                  <Avatar user={u} size={36} />
+                  <div>
+                    <div style={{ fontWeight:700, fontSize:14 }}>{u.name}</div>
+                    <div style={{ fontSize:11, color:'var(--text-muted)', fontFamily:'DM Mono' }}>
+                      {u.id} · {u.role || 'Engineer'} · {enabledCount}/{ALL_PAGES.length} pages enabled
+                    </div>
+                  </div>
+                </div>
+                <div style={{ display:'flex', gap:6 }}>
+                  <button className="btn btn-secondary btn-sm" onClick={()=>setAllPerms(u.id, true)}
+                    disabled={isAllOn} style={{ fontSize:11 }}>All On</button>
+                  <button className="btn btn-secondary btn-sm" onClick={()=>setAllPerms(u.id, false)}
+                    disabled={isAllOff} style={{ fontSize:11 }}>All Off</button>
+                  <button className="btn btn-secondary btn-sm" onClick={()=>applyTemplate(u.id)}
+                    style={{ fontSize:11 }}>↺ Default</button>
+                </div>
+              </div>
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(170px,1fr))', gap:5 }}>
+                {ALL_PAGES.map(pg => {
+                  const enabled = perms[pg.id] !== false;
+                  const isManagerPage = MANAGER_ONLY.has(pg.id);
+                  return (
+                    <label key={pg.id} onClick={()=>setUserPerm(u.id, pg.id, !enabled)}
+                      style={{ display:'flex', alignItems:'center', gap:7, padding:'5px 8px',
+                        borderRadius:6, cursor:'pointer',
+                        background: enabled ? 'rgba(0,194,255,0.06)' : 'var(--bg-card2)',
+                        border:`1px solid ${enabled ? 'rgba(0,194,255,0.2)' : 'var(--border)'}`,
+                        fontSize:12, transition:'all 0.12s', userSelect:'none' }}>
+                      <div style={{ width:14, height:14, borderRadius:4, flexShrink:0, border:'1.5px solid',
+                        borderColor: enabled ? 'var(--accent)' : 'var(--border)',
+                        background: enabled ? 'var(--accent)' : 'transparent',
+                        display:'flex', alignItems:'center', justifyContent:'center' }}>
+                        {enabled && <span style={{ fontSize:9, color:'#000', fontWeight:800, lineHeight:1 }}>✓</span>}
+                      </div>
+                      <span style={{ color: enabled ? 'var(--text-primary)' : 'var(--text-muted)', flex:1 }}>{pg.label}</span>
+                      {isManagerPage && <span style={{ fontSize:9, color:'#f59e0b', flexShrink:0 }}>mgr</span>}
+                    </label>
+                  );
+                })}
+              </div>
+              {/* Progress bar showing coverage */}
+              <div style={{ marginTop:10 }}>
+                <div className="progress-bar" style={{ height:3 }}>
+                  <div className="progress-fill" style={{ width:`${(enabledCount/ALL_PAGES.length)*100}%` }} />
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </>)}
+
       {showLink && (
         <Modal title="Create Secure Share Link" onClose={() => setShowLink(false)}>
           <FormGroup label="Label"><input className="input" placeholder="e.g. External Rota View" value={linkForm.label} onChange={e => setLinkForm({ ...linkForm, label: e.target.value })} /></FormGroup>
@@ -7223,6 +7688,7 @@ export default function App() {
   const [obsidianNotes, setObsidianNotes] = useState([]);
   const [whatsappChats, setWhatsappChats] = useState([]);
   const [secureLinks, setSecureLinks] = useState([]);
+  const [permissions, setPermissions] = useState({});
 
   const isManager = currentUser === 'MBA47';
   const [connectingDrive, setConnectingDrive] = useState(false);
@@ -7365,6 +7831,7 @@ export default function App() {
       if (data.documents    != null) setDocuments(data.documents);
       if (data.obsidianNotes   != null) setObsidianNotes(data.obsidianNotes);
       if (data.whatsappChats   != null) setWhatsappChats(data.whatsappChats);
+      if (data.permissions     != null) setPermissions(data.permissions);
 
       setLastSync(new Date());
       driveDataLoaded.current = true;
@@ -7475,6 +7942,7 @@ export default function App() {
   useEffect(() => { save('documents', documents); },       [documents]);
   useEffect(() => { save('obsidianNotes', obsidianNotes); },[obsidianNotes]);
   useEffect(() => { save('whatsappChats', whatsappChats); },[whatsappChats]);
+  useEffect(() => { save('permissions',   permissions);   },[permissions]);
 
   const [manualSyncing, setManualSyncing] = useState(false);
   const [syncProgress, setSyncProgress]   = useState(0);
@@ -7548,10 +8016,10 @@ export default function App() {
 
     const allKeys = ['users','holidays','incidents','timesheets','upgrades','wiki','glossary',
                      'contacts','payconfig','rota','swapRequests','toil','absences','overtime',
-                     'logbook','documents','obsidianNotes','whatsappChats'];
+                     'logbook','documents','obsidianNotes','whatsappChats','permissions'];
     const vals = { users, holidays, incidents, timesheets, upgrades, wiki, glossary,
                    contacts, payconfig, rota, swapRequests, toil, absences, overtime,
-                   logbook, documents, obsidianNotes, whatsappChats };
+                   logbook, documents, obsidianNotes, whatsappChats, permissions };
 
     // Engineers only touch shared + their own engineer-owned keys
     // Managers sync everything
@@ -7651,6 +8119,7 @@ export default function App() {
         if (data.documents != null) setDocuments(data.documents);
         if (data.obsidianNotes != null) setObsidianNotes(data.obsidianNotes);
         if (data.whatsappChats != null) setWhatsappChats(data.whatsappChats);
+        if (data.permissions   != null) setPermissions(data.permissions);
         setLastSync(new Date());
         // Mark data loaded BEFORE setting token so saves don't fire with stale state
         driveDataLoaded.current = true;
@@ -7824,6 +8293,7 @@ export default function App() {
     obsidianNotes, setObsidianNotes,
     whatsappChats, setWhatsappChats,
     secureLinks, setSecureLinks,
+    permissions, setPermissions,
     driveToken,
     searchQ,
     isManager,
@@ -7841,7 +8311,7 @@ export default function App() {
       case 'incidents':  return <Incidents {...props} timesheets={timesheets} setTimesheets={setTimesheets} />;
       case 'timesheets': return <Timesheets {...props} />;
       case 'holidays':   return <Holidays {...props} />;
-      case 'swaps':      return <ShiftSwaps {...props} />;
+      case 'swaps':      return <ShiftSwaps {...props} driveToken={driveToken} />;
       case 'upgrades':   return <UpgradeDays {...props} timesheets={timesheets} setTimesheets={setTimesheets} />;
       case 'stress':     return <StressScore {...props} overtime={overtime} holidays={holidays} />;
       case 'toil':       return <TOIL {...props} />;
@@ -7859,7 +8329,7 @@ export default function App() {
       case 'reports':    return <WeeklyReports {...props} />;
       case 'payroll':    return <Payroll {...props} incidents={incidents} upgrades={upgrades} rota={rota} overtime={overtime} driveToken={driveToken} />;
       case 'payconfig':  return <PayConfig {...props} timesheets={timesheets} overtime={overtime} rota={rota} holidays={holidays} />;
-      case 'settings':   return <Settings {...props} />;
+      case 'settings':   return <Settings {...props} permissions={permissions} setPermissions={setPermissions} />;
       case 'myaccount':  return <MyAccount currentUser={currentUser} users={users} setUsers={setUsers} driveToken={driveToken} profilePics={profilePics} setProfilePicsState={setProfilePicsState} />;
       default: return <p className="muted-sm">Page coming soon</p>;
     }
@@ -8059,6 +8529,7 @@ export default function App() {
                       if (has(data.documents))     setDocuments(data.documents);
                       if (has(data.obsidianNotes)) setObsidianNotes(data.obsidianNotes);
                       if (has(data.whatsappChats)) setWhatsappChats(data.whatsappChats);
+                      if (has(data.permissions))   setPermissions(data.permissions);
                       setLastSync(new Date());
                     } catch(e) { console.warn('Refresh failed:', e); }
                     finally { setSyncing(false); }
