@@ -1,6 +1,6 @@
 // src/App.js
 // CloudOps Rota — Full Production Build v2
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 22nd April 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 23rd April 2026
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
@@ -61,12 +61,56 @@ function updatePasswordInRegistry(uid, newPw) {
 }
 
 // ── Drive API helpers ──────────────────────────────────────────────────────
-async function driveFindFile(token, name) {
+const APP_FOLDER_NAME = 'CloudOps-Rota';
+let _appFolderIdCache = null;
+
+async function getAppFolderId(token) {
+  if (_appFolderIdCache) return _appFolderIdCache;
+  const q = encodeURIComponent(`name='${APP_FOLDER_NAME}' and mimeType='application/vnd.google-apps.folder' and trashed=false`);
   const resp = await fetch(
-    `https://www.googleapis.com/drive/v3/files?q=name%3D'${encodeURIComponent(name)}'+and+trashed%3Dfalse&spaces=drive&fields=files(id,name)`,
+    `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  ).then(r => r.json());
+  if (resp.files && resp.files.length > 0) {
+    _appFolderIdCache = resp.files[0].id;
+    return _appFolderIdCache;
+  }
+  return null; // folder created by useGoogleDrive on first driveWrite
+}
+
+// Find a file by name, searching inside the app folder first (then root fallback)
+async function driveFindFile(token, name, parentId) {
+  const pid = parentId || await getAppFolderId(token);
+  const q = pid
+    ? encodeURIComponent(`name='${name}' and '${pid}' in parents and trashed=false`)
+    : encodeURIComponent(`name='${name}' and trashed=false`);
+  const resp = await fetch(
+    `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`,
     { headers: { Authorization: `Bearer ${token}` } }
   ).then(r => r.json());
   return resp.files && resp.files.length > 0 ? resp.files[0] : null;
+}
+
+// Find or create a subfolder inside the app folder
+async function driveGetOrCreateSubfolder(token, folderName) {
+  const parentId = await getAppFolderId(token);
+  const q = parentId
+    ? encodeURIComponent(`name='${folderName}' and mimeType='application/vnd.google-apps.folder' and '${parentId}' in parents and trashed=false`)
+    : encodeURIComponent(`name='${folderName}' and mimeType='application/vnd.google-apps.folder' and trashed=false`);
+  const searchResp = await fetch(
+    `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  ).then(r => r.json());
+  if (searchResp.files && searchResp.files.length > 0) return searchResp.files[0].id;
+  // Create it
+  const body = { name: folderName, mimeType: 'application/vnd.google-apps.folder' };
+  if (parentId) body.parents = [parentId];
+  const createResp = await fetch('https://www.googleapis.com/drive/v3/files', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(r => r.json());
+  return createResp.id;
 }
 
 async function driveReadJson(token, fileId) {
@@ -75,25 +119,28 @@ async function driveReadJson(token, fileId) {
   ).then(r => r.json());
 }
 
-async function driveWriteJson(token, name, data) {
+// Write a JSON file into the app folder (or a specific parent folder)
+async function driveWriteJson(token, name, data, parentId) {
   const body = JSON.stringify(data);
-  const existing = await driveFindFile(token, name);
+  const pid  = parentId || await getAppFolderId(token);
+  const existing = await driveFindFile(token, name, pid);
   if (existing) {
     return fetch(`https://www.googleapis.com/upload/drive/v3/files/${existing.id}?uploadType=media`, {
       method: 'PATCH',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body
+      body,
     }).then(r => r.json());
   }
-  const meta = await fetch('https://www.googleapis.com/drive/v3/files', {
+  const meta = { name, mimeType: 'application/json', ...(pid ? { parents: [pid] } : {}) };
+  const created = await fetch('https://www.googleapis.com/drive/v3/files', {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, mimeType: 'application/json' })
+    body: JSON.stringify(meta),
   }).then(r => r.json());
-  return fetch(`https://www.googleapis.com/upload/drive/v3/files/${meta.id}?uploadType=media`, {
+  return fetch(`https://www.googleapis.com/upload/drive/v3/files/${created.id}?uploadType=media`, {
     method: 'PATCH',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body
+    body,
   }).then(r => r.json());
 }
 
@@ -3001,42 +3048,105 @@ function UpgradeDays({ users, upgrades, setUpgrades, isManager, currentUser, tim
 
 
 // ── Stress Score (Manager only) ────────────────────────────────────────────
-function StressScore({ users, timesheets, incidents, isManager }) {
+function StressScore({ users, timesheets, incidents, holidays, overtime, isManager }) {
   if (!isManager) return <Alert type="warning">⚠ Stress Score is restricted to managers.</Alert>;
+
+  const safeInc = Array.isArray(incidents) ? incidents : [];
+  const safeHols = Array.isArray(holidays) ? holidays : [];
+  const safeOT  = Array.isArray(overtime)  ? overtime  : [];
+  const today   = new Date().toISOString().slice(0, 10);
+  // Rolling 90 days
+  const since90 = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
+
   const scores = users.map(u => {
     const sheets = timesheets[u.id] || [];
-    const wd  = sheets.reduce((a, b) => a + (b.weekday_oncall || 0), 0);
-    const we  = sheets.reduce((a, b) => a + (b.weekend_oncall || 0), 0);
-    const inc = incidents.filter(i => i.assigned_to === u.id).length;
-    const score = Math.min(100, Math.round((wd / 30 * 30) + (we / 20 * 40) + (inc * 5)));
-    return { user: u, wd, we, inc, score, level: score > 75 ? 'High' : score > 45 ? 'Medium' : 'Low' };
-  }).sort((a,b) => b.score - a.score);
+    // Rolling 90-day timesheet entries (use weekStart if available)
+    const recentSheets = sheets.filter(s => !s.weekStart || s.weekStart >= since90);
+    const wd  = recentSheets.reduce((a, b) => a + (b.weekday_oncall || 0), 0);
+    const we  = recentSheets.reduce((a, b) => a + (b.weekend_oncall || 0), 0);
+    // Incidents in last 90 days
+    const inc = safeInc.filter(i => i.assigned_to === u.id && (i.date || i.created_at || '') >= since90).length;
+    // Open (unresolved) incidents — higher weight
+    const openInc = safeInc.filter(i => i.assigned_to === u.id && i.status === 'Investigating').length;
+    // Pending OT requests (stress indicator — unpaid hours awaiting approval)
+    const pendingOT = safeOT.filter(o => o.userId === u.id && o.status === 'pending').length;
+    // Holiday deficit: if user has taken < 5 days in last 90 days → indicator
+    const holDays = safeHols.filter(h => h.userId === u.id && h.type === 'Annual Leave'
+      && (h.start || '') >= since90).reduce((a, h) =>
+        a + Math.ceil((new Date(h.end) - new Date(h.start)) / 86400000) + 1, 0);
+    const holScore = Math.max(0, 5 - holDays) * 4; // 0–20 pts for not taking leave
+
+    // Weighted score out of 100:
+    // WD on-call hrs (90d): max 40h → 25pts
+    // WE on-call hrs (90d): max 30h → 35pts
+    // Recent incidents:     max 8   → 20pts
+    // Open incidents:       max 3   → 15pts
+    // Pending OT:           max 5   → 5pts (extra)
+    const wdPts   = Math.min(25, (wd / 40) * 25);
+    const wePts   = Math.min(35, (we / 30) * 35);
+    const incPts  = Math.min(20, inc * 2.5);
+    const openPts = Math.min(15, openInc * 5);
+    const otPts   = Math.min(5, pendingOT);
+    const score   = Math.round(wdPts + wePts + incPts + openPts + otPts + holScore);
+    const capped  = Math.min(100, score);
+    const level   = capped >= 70 ? 'High' : capped >= 40 ? 'Medium' : 'Low';
+    return { user: u, wd, we, inc, openInc, pendingOT, holDays, score: capped, level };
+  }).sort((a, b) => b.score - a.score);
+
   const COLOR = { High: '#ef4444', Medium: '#f59e0b', Low: '#10b981' };
+  const highCount = scores.filter(s => s.level === 'High').length;
+
   return (
     <div>
-      <PageHeader title="Stress Score" sub="Identify engineers who may need support" />
-      <Alert>📊 Scores factor in: weekday OC hours, weekend OC hours, incident load. Auto-updated from timesheets.</Alert>
+      <PageHeader title="🧠 Stress Score" sub="Rolling 90-day wellbeing indicator — based on on-call hours, incidents, leave and overtime" />
+      <Alert type="info" style={{ marginBottom: 16 }}>
+        📊 Factors: weekday OC hours (25pts), weekend OC hours (35pts), recent incidents (20pts), open incidents (15pts), leave deficit (20pts). Updated live from timesheets.
+      </Alert>
+      {highCount > 0 && (
+        <Alert type="warning" style={{ marginBottom: 16 }}>
+          ⚠ {highCount} engineer{highCount > 1 ? 's are' : ' is'} in the High stress band. Consider redistributing on-call load or scheduling leave.
+        </Alert>
+      )}
+      <div className="grid-4 mb-16">
+        <StatCard label="High Risk"   value={scores.filter(s=>s.level==='High').length}   sub="Score ≥ 70"  accent="#ef4444" icon="🔴" />
+        <StatCard label="Medium Risk" value={scores.filter(s=>s.level==='Medium').length} sub="Score 40–69" accent="#f59e0b" icon="🟡" />
+        <StatCard label="Low Risk"    value={scores.filter(s=>s.level==='Low').length}    sub="Score < 40"  accent="#10b981" icon="🟢" />
+        <StatCard label="Team Average" value={scores.length ? Math.round(scores.reduce((a,s)=>a+s.score,0)/scores.length) : 0} sub="/100" accent="#818cf8" icon="📊" />
+      </div>
       {scores.map(s => (
         <div key={s.user.id} className="card mb-12">
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
-            <Avatar user={s.user} size={36} />
-            <div style={{ flex: 1 }}>
-              <div className="flex-between" style={{ marginBottom: 6 }}>
-                <div style={{ fontSize: 14, fontWeight: 500 }}>{s.user.name}</div>
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                  <span style={{ fontSize: 12, fontFamily: 'DM Mono', color: 'var(--text-muted)' }}>{s.wd}h WD-OC · {s.we}h WE-OC · {s.inc} inc</span>
-                  <Tag label={s.level} type={s.level === 'High' ? 'red' : s.level === 'Medium' ? 'amber' : 'green'} />
+          <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:10 }}>
+            <Avatar user={s.user} size={40} />
+            <div style={{ flex:1 }}>
+              <div className="flex-between" style={{ marginBottom:6 }}>
+                <div style={{ fontSize:14, fontWeight:600 }}>{s.user.name}</div>
+                <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+                  <Tag label={s.level} type={s.level==='High'?'red':s.level==='Medium'?'amber':'green'} />
+                  <span style={{ fontFamily:'DM Mono', fontWeight:700, fontSize:18, color:COLOR[s.level] }}>{s.score}</span>
+                  <span style={{ fontSize:11, color:'var(--text-muted)' }}>/100</span>
                 </div>
               </div>
               <div className="progress-bar">
-                <div className="progress-fill" style={{ width: s.score + '%', background: COLOR[s.level] }} />
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4, fontSize: 11, color: 'var(--text-muted)' }}>
-                <span>Stress Score</span><span style={{ fontFamily: 'DM Mono' }}>{s.score}/100</span>
+                <div className="progress-fill" style={{ width:s.score+'%', background:COLOR[s.level] }} />
               </div>
             </div>
           </div>
-          {s.level === 'High' && <Alert type="warning">⚠ Consider redistributing on-call load for {s.user.name.split(' ')[0]}.</Alert>}
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(5,1fr)', gap:8, marginTop:8 }}>
+            {[
+              { label:'WD OC (90d)',  val:`${s.wd}h`,           color:'#93c5fd' },
+              { label:'WE OC (90d)',  val:`${s.we}h`,           color:'#a78bfa' },
+              { label:'Incidents',    val:s.inc,                 color:'#f59e0b' },
+              { label:'Open Inc',     val:s.openInc,            color:s.openInc>0?'#ef4444':'var(--text-muted)' },
+              { label:'Leave (90d)',  val:`${s.holDays}d`,      color:s.holDays<3?'#ef4444':'#10b981' },
+            ].map(item => (
+              <div key={item.label} style={{ background:'rgba(30,58,95,0.3)', borderRadius:6, padding:'6px 8px', textAlign:'center' }}>
+                <div style={{ fontSize:9, color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.5px', marginBottom:3 }}>{item.label}</div>
+                <div style={{ fontFamily:'DM Mono', fontWeight:700, fontSize:13, color:item.color }}>{item.val}</div>
+              </div>
+            ))}
+          </div>
+          {s.level==='High' && <Alert type="warning" style={{ marginTop:10 }}>⚠ Consider redistributing on-call load or arranging leave for {s.user.name.split(' ')[0]}.</Alert>}
+          {s.pendingOT > 0 && <Alert type="info" style={{ marginTop:6 }}>⏳ {s.pendingOT} overtime request{s.pendingOT>1?'s':''} pending approval — may be working unpaid hours.</Alert>}
         </div>
       ))}
     </div>
@@ -4772,377 +4882,638 @@ function Notes({ obsidianNotes, setObsidianNotes, users, currentUser, isManager 
   );
 }
 
-  const handleImport = async (e) => {
-    const files = e.target.files;
-    if (!files) return;
-
-    for (const file of files) {
-      const ext = file.name.split('.').pop().toLowerCase();
-      if (ext === 'md') {
-        const text = await file.text();
-        const title = file.name.replace('.md', '');
-        setObsidianNotes([...obsidianNotes, {
-          id: 'note-' + Date.now() + Math.random(),
-          engineerId: currentUser,
-          title: title,
-          content: text,
-          visibility: 'PRIVATE',
-          tags: 'imported',
-          created: new Date().toISOString().slice(0, 10),
-          sourceFile: file.name
-        }]);
-      }
-    }
-    e.target.value = '';
-  };
-
-  const openAdd = () => {
-    setForm({ title: '', content: '', visibility: 'PRIVATE', tags: '' });
-    setEditId(null);
-    setShowModal(true);
-  };
-
-  const openEdit = (note, e) => {
-    e?.stopPropagation();
-    if (note.engineerId !== currentUser && !isManager) {
-      alert('Cannot edit other engineers\' notes');
-      return;
-    }
-    setForm({ ...note });
-    setEditId(note.id);
-    setShowModal(true);
-  };
-
-  const save = () => {
-    if (!form.title || !form.content) return;
-    if (editId) {
-      setObsidianNotes(obsidianNotes.map(n => n.id === editId ? { ...n, ...form } : n));
-    } else {
-      setObsidianNotes([...obsidianNotes, {
-        id: 'note-' + Date.now(),
-        engineerId: currentUser,
-        ...form,
-        created: new Date().toISOString().slice(0, 10)
-      }]);
-    }
-    setShowModal(false);
-  };
-
-  const deleteOne = (noteId, e) => {
-    e?.stopPropagation();
-    const note = obsidianNotes.find(n => n.id === noteId);
-    if (note.engineerId !== currentUser && !isManager) {
-      alert('Cannot delete other engineers\' notes');
-      return;
-    }
-    if (window.confirm('Delete this note?')) {
-      setObsidianNotes(obsidianNotes.filter(n => n.id !== noteId));
-    }
-  };
-
-
-// ── WhatsApp Team Chat ────────────────────────────────────────────────────
+// ── Slack-style Team Chat ─────────────────────────────────────────────────
 function WhatsAppChat({ whatsappChats, setWhatsappChats, users, currentUser, isManager, driveToken }) {
-  const [selectedChat, setSelectedChat] = useState(null);
-  const [newMessage, setNewMessage] = useState('');
-  const [showCreateChat, setShowCreateChat] = useState(false);
-  const [chatForm, setChatForm] = useState({ name: '', members: [] });
-  const [saveStatus, setSaveStatus] = useState('');
-  const [loadingChats, setLoadingChats] = useState(false);
-  const messagesContainerRef = useRef(null);
+  /* ── Slack-style Team Chat ─────────────────────────────────────────────
+     Data shape (stored in whatsappChats array):
+     {
+       id, type: 'channel'|'dm', name, topic?, members: [uid],
+       createdBy, created, pinned: [msgId],
+       messages: [{ id, sender, content, timestamp, edited?,
+                    reactions: {emoji: [uid]}, thread: [{…same}], deleted? }]
+     }
+  ─────────────────────────────────────────────────────────────────────── */
+  const [selectedChat,  setSelectedChat]  = useState(null);
+  const [threadOpen,    setThreadOpen]    = useState(null); // msgId
+  const [draft,         setDraft]         = useState('');
+  const [threadDraft,   setThreadDraft]   = useState('');
+  const [showNew,       setShowNew]       = useState(false);
+  const [newForm,       setNewForm]       = useState({ type:'channel', name:'', topic:'', members:[] });
+  const [search,        setSearch]        = useState('');
+  const [editMsgId,     setEditMsgId]     = useState(null);
+  const [editContent,   setEditContent]   = useState('');
+  const [emojiPicker,   setEmojiPicker]   = useState(null); // msgId
+  const [saveStatus,    setSaveStatus]    = useState('');
+  const [loadingChats,  setLoadingChats]  = useState(false);
+  const [showPinned,    setShowPinned]    = useState(false);
   const messagesEndRef = useRef(null);
+  const inputRef       = useRef(null);
 
-  // ── Two-way sync: load chats from Drive JSON on mount / when Drive connects ─
+  const EMOJIS = ['👍','❤️','😂','🔥','✅','⚡','👀','🎉','😮','🙏','💡','⚠️'];
+
+  // ── Load from Drive on mount ────────────────────────────────────────────
   useEffect(() => {
     if (!driveToken) return;
-    const loadChats = async () => {
+    (async () => {
       setLoadingChats(true);
       try {
         const f = await driveFindFile(driveToken, 'whatsappChats.json');
         if (f) {
           const data = await driveReadJson(driveToken, f.id);
-          if (Array.isArray(data) && data.length > 0) {
-            // Merge: keep any local messages that might be newer
-            setWhatsappChats(prev => {
-              if (data.length >= prev.length) return data; // Drive has more — trust Drive
-              return prev;
-            });
-          }
+          if (Array.isArray(data) && data.length > 0)
+            setWhatsappChats(prev => data.length >= prev.length ? data : prev);
         }
-      } catch (e) { console.warn('Chat load from Drive:', e?.message); }
+      } catch(e) { console.warn('Chat load:', e?.message); }
       finally { setLoadingChats(false); }
-    };
-    loadChats();
-  }, [driveToken]); // re-runs whenever Drive token becomes available
+    })();
+  }, [driveToken]); // eslint-disable-line
 
-  // Auto-select first available chat
+  // Auto-select first channel
   useEffect(() => {
-    if (!selectedChat && whatsappChats.length > 0) {
+    if (!selectedChat && whatsappChats.length > 0)
       setSelectedChat(whatsappChats[0].id);
-    }
-  }, [whatsappChats]);
+  }, [whatsappChats.length]); // eslint-disable-line
 
-  // Scroll to bottom when messages change
+  // Scroll to bottom on new messages
   useEffect(() => {
-    if (messagesEndRef.current) {
-      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
-    }
-  }, [selectedChat, whatsappChats.length, whatsappChats.map?.(c => (c.messages||[]).length).join(',')]);
+    messagesEndRef.current?.scrollIntoView({ behavior:'smooth' });
+  }, [selectedChat, (whatsappChats.find(c=>c.id===selectedChat)?.messages||[]).length]);
 
-  // Manual refresh from Drive
-  const refreshFromDrive = async () => {
-    if (!driveToken) { setSaveStatus('⚠ Drive not connected'); return; }
-    setLoadingChats(true);
-    setSaveStatus('⏳ Loading chats from Drive…');
-    try {
-      const f = await driveFindFile(driveToken, 'whatsappChats.json');
-      if (f) {
-        const data = await driveReadJson(driveToken, f.id);
-        if (Array.isArray(data)) {
-          setWhatsappChats(data);
-          if (data.length > 0 && !selectedChat) setSelectedChat(data[0].id);
-          setSaveStatus(`✅ Loaded ${data.length} chat(s) from Drive`);
-        } else { setSaveStatus('⚠ No chats found in Drive'); }
-      } else { setSaveStatus('⚠ No chat data found in Drive yet'); }
-    } catch (e) { setSaveStatus('❌ Load failed: ' + (e?.message || e)); }
-    setLoadingChats(false);
-    setTimeout(() => setSaveStatus(''), 4000);
+  // Persist to Drive after every change
+  const persist = (next) => {
+    setWhatsappChats(next);
+    if (driveToken) {
+      driveWriteJson(driveToken, 'whatsappChats.json', next)
+        .catch(e => console.warn('Chat save:', e));
+    }
   };
 
-  const createChat = () => {
-    if (!chatForm.name || chatForm.members.length === 0) return;
+  const status = (msg, ms=3500) => { setSaveStatus(msg); setTimeout(()=>setSaveStatus(''), ms); };
+
+  // ── Channel / DM helpers ────────────────────────────────────────────────
+  const channels = whatsappChats.filter(c => c.type==='channel');
+  const dms       = whatsappChats.filter(c => c.type==='dm' && c.members.includes(currentUser));
+  const current   = whatsappChats.find(c=>c.id===selectedChat);
+
+  // unread count: messages since last visit (approximate — count since last seen)
+  const unread = (chat) => (chat.messages||[]).filter(m => m.sender !== currentUser && !m.deleted).length;
+
+  const createNew = () => {
+    if (newForm.type==='channel' && !newForm.name.trim()) return;
+    const id   = 'chat-' + Date.now();
     const chat = {
-      id: 'chat-' + Date.now(),
-      name: chatForm.name,
+      id,
+      type:      newForm.type,
+      name:      newForm.type==='channel'
+                   ? newForm.name.trim().toLowerCase().replace(/\s+/g,'-')
+                   : users.find(u=>newForm.members[0]===u.id)?.name || 'DM',
+      topic:     newForm.topic,
       createdBy: currentUser,
-      members: [...new Set([...chatForm.members, currentUser])],
-      created: new Date().toISOString().slice(0, 10),
-      messages: []
+      created:   new Date().toISOString().slice(0,10),
+      members:   [...new Set([...newForm.members, currentUser])],
+      pinned:    [],
+      messages:  [],
     };
-    setWhatsappChats(prev => [...prev, chat]);
-    setShowCreateChat(false);
-    setChatForm({ name: '', members: [] });
-    setSelectedChat(chat.id);
+    persist([...whatsappChats, chat]);
+    setSelectedChat(id);
+    setShowNew(false);
+    setNewForm({ type:'channel', name:'', topic:'', members:[] });
   };
 
-  const sendMessage = () => {
-    if (!newMessage.trim() || !selectedChat) return;
-    const message = {
-      id: 'msg-' + Date.now(),
-      sender: currentUser,
-      content: newMessage.trim(),
-      timestamp: new Date().toISOString()
+  // ── Message actions ─────────────────────────────────────────────────────
+  const sendMsg = (isThread=false) => {
+    const text = isThread ? threadDraft : draft;
+    if (!text.trim() || !selectedChat) return;
+    const msg = {
+      id:        'msg-' + Date.now(),
+      sender:    currentUser,
+      content:   text.trim(),
+      timestamp: new Date().toISOString(),
+      reactions: {},
+      thread:    [],
     };
-    setWhatsappChats(prev => prev.map(c =>
-      c.id === selectedChat
-        ? { ...c, messages: [...(c.messages || []), message] }
-        : c
-    ));
-    setNewMessage('');
-    setSaveStatus('✓ Saved');
-    setTimeout(() => setSaveStatus(''), 2000);
-    if (driveToken) setTimeout(() => syncToGoogleDoc(), 500);
-  };
-
-  const deleteChat = (chatId) => {
-    if (window.confirm('Delete this chat?')) {
-      setWhatsappChats(prev => prev.filter(c => c.id !== chatId));
-      setSelectedChat(null);
-    }
-  };
-
-  // Save all chats to Google Doc (creates/updates a single compact doc)
-  const syncToGoogleDoc = async () => {
-    if (!driveToken) {
-      setSaveStatus('⚠️ Connect Drive first');
-      setTimeout(() => setSaveStatus(''), 3000);
-      return;
-    }
-    setSaveStatus('⏳ Syncing to Google Doc…');
-    try {
-      const DOC_NAME = 'CloudOps-TeamChat';
-      // Check if doc already exists
-      const listResp = await fetch(
-        `https://www.googleapis.com/drive/v3/files?q=name%3D'${DOC_NAME}'+and+trashed%3Dfalse+and+mimeType%3D'application%2Fvnd.google-apps.document'&fields=files(id,name)`,
-        { headers: { Authorization: `Bearer ${driveToken}` } }
-      ).then(r => r.json());
-
-      let docId = listResp.files && listResp.files.length > 0 ? listResp.files[0].id : null;
-
-      if (!docId) {
-        // Create new doc
-        const createResp = await fetch('https://www.googleapis.com/drive/v3/files', {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${driveToken}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: DOC_NAME, mimeType: 'application/vnd.google-apps.document' })
-        }).then(r => r.json());
-        docId = createResp.id;
+    const next = whatsappChats.map(c => {
+      if (c.id !== selectedChat) return c;
+      if (isThread && threadOpen) {
+        return { ...c, messages: c.messages.map(m =>
+          m.id === threadOpen
+            ? { ...m, thread: [...(m.thread||[]), msg] }
+            : m
+        )};
       }
-
-      // Build compact plain text content
-      const lines = [];
-      lines.push(`CloudOps Team Chat — exported ${new Date().toLocaleString('en-GB')}`);
-      lines.push('='.repeat(60));
-      whatsappChats.forEach(chat => {
-        lines.push(`\n=== ${chat.name} (${chat.members.length} members) ===`);
-        (chat.messages || []).forEach(m => {
-          const sender = users.find(u => u.id === m.sender)?.name || m.sender;
-          const time = new Date(m.timestamp).toLocaleString('en-GB', { day:'2-digit', month:'2-digit', year:'2-digit', hour:'2-digit', minute:'2-digit' });
-          lines.push(`[${time}] ${sender}: ${m.content}`);
-        });
-        if ((chat.messages||[]).length === 0) lines.push('(no messages)');
-      });
-      const fullText = lines.join('\n');
-
-      // Clear existing content and write new content via Docs API
-      // First get doc to find end index
-      const docResp = await fetch(`https://docs.googleapis.com/v1/documents/${docId}`, {
-        headers: { Authorization: `Bearer ${driveToken}` }
-      }).then(r => r.json());
-      const endIndex = docResp.body?.content?.slice(-1)[0]?.endIndex || 1;
-
-      const requests = [];
-      if (endIndex > 1) {
-        requests.push({ deleteContentRange: { range: { startIndex: 1, endIndex: endIndex - 1 } } });
-      }
-      requests.push({ insertText: { location: { index: 1 }, text: fullText } });
-
-      await fetch(`https://docs.googleapis.com/v1/documents/${docId}:batchUpdate`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${driveToken}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ requests })
-      });
-
-      setSaveStatus(`✅ Synced to Google Doc "${DOC_NAME}"`);
-      setTimeout(() => setSaveStatus(''), 4000);
-    } catch (e) {
-      console.error('Chat doc sync error:', e);
-      setSaveStatus('⚠️ Drive not accessible. Speak to Meetul.');
-      setTimeout(() => setSaveStatus(''), 4000);
-    }
+      return { ...c, messages: [...(c.messages||[]), msg] };
+    });
+    persist(next);
+    isThread ? setThreadDraft('') : setDraft('');
   };
 
-  const currentChat = whatsappChats.find(c => c.id === selectedChat);
+  const deleteMsg = (msgId) => {
+    if (!window.confirm('Delete this message?')) return;
+    const next = whatsappChats.map(c =>
+      c.id !== selectedChat ? c : {
+        ...c,
+        messages: c.messages.map(m =>
+          m.id === msgId ? { ...m, deleted:true, content:'[message deleted]' } : m
+        )
+      }
+    );
+    persist(next);
+  };
+
+  const saveEdit = (msgId) => {
+    if (!editContent.trim()) return;
+    const next = whatsappChats.map(c =>
+      c.id !== selectedChat ? c : {
+        ...c,
+        messages: c.messages.map(m =>
+          m.id === msgId ? { ...m, content:editContent.trim(), edited:true } : m
+        )
+      }
+    );
+    persist(next);
+    setEditMsgId(null);
+  };
+
+  const toggleReaction = (msgId, emoji) => {
+    const next = whatsappChats.map(c => {
+      if (c.id !== selectedChat) return c;
+      return { ...c, messages: c.messages.map(m => {
+        if (m.id !== msgId) return m;
+        const reactions = { ...(m.reactions||{}) };
+        const who = reactions[emoji] || [];
+        reactions[emoji] = who.includes(currentUser)
+          ? who.filter(u=>u!==currentUser)
+          : [...who, currentUser];
+        if (reactions[emoji].length === 0) delete reactions[emoji];
+        return { ...m, reactions };
+      })};
+    });
+    persist(next);
+    setEmojiPicker(null);
+  };
+
+  const togglePin = (msgId) => {
+    const next = whatsappChats.map(c => {
+      if (c.id !== selectedChat) return c;
+      const pinned = (c.pinned||[]).includes(msgId)
+        ? c.pinned.filter(id=>id!==msgId)
+        : [...(c.pinned||[]), msgId];
+      return { ...c, pinned };
+    });
+    persist(next);
+  };
+
+  // ── Filtered messages for search ────────────────────────────────────────
+  const visibleMsgs = (current?.messages||[]).filter(m =>
+    !search || m.content?.toLowerCase().includes(search.toLowerCase())
+  );
+
+  const pinnedMsgs = (current?.messages||[]).filter(m =>
+    (current?.pinned||[]).includes(m.id)
+  );
+
+  // ── Avatar/name helper ──────────────────────────────────────────────────
+  const u = (uid) => users.find(x=>x.id===uid);
+  const name = (uid) => u(uid)?.name || uid;
+
+  // ── Render single message ───────────────────────────────────────────────
+  const MsgBubble = ({ msg, inThread=false }) => {
+    const sender    = u(msg.sender);
+    const isOwn     = msg.sender === currentUser;
+    const canEdit   = isOwn && !msg.deleted;
+    const canDelete = (isOwn || isManager) && !msg.deleted;
+    const isPinned  = (current?.pinned||[]).includes(msg.id);
+    const threadCount = (msg.thread||[]).length;
+
+    return (
+      <div key={msg.id} style={{ display:'flex', gap:10, padding:'4px 0',
+        background: isPinned ? 'rgba(0,194,255,0.04)' : 'transparent',
+        borderLeft: isPinned ? '2px solid var(--accent)' : '2px solid transparent',
+        paddingLeft: isPinned ? 8 : 0,
+        opacity: msg.deleted ? 0.45 : 1 }}
+        className="chat-msg">
+        <Avatar user={sender||{avatar:'?',color:'#475569'}} size={32} style={{ flexShrink:0, marginTop:2 }} />
+        <div style={{ flex:1, minWidth:0 }}>
+          {/* Header row */}
+          <div style={{ display:'flex', alignItems:'baseline', gap:8, marginBottom:2 }}>
+            <span style={{ fontWeight:600, fontSize:13, color: isOwn ? 'var(--accent)' : 'var(--text-primary)' }}>
+              {name(msg.sender)}
+            </span>
+            <span style={{ fontSize:10, color:'var(--text-muted)', fontFamily:'DM Mono' }}>
+              {new Date(msg.timestamp).toLocaleString('en-GB',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}
+            </span>
+            {msg.edited && <span style={{ fontSize:9, color:'var(--text-muted)' }}>(edited)</span>}
+            {isPinned  && <span style={{ fontSize:9, color:'var(--accent)' }}>📌 pinned</span>}
+          </div>
+
+          {/* Content or edit input */}
+          {editMsgId === msg.id ? (
+            <div style={{ display:'flex', gap:6, marginBottom:4 }}>
+              <input className="input" value={editContent}
+                onChange={e=>setEditContent(e.target.value)}
+                onKeyDown={e=>{ if(e.key==='Enter') saveEdit(msg.id); if(e.key==='Escape') setEditMsgId(null); }}
+                style={{ flex:1, fontSize:13, padding:'4px 8px' }} autoFocus />
+              <button className="btn btn-primary btn-sm" onClick={()=>saveEdit(msg.id)}>Save</button>
+              <button className="btn btn-secondary btn-sm" onClick={()=>setEditMsgId(null)}>✕</button>
+            </div>
+          ) : (
+            <div style={{ fontSize:13, color:'var(--text-primary)', lineHeight:1.5,
+              wordBreak:'break-word', whiteSpace:'pre-wrap' }}>
+              {(msg.content||'').split(/(@\w+)/g).map((part,i) =>
+                part.startsWith('@')
+                  ? <span key={i} style={{ color:'var(--accent)', fontWeight:600 }}>{part}</span>
+                  : part
+              )}
+            </div>
+          )}
+
+          {/* Reactions row */}
+          {Object.keys(msg.reactions||{}).length > 0 && (
+            <div style={{ display:'flex', flexWrap:'wrap', gap:4, marginTop:4 }}>
+              {Object.entries(msg.reactions||{}).map(([emoji, who]) => (
+                <button key={emoji} onClick={()=>toggleReaction(msg.id,emoji)}
+                  style={{ display:'flex', alignItems:'center', gap:3, padding:'2px 7px',
+                    borderRadius:12, border:'1px solid', fontSize:12, cursor:'pointer',
+                    background: who.includes(currentUser) ? 'rgba(0,194,255,0.15)' : 'var(--bg-card2)',
+                    borderColor: who.includes(currentUser) ? 'var(--accent)' : 'var(--border)',
+                    color: who.includes(currentUser) ? 'var(--accent)' : 'var(--text-secondary)' }}>
+                  <span>{emoji}</span>
+                  <span style={{ fontFamily:'DM Mono', fontSize:11 }}>{who.length}</span>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Actions row: emoji, reply, edit, pin, delete */}
+          {!msg.deleted && (
+            <div className="chat-actions" style={{ display:'flex', gap:4, marginTop:4,
+              opacity:0, transition:'opacity 0.15s' }}>
+              <div style={{ position:'relative' }}>
+                <button className="btn btn-secondary btn-sm" style={{ fontSize:11, padding:'2px 7px' }}
+                  onClick={()=>setEmojiPicker(emojiPicker===msg.id ? null : msg.id)} title="React">😊</button>
+                {emojiPicker===msg.id && (
+                  <div style={{ position:'absolute', bottom:'100%', left:0, zIndex:200,
+                    background:'var(--bg-card)', border:'1px solid var(--border)',
+                    borderRadius:8, padding:6, display:'flex', flexWrap:'wrap', gap:3, width:180,
+                    boxShadow:'0 8px 24px rgba(0,0,0,0.4)' }}>
+                    {EMOJIS.map(e=>(
+                      <button key={e} onClick={()=>toggleReaction(msg.id,e)}
+                        style={{ fontSize:16, background:'transparent', border:'none', cursor:'pointer',
+                          padding:'2px 3px', borderRadius:4, transition:'background 0.1s' }}
+                        onMouseEnter={ev=>ev.target.style.background='rgba(255,255,255,0.1)'}
+                        onMouseLeave={ev=>ev.target.style.background='transparent'}>
+                        {e}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              {!inThread && <button className="btn btn-secondary btn-sm" style={{ fontSize:11 }}
+                onClick={()=>setThreadOpen(threadOpen===msg.id ? null : msg.id)} title="Reply in thread">
+                💬{threadCount>0?` ${threadCount}`:''}
+              </button>}
+              {canEdit   && <button className="btn btn-secondary btn-sm" style={{ fontSize:11 }}
+                onClick={()=>{ setEditMsgId(msg.id); setEditContent(msg.content); }} title="Edit">✏</button>}
+              {isManager && <button className="btn btn-secondary btn-sm" style={{ fontSize:11 }}
+                onClick={()=>togglePin(msg.id)} title={isPinned?'Unpin':'Pin'}>📌</button>}
+              {canDelete && <button className="btn btn-danger btn-sm" style={{ fontSize:11 }}
+                onClick={()=>deleteMsg(msg.id)} title="Delete">🗑</button>}
+            </div>
+          )}
+
+          {/* Thread preview */}
+          {!inThread && threadCount > 0 && threadOpen !== msg.id && (
+            <button onClick={()=>setThreadOpen(msg.id)}
+              style={{ marginTop:4, display:'flex', alignItems:'center', gap:6, fontSize:11,
+                color:'var(--accent)', background:'rgba(0,194,255,0.06)', border:'1px solid rgba(0,194,255,0.15)',
+                borderRadius:6, padding:'3px 10px', cursor:'pointer' }}>
+              💬 {threadCount} {threadCount===1?'reply':'replies'} →
+              <span style={{ color:'var(--text-muted)' }}>
+                {[...new Set((msg.thread||[]).map(t=>name(t.sender)))].slice(0,3).join(', ')}
+              </span>
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  // ── Sidebar channel / DM row ────────────────────────────────────────────
+  const SidebarRow = ({ chat }) => {
+    const lastMsg   = (chat.messages||[]).filter(m=>!m.deleted).slice(-1)[0];
+    const unreadCnt = (chat.messages||[]).filter(m=>m.sender!==currentUser && !m.deleted).length;
+    const isActive  = selectedChat === chat.id;
+    const isDM      = chat.type === 'dm';
+    const dmOther   = isDM ? chat.members.find(m=>m!==currentUser) : null;
+    const dmUser    = dmOther ? u(dmOther) : null;
+
+    return (
+      <div onClick={()=>{ setSelectedChat(chat.id); setThreadOpen(null); setSearch(''); }}
+        style={{ display:'flex', alignItems:'center', gap:8, padding:'6px 10px',
+          borderRadius:6, cursor:'pointer', marginBottom:1,
+          background: isActive ? 'var(--nav-active-bg)' : 'transparent',
+          color: isActive ? 'var(--accent)' : 'var(--nav-text)' }}>
+        {isDM
+          ? <Avatar user={dmUser||{avatar:'?',color:'#475569'}} size={20} />
+          : <span style={{ fontSize:13, color:'var(--text-muted)', width:16, textAlign:'center' }}>#</span>}
+        <span style={{ flex:1, fontSize:13, fontWeight: unreadCnt>0 ? 600 : 400,
+          overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+          {isDM ? (dmUser?.name || dmOther) : chat.name}
+        </span>
+        {unreadCnt > 0 && !isActive && (
+          <span style={{ fontSize:9, fontFamily:'DM Mono', background:'var(--accent)',
+            color:'#000', borderRadius:10, padding:'1px 5px', fontWeight:700 }}>
+            {unreadCnt > 99 ? '99+' : unreadCnt}
+          </span>
+        )}
+      </div>
+    );
+  };
 
   return (
-    <div>
-      <PageHeader title="💬 Team Chat" sub="Team collaboration & messaging — auto-saved to Google Doc"
-        actions={<>
-          {saveStatus && <span style={{ fontSize:11, color: saveStatus.startsWith('✅') ? '#6ee7b7' : saveStatus.startsWith('⚠') || saveStatus.startsWith('❌') ? '#fcd34d' : 'var(--accent)' }}>{saveStatus}</span>}
-          <button className="btn btn-secondary btn-sm" onClick={refreshFromDrive} disabled={loadingChats} title="Reload chats from Google Drive">{loadingChats ? '⏳' : '🔄 Refresh'}</button>
-          {isManager && <button className="btn btn-secondary btn-sm" onClick={syncToGoogleDoc}>📄 Sync to Doc</button>}
-          {isManager && <button className="btn btn-primary" onClick={() => setShowCreateChat(true)}>+ New Group</button>}
-        </>} />
+    <div style={{ display:'grid', gridTemplateColumns:'220px 1fr', gap:0,
+      height:'calc(100vh - 160px)', minHeight:500, border:'1px solid var(--border)',
+      borderRadius:12, overflow:'hidden', background:'var(--bg-card)' }}>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '280px 1fr', gap: 16, height: '70vh' }}>
-        {/* Chat List */}
-        <div className="card" style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-          <div className="card-title">Groups ({whatsappChats.length})</div>
-          <div style={{ overflowY: 'auto', flex: 1 }}>
-            {whatsappChats.length === 0 ? (
-              <div style={{ padding: 12, fontSize: 12, color: 'var(--text-muted)', textAlign: 'center' }}>
-                No chats yet. {isManager ? 'Create one above!' : 'Ask your manager to create a group.'}
-              </div>
-            ) : (
-              whatsappChats.map(chat => {
-                const lastMsg = (chat.messages||[]).slice(-1)[0];
-                const lastSender = lastMsg ? users.find(u=>u.id===lastMsg.sender)?.name?.split(' ')[0] || lastMsg.sender : null;
-                return (
-                  <div key={chat.id} onClick={() => setSelectedChat(chat.id)}
-                    style={{ padding:'10px 12px', background: selectedChat===chat.id?'var(--accent)':'transparent',
-                      color: selectedChat===chat.id?'#fff':'var(--text-primary)', borderRadius:6, cursor:'pointer', marginBottom:6, fontSize:13 }}>
-                    <div style={{ fontWeight:500, marginBottom:2 }}>💬 {chat.name}</div>
-                    <div style={{ fontSize:11, opacity:0.75 }}>{chat.members.length} members · {(chat.messages||[]).length} msgs</div>
-                    {lastMsg && <div style={{ fontSize:10, opacity:0.6, marginTop:2, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
-                      {lastSender}: {lastMsg.content.slice(0,30)}{lastMsg.content.length>30?'…':''}
-                    </div>}
-                  </div>
-                );
-              })
-            )}
+      {/* ── Left sidebar ───────────────────────────────────────────────── */}
+      <div style={{ background:'var(--sidebar-bg)', borderRight:'1px solid var(--sidebar-border)',
+        display:'flex', flexDirection:'column', overflow:'hidden' }}>
+
+        {/* Workspace header */}
+        <div style={{ padding:'14px 12px 10px', borderBottom:'1px solid var(--sidebar-border)' }}>
+          <div style={{ fontFamily:'Syne,sans-serif', fontWeight:800, fontSize:14,
+            color:'var(--text-primary)', letterSpacing:'-0.3px' }}>☁ CloudOps</div>
+          <div style={{ fontSize:10, color:'var(--text-muted)', fontFamily:'DM Mono',
+            display:'flex', alignItems:'center', gap:4, marginTop:2 }}>
+            <div className="dot-live" style={{ width:6, height:6 }} />
+            {users.length} members online
           </div>
         </div>
 
-        {/* Chat View */}
-        {currentChat ? (
-          <div className="card" style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', paddingBottom:12, borderBottom:'1px solid var(--border)' }}>
-              <div>
-                <h3 style={{ margin:'0 0 2px' }}>{currentChat.name}</h3>
-                <div style={{ fontSize:11, color:'var(--text-muted)' }}>
-                  {currentChat.members.map(id => users.find(u=>u.id===id)?.name?.split(' ')[0]).filter(Boolean).join(', ')}
-                </div>
+        {/* Search */}
+        <div style={{ padding:'8px 10px', borderBottom:'1px solid var(--sidebar-border)' }}>
+          <input className="input" placeholder="🔍 Search messages…" value={search}
+            onChange={e=>setSearch(e.target.value)}
+            style={{ fontSize:11, padding:'5px 8px', background:'rgba(255,255,255,0.05)' }} />
+        </div>
+
+        {/* Channels */}
+        <div style={{ flex:1, overflowY:'auto', padding:'8px 6px' }}>
+          <div style={{ fontSize:10, fontWeight:700, color:'var(--text-muted)',
+            textTransform:'uppercase', letterSpacing:'0.8px', padding:'4px 6px 6px',
+            display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+            <span>Channels</span>
+            {isManager && <button onClick={()=>{setShowNew(true);setNewForm({type:'channel',name:'',topic:'',members:users.map(u=>u.id)});}}
+              style={{ background:'transparent', border:'none', color:'var(--text-muted)',
+                cursor:'pointer', fontSize:14, lineHeight:1 }} title="New channel">+</button>}
+          </div>
+          {channels.map(c => <SidebarRow key={c.id} chat={c} />)}
+
+          <div style={{ fontSize:10, fontWeight:700, color:'var(--text-muted)',
+            textTransform:'uppercase', letterSpacing:'0.8px', padding:'12px 6px 6px',
+            display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+            <span>Direct Messages</span>
+            <button onClick={()=>{setShowNew(true);setNewForm({type:'dm',name:'',topic:'',members:[]});}}
+              style={{ background:'transparent', border:'none', color:'var(--text-muted)',
+                cursor:'pointer', fontSize:14, lineHeight:1 }} title="New DM">+</button>
+          </div>
+          {dms.map(c => <SidebarRow key={c.id} chat={c} />)}
+          {dms.length === 0 && (
+            <div style={{ fontSize:11, color:'var(--text-muted)', padding:'4px 8px' }}>No DMs yet</div>
+          )}
+        </div>
+
+        {/* Drive status */}
+        <div style={{ padding:'8px 10px', borderTop:'1px solid var(--sidebar-border)',
+          fontSize:10, color: driveToken ? '#6ee7b7' : 'var(--text-muted)',
+          display:'flex', alignItems:'center', gap:5, fontFamily:'DM Mono' }}>
+          <div style={{ width:5, height:5, borderRadius:'50%',
+            background: driveToken?'#22c55e':'#6b7280', flexShrink:0 }} />
+          {driveToken ? 'Auto-saving to Drive' : 'Drive offline'}
+        </div>
+      </div>
+
+      {/* ── Main area ──────────────────────────────────────────────────── */}
+      {current ? (
+        <div style={{ display:'flex', flexDirection:'column', overflow:'hidden', background:'var(--bg)' }}>
+
+          {/* Channel header */}
+          <div style={{ padding:'10px 16px', borderBottom:'1px solid var(--border)',
+            display:'flex', alignItems:'center', gap:12, flexShrink:0,
+            background:'var(--bg-card)', minHeight:52 }}>
+            <div style={{ flex:1, minWidth:0 }}>
+              <div style={{ fontWeight:700, fontSize:14, color:'var(--text-primary)' }}>
+                {current.type==='channel' ? `#${current.name}` : `@ ${current.name}`}
               </div>
-              <div style={{ display:'flex', gap:6, alignItems:'center' }}>
-                {isManager && <button className="btn btn-danger btn-sm" onClick={() => deleteChat(currentChat.id)}>🗑 Delete</button>}
+              {current.topic && <div style={{ fontSize:11, color:'var(--text-muted)',
+                overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                {current.topic}
+              </div>}
+              <div style={{ fontSize:10, color:'var(--text-muted)', fontFamily:'DM Mono' }}>
+                {current.members.length} members ·&nbsp;
+                {current.members.map(id=>name(id).split(' ')[0]).join(', ')}
               </div>
             </div>
+            <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+              {saveStatus && <span style={{ fontSize:10, fontFamily:'DM Mono',
+                color: saveStatus.startsWith('✅')?'#6ee7b7':saveStatus.startsWith('❌')?'#fca5a5':'var(--accent)' }}>
+                {saveStatus}
+              </span>}
+              <button className="btn btn-secondary btn-sm" style={{ fontSize:11 }}
+                onClick={()=>setShowPinned(v=>!v)} title="Pinned messages">
+                📌 {(current.pinned||[]).length}
+              </button>
+              {isManager && <button className="btn btn-danger btn-sm" style={{ fontSize:11 }}
+                onClick={()=>{ if(window.confirm('Delete this channel?'))
+                  persist(whatsappChats.filter(c=>c.id!==selectedChat)); setSelectedChat(null); }}>
+                🗑
+              </button>}
+            </div>
+          </div>
 
-            <div style={{ overflowY:'auto', flex:1, padding:'12px', display:'flex', flexDirection:'column', gap:8 }}>
-              {(currentChat.messages||[]).length === 0 ? (
-                <div style={{ textAlign:'center', color:'var(--text-muted)', margin:'auto' }}>No messages yet. Start the conversation!</div>
-              ) : (
-                (currentChat.messages||[]).map(msg => {
-                  const sender = users.find(u => u.id === msg.sender);
-                  const isOwn = msg.sender === currentUser;
-                  return (
-                    <div key={msg.id} style={{ display:'flex', justifyContent:isOwn?'flex-end':'flex-start' }}>
-                      {!isOwn && <Avatar user={sender||{avatar:'?',color:'#475569'}} size={28} style={{ marginRight:6, flexShrink:0 }} />}
-                      <div style={{ maxWidth:'70%', padding:'8px 12px', borderRadius:12,
-                        background: isOwn ? 'var(--accent)' : 'rgba(255,255,255,0.05)',
-                        color: isOwn ? '#fff' : 'var(--text-primary)', fontSize:13 }}>
-                        {!isOwn && <div style={{ fontSize:11, fontWeight:600, opacity:0.8, marginBottom:2 }}>{sender?.name}</div>}
-                        <div style={{ wordBreak:'break-word' }}>{msg.content}</div>
-                        <div style={{ fontSize:9, opacity:0.6, marginTop:4, textAlign:'right' }}>
-                          {new Date(msg.timestamp).toLocaleTimeString('en-GB', { hour:'2-digit', minute:'2-digit' })}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })
+          {/* Pinned panel */}
+          {showPinned && pinnedMsgs.length > 0 && (
+            <div style={{ padding:'8px 16px', background:'rgba(0,194,255,0.05)',
+              borderBottom:'1px solid rgba(0,194,255,0.15)', maxHeight:140, overflowY:'auto' }}>
+              <div style={{ fontSize:10, fontWeight:700, color:'var(--accent)',
+                textTransform:'uppercase', letterSpacing:'0.5px', marginBottom:6 }}>
+                📌 Pinned Messages
+              </div>
+              {pinnedMsgs.map(m=>(
+                <div key={m.id} style={{ fontSize:12, color:'var(--text-secondary)',
+                  padding:'3px 0', borderBottom:'1px solid rgba(255,255,255,0.04)' }}>
+                  <strong>{name(m.sender)}</strong>: {m.content?.slice(0,80)}{m.content?.length>80?'…':''}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Main messages + optional thread panel */}
+          <div style={{ flex:1, display:'flex', overflow:'hidden' }}>
+
+            {/* Messages list */}
+            <div style={{ flex:1, overflowY:'auto', padding:'12px 16px',
+              display:'flex', flexDirection:'column', gap:2 }}>
+              {visibleMsgs.length === 0 && (
+                <div style={{ margin:'auto', textAlign:'center', color:'var(--text-muted)' }}>
+                  <div style={{ fontSize:36, marginBottom:8 }}>
+                    {current.type==='channel' ? '#️⃣' : '💬'}
+                  </div>
+                  {search
+                    ? `No messages match "${search}"`
+                    : `This is the start of #${current.name}`}
+                </div>
               )}
+              {visibleMsgs.map(msg => <MsgBubble key={msg.id} msg={msg} />)}
               <div ref={messagesEndRef} />
             </div>
 
-            <div style={{ padding:'12px', borderTop:'1px solid var(--border)', display:'flex', gap:8 }}>
-              <input type="text" className="input" placeholder="Type a message… (Enter to send)"
-                value={newMessage} onChange={e => setNewMessage(e.target.value)}
-                onKeyDown={e => e.key==='Enter' && !e.shiftKey && sendMessage()}
-                style={{ flex:1, margin:0 }} />
-              <button className="btn btn-primary btn-sm" onClick={sendMessage} disabled={!newMessage.trim()}>Send</button>
+            {/* Thread panel */}
+            {threadOpen && (() => {
+              const parent = (current.messages||[]).find(m=>m.id===threadOpen);
+              if (!parent) return null;
+              return (
+                <div style={{ width:320, borderLeft:'1px solid var(--border)',
+                  display:'flex', flexDirection:'column', background:'var(--bg-card)',
+                  overflow:'hidden', flexShrink:0 }}>
+                  <div style={{ padding:'10px 14px', borderBottom:'1px solid var(--border)',
+                    display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                    <span style={{ fontWeight:700, fontSize:13, color:'var(--text-primary)' }}>💬 Thread</span>
+                    <button onClick={()=>setThreadOpen(null)}
+                      style={{ background:'transparent', border:'none', color:'var(--text-muted)',
+                        cursor:'pointer', fontSize:16 }}>✕</button>
+                  </div>
+                  {/* Parent msg */}
+                  <div style={{ padding:'10px 14px', borderBottom:'1px solid var(--border)',
+                    background:'rgba(0,194,255,0.03)' }}>
+                    <MsgBubble msg={parent} inThread={true} />
+                  </div>
+                  {/* Thread replies */}
+                  <div style={{ flex:1, overflowY:'auto', padding:'8px 14px', display:'flex',
+                    flexDirection:'column', gap:6 }}>
+                    {(parent.thread||[]).length === 0
+                      ? <div style={{ color:'var(--text-muted)', fontSize:12, margin:'auto' }}>No replies yet</div>
+                      : (parent.thread||[]).map(r => <MsgBubble key={r.id} msg={r} inThread={true} />)}
+                  </div>
+                  {/* Thread input */}
+                  <div style={{ padding:'10px 14px', borderTop:'1px solid var(--border)' }}>
+                    <div style={{ display:'flex', gap:6 }}>
+                      <input ref={inputRef} className="input" placeholder="Reply…"
+                        value={threadDraft} onChange={e=>setThreadDraft(e.target.value)}
+                        onKeyDown={e=>e.key==='Enter'&&!e.shiftKey&&sendMsg(true)}
+                        style={{ flex:1, fontSize:12, padding:'6px 10px' }} />
+                      <button className="btn btn-primary btn-sm"
+                        onClick={()=>sendMsg(true)} disabled={!threadDraft.trim()}>↵</button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+
+          {/* Main input bar */}
+          <div style={{ padding:'10px 16px', borderTop:'1px solid var(--border)',
+            background:'var(--bg-card)', flexShrink:0 }}>
+            {/* @mention autocomplete (simplified) */}
+            <div style={{ display:'flex', gap:8, alignItems:'flex-end' }}>
+              <Avatar user={u(currentUser)||{avatar:'?',color:'#475569'}} size={28} style={{ flexShrink:0 }} />
+              <div style={{ flex:1, position:'relative' }}>
+                <textarea className="textarea"
+                  placeholder={`Message ${current.type==='channel'?`#${current.name}`:name(current.members.find(m=>m!==currentUser)||'')} — @ to mention`}
+                  value={draft} onChange={e=>setDraft(e.target.value)}
+                  onKeyDown={e=>{ if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); sendMsg(); }}}
+                  style={{ minHeight:40, maxHeight:120, resize:'none', fontSize:13, padding:'8px 12px',
+                    lineHeight:1.5, paddingRight:90 }} />
+                <div style={{ position:'absolute', right:8, bottom:8, display:'flex', gap:4 }}>
+                  {/* Quick emoji insert */}
+                  {['👍','🔥','✅'].map(e=>(
+                    <button key={e} onClick={()=>setDraft(d=>d+e)}
+                      style={{ background:'transparent', border:'none', cursor:'pointer', fontSize:14 }}>{e}</button>
+                  ))}
+                </div>
+              </div>
+              <button className="btn btn-primary" onClick={()=>sendMsg()} disabled={!draft.trim()}
+                style={{ padding:'8px 16px', flexShrink:0 }}>
+                Send ↵
+              </button>
+            </div>
+            <div style={{ fontSize:10, color:'var(--text-muted)', marginTop:4, paddingLeft:36 }}>
+              <kbd style={{ background:'rgba(255,255,255,0.08)', borderRadius:3, padding:'1px 4px', fontSize:9 }}>Enter</kbd> to send · <kbd style={{ background:'rgba(255,255,255,0.08)', borderRadius:3, padding:'1px 4px', fontSize:9 }}>Shift+Enter</kbd> for new line · <kbd style={{ background:'rgba(255,255,255,0.08)', borderRadius:3, padding:'1px 4px', fontSize:9 }}>@</kbd> to mention
             </div>
           </div>
-        ) : (
-          <div className="card" style={{ display:'flex', alignItems:'center', justifyContent:'center', color:'var(--text-muted)', textAlign:'center' }}>
-            <div><div style={{ fontSize:32, marginBottom:8 }}>💬</div><div>Select a chat or create a new group</div></div>
-          </div>
-        )}
-      </div>
+        </div>
+      ) : (
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'center',
+          color:'var(--text-muted)', flexDirection:'column', gap:12 }}>
+          <div style={{ fontSize:48 }}>☁</div>
+          <div style={{ fontFamily:'Syne,sans-serif', fontWeight:700, fontSize:16 }}>CloudOps Chat</div>
+          <div style={{ fontSize:13 }}>Select a channel or start a DM</div>
+          {isManager && <button className="btn btn-primary"
+            onClick={()=>setShowNew(true)}>+ Create Channel</button>}
+        </div>
+      )}
 
-      {showCreateChat && (
-        <Modal title="Create Group Chat" onClose={() => setShowCreateChat(false)}>
-          <FormGroup label="Group Name">
-            <input className="input" placeholder="e.g. Cloud Ops Team" value={chatForm.name}
-              onChange={e => setChatForm({ ...chatForm, name: e.target.value })} />
-          </FormGroup>
-          <FormGroup label="Add Members">
-            <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
-              {users.filter(u => u.id !== currentUser).map(u => (
-                <label key={u.id} style={{ display:'flex', alignItems:'center', gap:8, padding:'6px', cursor:'pointer' }}>
-                  <input type="checkbox" checked={chatForm.members.includes(u.id)}
-                    onChange={e => {
-                      if (e.target.checked) setChatForm({ ...chatForm, members:[...chatForm.members, u.id] });
-                      else setChatForm({ ...chatForm, members:chatForm.members.filter(id=>id!==u.id) });
-                    }} />
-                  <Avatar user={u} size={24} />
-                  <span style={{ fontSize:13 }}>{u.name} ({u.id})</span>
-                </label>
+      {/* ── New channel / DM modal ───────────────────────────────────── */}
+      {showNew && (
+        <Modal title={newForm.type==='channel' ? '# New Channel' : '💬 New Direct Message'}
+          onClose={()=>setShowNew(false)}>
+          <FormGroup label="Type">
+            <div style={{ display:'flex', gap:8 }}>
+              {['channel','dm'].map(t=>(
+                <button key={t} className={`btn ${newForm.type===t?'btn-primary':'btn-secondary'}`}
+                  onClick={()=>setNewForm(f=>({...f,type:t}))}>
+                  {t==='channel'?'# Channel':'💬 Direct Message'}
+                </button>
               ))}
             </div>
           </FormGroup>
+          {newForm.type==='channel' && <>
+            <FormGroup label="Channel Name">
+              <input className="input" placeholder="e.g. incidents-live"
+                value={newForm.name} onChange={e=>setNewForm(f=>({...f,name:e.target.value}))} />
+            </FormGroup>
+            <FormGroup label="Topic (optional)">
+              <input className="input" placeholder="What's this channel for?"
+                value={newForm.topic} onChange={e=>setNewForm(f=>({...f,topic:e.target.value}))} />
+            </FormGroup>
+            <FormGroup label="Members">
+              <div style={{ display:'flex', flexDirection:'column', gap:4, maxHeight:180, overflowY:'auto' }}>
+                {users.map(uu=>(
+                  <label key={uu.id} style={{ display:'flex', alignItems:'center', gap:8,
+                    padding:'5px 6px', cursor:'pointer', borderRadius:6 }}>
+                    <input type="checkbox"
+                      checked={newForm.members.includes(uu.id)}
+                      onChange={e=>setNewForm(f=>({...f, members:
+                        e.target.checked ? [...f.members,uu.id] : f.members.filter(id=>id!==uu.id)}))} />
+                    <Avatar user={uu} size={22} />
+                    <span style={{ fontSize:13 }}>{uu.name}</span>
+                  </label>
+                ))}
+              </div>
+            </FormGroup>
+          </>}
+          {newForm.type==='dm' && (
+            <FormGroup label="Send to">
+              <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
+                {users.filter(uu=>uu.id!==currentUser).map(uu=>(
+                  <label key={uu.id} style={{ display:'flex', alignItems:'center', gap:8,
+                    padding:'5px 6px', cursor:'pointer', borderRadius:6 }}>
+                    <input type="radio" name="dm-target"
+                      checked={newForm.members[0]===uu.id}
+                      onChange={()=>setNewForm(f=>({...f,members:[uu.id]}))} />
+                    <Avatar user={uu} size={22} />
+                    <span style={{ fontSize:13 }}>{uu.name}</span>
+                  </label>
+                ))}
+              </div>
+            </FormGroup>
+          )}
           <div style={{ display:'flex', gap:8, justifyContent:'flex-end', marginTop:12 }}>
-            <button className="btn btn-secondary" onClick={() => setShowCreateChat(false)}>Cancel</button>
-            <button className="btn btn-primary" onClick={createChat} disabled={!chatForm.name||chatForm.members.length===0}>Create Group</button>
+            <button className="btn btn-secondary" onClick={()=>setShowNew(false)}>Cancel</button>
+            <button className="btn btn-primary" onClick={createNew}
+              disabled={newForm.type==='channel' ? !newForm.name.trim() : newForm.members.length===0}>
+              {newForm.type==='channel' ? 'Create Channel' : 'Start DM'}
+            </button>
           </div>
         </Modal>
       )}
@@ -5470,24 +5841,42 @@ function WeeklyReports({ users, incidents, timesheets, holidays, isManager }) {
 }
 
 // ── Payroll (Manager only) ─────────────────────────────────────────────────
-function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, rota, holidays, isManager, overtime: overtimeArr }) {
+function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, rota, holidays, isManager, overtime: overtimeArr, driveToken }) {
   if (!isManager) return <Alert type="warning">⚠ Payroll is restricted to managers.</Alert>;
 
   const [showExport, setShowExport] = React.useState(false);
   const [exportStart, setExportStart] = React.useState('');
   const [exportEnd,   setExportEnd]   = React.useState('');
   const [exporting,   setExporting]   = React.useState(false);
+  const [exportLogs,  setExportLogs]  = React.useState([]);
+  const [showLogs,    setShowLogs]    = React.useState(false);
+  const [logMsg,      setLogMsg]      = React.useState('');
 
   // Safe defaults so nothing crashes if props arrive undefined
   const safeUsers     = users     || [];
   const safeTS        = timesheets|| {};
   const safePay       = payconfig || {};
-  const safeToil      = toil      || [];
+  const safeToil      = Array.isArray(toil) ? toil : Object.values(toil || {});
   const safeUpgrades  = upgrades  || [];
   const safeOT        = overtimeArr || [];
   const safeRota      = rota      || {};
   const safeHolidays  = holidays  || [];
   const bhList        = (typeof UK_BANK_HOLIDAYS !== 'undefined') ? UK_BANK_HOLIDAYS : [];
+
+  // Load export logs from Drive on mount
+  React.useEffect(() => {
+    if (!driveToken) return;
+    (async () => {
+      try {
+        const folderId = await driveGetOrCreateSubfolder(driveToken, 'CloudOps-Payroll-Exports');
+        const existing = await driveFindFile(driveToken, 'export_log.json', folderId);
+        if (existing) {
+          const data = await driveReadJson(driveToken, existing.id);
+          if (Array.isArray(data)) setExportLogs(data);
+        }
+      } catch(e) { console.warn('Payroll: could not load export log', e); }
+    })();
+  }, [driveToken]); // eslint-disable-line
 
   // ── Per-user helpers ──────────────────────────────────────────────────────
   const getUserData = (u, startDs, endDs) => {
@@ -5858,6 +6247,27 @@ function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, rota
 
       const fname = `CloudOps-Hours-${(exportStart||'all').replace(/-/g,'')}-${(exportEnd||'time').replace(/-/g,'')}.xlsx`;
       XLSX.writeFile(wb, fname);
+
+      // ── Save export log entry to Drive ───────────────────────────────────
+      const logEntry = {
+        id:         'exp-' + Date.now(),
+        exportedAt: new Date().toISOString(),
+        exportedBy: safeUsers[0]?.id || 'manager', // best-effort — manager is current user
+        filename:   fname,
+        rangeStart: exportStart || 'all',
+        rangeEnd:   exportEnd   || 'all',
+        engineerCount: safeUsers.length,
+        totalHrs:   s1Rows.reduce((a,r)=>a+(parseFloat(r[4])||0)+(parseFloat(r[5])||0)+(parseFloat(r[6])||0)+(parseFloat(r[7])||0),0),
+      };
+      const updatedLogs = [logEntry, ...exportLogs];
+      setExportLogs(updatedLogs);
+      if (driveToken) {
+        try {
+          const folderId = await driveGetOrCreateSubfolder(driveToken, 'CloudOps-Payroll-Exports');
+          await driveWriteJson(driveToken, 'export_log.json', updatedLogs, folderId);
+          setLogMsg(`✅ Export logged to Drive — CloudOps-Rota/CloudOps-Payroll-Exports/`);
+        } catch(e) { console.warn('Payroll export log save failed:', e); }
+      }
       setShowExport(false);
     } finally {
       setExporting(false);
@@ -5874,7 +6284,48 @@ function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, rota
   return (
     <div>
       <PageHeader title="Payroll" sub="On-call pay, TOIL, tax and take-home — manager only"
-        actions={<button className="btn btn-primary" onClick={() => setShowExport(true)}>📥 Export to Excel</button>} />
+        actions={<div style={{ display:'flex', gap:8 }}>
+          <button className="btn btn-secondary" onClick={() => setShowLogs(l => !l)}>
+            📋 Export Log {exportLogs.length > 0 && `(${exportLogs.length})`}
+          </button>
+          <button className="btn btn-primary" onClick={() => setShowExport(true)}>📥 Export to Excel</button>
+        </div>} />
+
+      {logMsg && <Alert type="success" style={{ marginBottom:12 }}>{logMsg}</Alert>}
+
+      {/* Export Log Panel */}
+      {showLogs && (
+        <div className="card mb-16">
+          <div className="card-title">📋 Payroll Export Log</div>
+          {exportLogs.length === 0 ? (
+            <div style={{ color:'var(--text-muted)', fontSize:12, padding:'12px 0' }}>No exports yet. Each Excel export is automatically logged here and saved to <code>CloudOps-Rota/CloudOps-Payroll-Exports/</code> in Google Drive.</div>
+          ) : (
+            <table style={{ fontSize:12 }}>
+              <thead>
+                <tr>
+                  <th>Date/Time</th><th>File Name</th><th>Period</th>
+                  <th>Engineers</th><th>Total Hrs</th>
+                </tr>
+              </thead>
+              <tbody>
+                {exportLogs.map(log => (
+                  <tr key={log.id}>
+                    <td style={{ fontFamily:'DM Mono', fontSize:11, color:'var(--text-muted)' }}>
+                      {new Date(log.exportedAt).toLocaleString('en-GB',{day:'2-digit',month:'2-digit',year:'2-digit',hour:'2-digit',minute:'2-digit'})}
+                    </td>
+                    <td style={{ fontFamily:'DM Mono', fontSize:11, color:'#93c5fd' }}>{log.filename}</td>
+                    <td style={{ fontSize:11 }}>
+                      {log.rangeStart === 'all' ? 'All time' : `${log.rangeStart} → ${log.rangeEnd}`}
+                    </td>
+                    <td style={{ textAlign:'center', fontFamily:'DM Mono' }}>{log.engineerCount}</td>
+                    <td style={{ textAlign:'right', fontFamily:'DM Mono', color:'#6ee7b7' }}>{Math.round(log.totalHrs)}h</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
 
       {/* Export date-range modal */}
       {showExport && (
@@ -6018,7 +6469,7 @@ function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, rota
 }
 
 // ── Pay Config (Manager only) ──────────────────────────────────────────────
-function PayConfig({ users, payconfig, setPayconfig, isManager }) {
+function PayConfig({ users, payconfig, setPayconfig, isManager, timesheets, overtime, rota, holidays }) {
   if (!isManager) return <Alert type="warning">⚠ Pay configuration is restricted to managers.</Alert>;
 
   const [taxMsg, setTaxMsg]     = useState('');
@@ -6043,7 +6494,45 @@ function PayConfig({ users, payconfig, setPayconfig, isManager }) {
   const annual  = salaryMode === 'annual' ? (p.annual || p.base * 12) : p.base * 12;
   const monthly = annual / 12;
   const hourly  = annual / 2080;
-  const tx      = calcUKTax(annual, { pensionPct: p.pensionPct || 0, studentLoan: p.studentLoan || false });
+
+  // ── On-call earnings (from timesheets + rota + bank holidays) ─────────────
+  const bhList     = (typeof UK_BANK_HOLIDAYS !== 'undefined') ? UK_BANK_HOLIDAYS : [];
+  const safeRota   = rota     || {};
+  const safeHols   = Array.isArray(holidays) ? holidays : [];
+  const safeOT     = Array.isArray(overtime)  ? overtime  : [];
+  const safeTS     = timesheets || {};
+
+  const userSheets  = safeTS[selectedUid] || [];
+  const userHols    = safeHols.filter(h => h.userId === selectedUid);
+  const upgradeHrs  = 0; // simplified — no upgrade days in this view
+  const bankHolHrs  = (() => {
+    let total = 0;
+    bhList.forEach(bh => {
+      const s = safeRota[selectedUid]?.[bh.date];
+      if (!s || s === 'off') return;
+      const dow = new Date(bh.date).getDay();
+      if (s === 'weekend' || s === 'bankholiday') {
+        total += dow === 1 ? 24 : dow === 5 ? 12 : 22;
+      } else { total += 22; }
+    });
+    return total;
+  })();
+  const oc = (typeof calcOncallPay === 'function')
+    ? calcOncallPay(userSheets, hourly, upgradeHrs, bankHolHrs, safeRota[selectedUid] || {}, userHols, bhList)
+    : { total: 0, standbyWD: 0, workedWD: 0, standbyWE: 0, workedWE: 0 };
+  const approvedOT = safeOT.filter(o => o.userId === selectedUid && o.status === 'approved')
+    .reduce((s, o) => s + (o.hours || 0), 0);
+  const otPay = approvedOT * hourly * ONCALL_WORKED_MULTIPLIER;
+
+  // Annualised: multiply monthly on-call by 12 for tax calc
+  const annualOC  = oc.total * 12;
+  const annualOT  = otPay; // overtime is as-logged, not annualised
+  const annualBH  = (bhList.length > 0 ? bankHolHrs : 0) * ONCALL_STANDBY_RATE;
+  const totalGross = annual + annualOC + annualOT + annualBH;
+
+  const tx          = calcUKTax(annual,     { pensionPct: p.pensionPct || 0, studentLoan: p.studentLoan || false });
+  const txWithOC    = calcUKTax(totalGross, { pensionPct: p.pensionPct || 0, studentLoan: p.studentLoan || false });
+
   const standbyRate = ONCALL_STANDBY_RATE;
   const workedRate  = hourly * ONCALL_WORKED_MULTIPLIER;
 
@@ -6134,45 +6623,89 @@ function PayConfig({ users, payconfig, setPayconfig, isManager }) {
 
           {/* Right: take-home breakdown */}
           <div className="card">
-            <div className="card-title">📊 Take-Home Calculator</div>
-            <div style={{ marginBottom: 12 }}>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>Annual gross: <strong>{fmt(annual, 0)}</strong> · Hourly: <strong>{fmt(hourly)}</strong></div>
-              {/* Period breakdown table */}
-              <table style={{ width: '100%', fontSize: 12 }}>
-                <thead>
-                  <tr>
-                    <th style={{ textAlign: 'left', padding: '4px 0' }}>Period</th>
-                    <th style={{ textAlign: 'right', padding: '4px 6px' }}>Gross</th>
-                    <th style={{ textAlign: 'right', padding: '4px 6px', color: '#fca5a5' }}>Tax</th>
-                    <th style={{ textAlign: 'right', padding: '4px 6px', color: '#fcd34d' }}>NI</th>
-                    {p.pensionPct > 0 && <th style={{ textAlign: 'right', padding: '4px 6px', color: '#93c5fd' }}>Pension</th>}
-                    {p.studentLoan && <th style={{ textAlign: 'right', padding: '4px 6px', color: '#c4b5fd' }}>SL</th>}
-                    <th style={{ textAlign: 'right', padding: '4px 6px', color: '#6ee7b7', fontWeight: 700 }}>Take Home</th>
+            <div className="card-title">📊 Full Take-Home Calculator</div>
+
+            {/* Earnings breakdown */}
+            <div style={{ background:'rgba(30,64,175,0.08)', borderRadius:8, padding:'10px 12px', marginBottom:12, fontSize:12 }}>
+              <div style={{ fontSize:11, fontWeight:700, color:'var(--text-secondary)', textTransform:'uppercase', letterSpacing:'0.5px', marginBottom:8 }}>Annual Earnings</div>
+              <div style={{ display:'flex', justifyContent:'space-between', marginBottom:4 }}>
+                <span style={{ color:'var(--text-muted)' }}>Base salary</span>
+                <span style={{ fontFamily:'DM Mono' }}>{fmt(annual, 0)}</span>
+              </div>
+              <div style={{ display:'flex', justifyContent:'space-between', marginBottom:4 }}>
+                <span style={{ color:'#93c5fd' }}>On-call pay (annualised)</span>
+                <span style={{ fontFamily:'DM Mono', color:'#93c5fd' }}>+{fmt(annualOC, 0)}</span>
+              </div>
+              {annualOT > 0 && <div style={{ display:'flex', justifyContent:'space-between', marginBottom:4 }}>
+                <span style={{ color:'#e879f9' }}>Approved overtime ({approvedOT}h × {ONCALL_WORKED_MULTIPLIER}x)</span>
+                <span style={{ fontFamily:'DM Mono', color:'#e879f9' }}>+{fmt(annualOT, 0)}</span>
+              </div>}
+              {annualBH > 0 && <div style={{ display:'flex', justifyContent:'space-between', marginBottom:4 }}>
+                <span style={{ color:'#fca5a5' }}>Bank holiday standby</span>
+                <span style={{ fontFamily:'DM Mono', color:'#fca5a5' }}>+{fmt(annualBH, 0)}</span>
+              </div>}
+              <div style={{ display:'flex', justifyContent:'space-between', borderTop:'1px solid var(--border)', paddingTop:6, marginTop:4 }}>
+                <span style={{ fontWeight:600 }}>Total annual gross</span>
+                <span style={{ fontFamily:'DM Mono', fontWeight:700, color:'var(--text-primary)' }}>{fmt(totalGross, 0)}</span>
+              </div>
+            </div>
+
+            {/* Deductions */}
+            <div style={{ background:'rgba(30,64,175,0.15)', borderRadius:8, padding:'10px 12px', marginBottom:12, fontSize:12 }}>
+              <div style={{ fontSize:11, fontWeight:700, color:'var(--text-secondary)', textTransform:'uppercase', letterSpacing:'0.5px', marginBottom:8 }}>Deductions (inc. on-call)</div>
+              <div style={{ display:'flex', justifyContent:'space-between', marginBottom:4 }}><span style={{ color:'#fca5a5' }}>Income Tax</span><span style={{ fontFamily:'DM Mono', color:'#fca5a5' }}>-{fmt(txWithOC.incomeTax, 0)}</span></div>
+              <div style={{ display:'flex', justifyContent:'space-between', marginBottom:4 }}><span style={{ color:'#fcd34d' }}>National Insurance</span><span style={{ fontFamily:'DM Mono', color:'#fcd34d' }}>-{fmt(txWithOC.ni, 0)}</span></div>
+              {(p.pensionPct||0)>0 && <div style={{ display:'flex', justifyContent:'space-between', marginBottom:4 }}><span style={{ color:'#93c5fd' }}>Pension ({p.pensionPct}%)</span><span style={{ fontFamily:'DM Mono', color:'#93c5fd' }}>-{fmt(txWithOC.pension, 0)}</span></div>}
+              {p.studentLoan && <div style={{ display:'flex', justifyContent:'space-between', marginBottom:4 }}><span style={{ color:'#c4b5fd' }}>Student Loan Plan 2</span><span style={{ fontFamily:'DM Mono', color:'#c4b5fd' }}>-{fmt(txWithOC.slRepay, 0)}</span></div>}
+              <div style={{ display:'flex', justifyContent:'space-between', marginBottom:4 }}><span style={{ color:'var(--text-muted)' }}>Effective rate</span><span style={{ fontFamily:'DM Mono' }}>{(txWithOC.effectiveRate*100).toFixed(1)}%</span></div>
+              <div style={{ display:'flex', justifyContent:'space-between', borderTop:'1px solid var(--border)', paddingTop:6, marginTop:4 }}>
+                <span style={{ fontWeight:700 }}>Annual take-home (full)</span>
+                <span style={{ fontFamily:'DM Mono', fontWeight:700, color:'#6ee7b7', fontSize:15 }}>{fmt(txWithOC.annualNet, 0)}</span>
+              </div>
+            </div>
+
+            {/* Period table — base only vs full */}
+            <div style={{ fontSize:11, color:'var(--text-muted)', marginBottom:6 }}>Monthly comparison: base only vs base + on-call</div>
+            <table style={{ width:'100%', fontSize:12 }}>
+              <thead>
+                <tr>
+                  <th style={{ textAlign:'left' }}>Period</th>
+                  <th style={{ textAlign:'right', color:'var(--text-muted)' }}>Base net</th>
+                  <th style={{ textAlign:'right', color:'#6ee7b7' }}>Full net</th>
+                  <th style={{ textAlign:'right', color:'#93c5fd' }}>OC uplift</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[['Monthly',1/12],['Weekly',1/52],['Daily',1/260]].map(([label, frac]) => (
+                  <tr key={label} style={{ borderTop:'1px solid rgba(255,255,255,0.05)' }}>
+                    <td style={{ padding:'4px 0' }}>{label}</td>
+                    <td style={{ textAlign:'right', fontFamily:'DM Mono', color:'var(--text-muted)' }}>{fmt(txWithOC.annualNet * frac - (annualOC+annualOT+annualBH) * (1 - txWithOC.effectiveRate) * frac, 0)}</td>
+                    <td style={{ textAlign:'right', fontFamily:'DM Mono', fontWeight:700, color:'#6ee7b7' }}>{fmt(txWithOC.annualNet * frac, 0)}</td>
+                    <td style={{ textAlign:'right', fontFamily:'DM Mono', color:'#93c5fd' }}>+{fmt((annualOC+annualOT+annualBH) * (1 - txWithOC.effectiveRate) * frac, 0)}</td>
                   </tr>
-                </thead>
-                <tbody>
-                  {[['Monthly','monthly'],['Weekly','weekly'],['Daily','daily'],['Hourly','hourly']].map(([label, key]) => (
-                    <tr key={key} style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}>
-                      <td style={{ padding: '5px 0', fontWeight: 500 }}>{label}</td>
-                      <td style={{ textAlign: 'right', padding: '5px 6px', fontFamily: 'DM Mono' }}>{fmt(tx[key].gross, key==='hourly'?2:2)}</td>
-                      <td style={{ textAlign: 'right', padding: '5px 6px', fontFamily: 'DM Mono', color: '#fca5a5' }}>-{fmt(tx[key].tax, key==='hourly'?2:2)}</td>
-                      <td style={{ textAlign: 'right', padding: '5px 6px', fontFamily: 'DM Mono', color: '#fcd34d' }}>-{fmt(tx[key].ni, key==='hourly'?2:2)}</td>
-                      {p.pensionPct > 0 && <td style={{ textAlign: 'right', padding: '5px 6px', fontFamily: 'DM Mono', color: '#93c5fd' }}>-{fmt(tx[key].pension, key==='hourly'?2:2)}</td>}
-                      {p.studentLoan && <td style={{ textAlign: 'right', padding: '5px 6px', fontFamily: 'DM Mono', color: '#c4b5fd' }}>-{fmt(tx[key].sl, key==='hourly'?2:2)}</td>}
-                      <td style={{ textAlign: 'right', padding: '5px 6px', fontFamily: 'DM Mono', fontWeight: 700, color: '#10b981' }}>{fmt(tx[key].net, key==='hourly'?2:2)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <div style={{ background: 'rgba(30,64,175,0.15)', borderRadius: 8, padding: '10px 12px', fontSize: 12 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}><span style={{ color: 'var(--text-muted)' }}>Income Tax (annual)</span><span style={{ fontFamily: 'DM Mono', color: '#fca5a5' }}>-{fmt(tx.incomeTax, 0)}</span></div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}><span style={{ color: 'var(--text-muted)' }}>National Insurance</span><span style={{ fontFamily: 'DM Mono', color: '#fcd34d' }}>-{fmt(tx.ni, 0)}</span></div>
-              {p.pensionPct > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}><span style={{ color: 'var(--text-muted)' }}>Pension ({p.pensionPct}%)</span><span style={{ fontFamily: 'DM Mono', color: '#93c5fd' }}>-{fmt(tx.pension, 0)}</span></div>}
-              {p.studentLoan && <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}><span style={{ color: 'var(--text-muted)' }}>Student Loan Plan 2</span><span style={{ fontFamily: 'DM Mono', color: '#c4b5fd' }}>-{fmt(tx.slRepay, 0)}</span></div>}
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}><span style={{ color: 'var(--text-muted)' }}>Effective tax rate</span><span style={{ fontFamily: 'DM Mono' }}>{(tx.effectiveRate*100).toFixed(1)}%</span></div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid var(--border)', paddingTop: 6, marginTop: 4 }}><span style={{ fontWeight: 600 }}>Annual take-home</span><span style={{ fontFamily: 'DM Mono', fontWeight: 700, color: '#6ee7b7', fontSize: 14 }}>{fmt(tx.annualNet, 0)}</span></div>
-            </div>
+                ))}
+              </tbody>
+            </table>
+
+            {/* On-call detail */}
+            {(oc.standbyWD > 0 || oc.workedWD > 0 || oc.standbyWE > 0 || oc.workedWE > 0) && (
+              <div style={{ marginTop:12, background:'rgba(0,194,255,0.06)', borderRadius:8, padding:'8px 12px', fontSize:11 }}>
+                <div style={{ fontWeight:600, color:'var(--text-secondary)', marginBottom:6 }}>On-call breakdown (this month × 12)</div>
+                {[
+                  ['Standby WD', oc.standbyWD, '#93c5fd'],
+                  ['Worked WD',  oc.workedWD,  '#93c5fd'],
+                  ['Standby WE', oc.standbyWE, '#a78bfa'],
+                  ['Worked WE',  oc.workedWE,  '#a78bfa'],
+                  bankHolHrs > 0 && ['Bank Hol standby', bankHolHrs, '#fca5a5'],
+                  approvedOT > 0 && ['Overtime', approvedOT, '#e879f9'],
+                ].filter(Boolean).map(([label, hrs, color]) => hrs > 0 && (
+                  <div key={label} style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
+                    <span style={{ color:'var(--text-muted)' }}>{label}</span>
+                    <span style={{ fontFamily:'DM Mono', color }}>{hrs}h</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -7310,7 +7843,7 @@ export default function App() {
       case 'holidays':   return <Holidays {...props} />;
       case 'swaps':      return <ShiftSwaps {...props} />;
       case 'upgrades':   return <UpgradeDays {...props} timesheets={timesheets} setTimesheets={setTimesheets} />;
-      case 'stress':     return <StressScore {...props} />;
+      case 'stress':     return <StressScore {...props} overtime={overtime} holidays={holidays} />;
       case 'toil':       return <TOIL {...props} />;
       case 'absence':    return <Absence {...props} driveToken={driveToken} />;
       case 'overtime':   return <Overtime {...props} overtime={overtime} setOvertime={setOvertime} driveToken={driveToken} />;
@@ -7324,8 +7857,8 @@ export default function App() {
       case 'insights':   return <Insights {...props} />;
       case 'capacity':   return <Capacity {...props} incidents={incidents} />;
       case 'reports':    return <WeeklyReports {...props} />;
-      case 'payroll':    return <Payroll {...props} incidents={incidents} upgrades={upgrades} rota={rota} overtime={overtime} />;
-      case 'payconfig':  return <PayConfig {...props} />;
+      case 'payroll':    return <Payroll {...props} incidents={incidents} upgrades={upgrades} rota={rota} overtime={overtime} driveToken={driveToken} />;
+      case 'payconfig':  return <PayConfig {...props} timesheets={timesheets} overtime={overtime} rota={rota} holidays={holidays} />;
       case 'settings':   return <Settings {...props} />;
       case 'myaccount':  return <MyAccount currentUser={currentUser} users={users} setUsers={setUsers} driveToken={driveToken} profilePics={profilePics} setProfilePicsState={setProfilePicsState} />;
       default: return <p className="muted-sm">Page coming soon</p>;
