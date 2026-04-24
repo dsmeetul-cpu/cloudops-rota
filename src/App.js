@@ -5301,7 +5301,6 @@ function WhatsAppChat({ whatsappChats, setWhatsappChats, users, currentUser, isM
     }
   };
 
-  const EMOJIS = ['👍','❤️','😂','🔥','✅','⚡','👀','🎉','😮','🙏','💡','⚠️'];
 
   // ── Load from Drive on mount ────────────────────────────────────────────
   useEffect(() => {
