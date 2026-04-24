@@ -1,6 +1,6 @@
 // src/App.js
 // CloudOps Rota — Full Production Build v2
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 23rd April 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 24th April 2026
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
@@ -2237,8 +2237,16 @@ function Incidents({ users, incidents, setIncidents, currentUser, isManager, tim
     if (editInc) {
       setIncidents(incidents.map(i => i.id === editInc ? { ...i, ...form, desc: combinedDesc } : i));
     } else {
-      const id = 'INC-' + String(incidents.length + 1).padStart(3, '0');
-      setIncidents([{ id, ...form, desc: combinedDesc, status: 'Investigating', reporter: currentUser, date: new Date().toISOString().slice(0, 16).replace('T', ' '), updates: [] }, ...incidents]);
+      // Use trigram prefix + timestamp so IDs never clash across multiple engineers
+      // e.g. MBO-1714900123456 — trigram is the reporter's user ID (already a trigram)
+      const trigram = (currentUser || 'UNK').toUpperCase();
+      const id = `${trigram}-${Date.now()}`;
+      const newInc = { id, ...form, desc: combinedDesc, status: 'Investigating', reporter: currentUser, date: new Date().toISOString().slice(0, 16).replace('T', ' '), updates: [] };
+      // Merge: engineer's incident is added to the shared list regardless of role
+      setIncidents(prev => {
+        const safe = Array.isArray(prev) ? prev : [];
+        return [newInc, ...safe];
+      });
       if (form.duration_hours && form.assigned_to && setTimesheets) {
         const incDate = new Date().toISOString().slice(0, 10);
         const dow = new Date().getDay();
@@ -5179,7 +5187,7 @@ function WhatsAppChat({ whatsappChats, setWhatsappChats, users, currentUser, isM
      }
   ─────────────────────────────────────────────────────────────────────── */
   const [selectedChat,  setSelectedChat]  = useState(null);
-  const [threadOpen,    setThreadOpen]    = useState(null); // msgId
+  const [threadOpen,    setThreadOpen]    = useState(null);
   const [draft,         setDraft]         = useState('');
   const [threadDraft,   setThreadDraft]   = useState('');
   const [showNew,       setShowNew]       = useState(false);
@@ -5187,12 +5195,111 @@ function WhatsAppChat({ whatsappChats, setWhatsappChats, users, currentUser, isM
   const [search,        setSearch]        = useState('');
   const [editMsgId,     setEditMsgId]     = useState(null);
   const [editContent,   setEditContent]   = useState('');
-  const [emojiPicker,   setEmojiPicker]   = useState(null); // msgId
+  const [emojiPicker,   setEmojiPicker]   = useState(null);
   const [saveStatus,    setSaveStatus]    = useState('');
   const [loadingChats,  setLoadingChats]  = useState(false);
   const [showPinned,    setShowPinned]    = useState(false);
+  // ── Notification state ──────────────────────────────────────────────────
+  const [toasts,        setToasts]        = useState([]);   // [{id,title,body,chatId}]
+  const [notifPerm,     setNotifPerm]     = useState(typeof Notification !== 'undefined' ? Notification.permission : 'default');
+  const [totalUnread,   setTotalUnread]   = useState(0);
+  const seenMsgIds     = useRef(new Set());   // tracks which message IDs we've already notified
+  const originalTitle  = useRef(document.title);
+  const titleInterval  = useRef(null);
   const messagesEndRef = useRef(null);
   const inputRef       = useRef(null);
+
+  const EMOJIS = ['👍','❤️','😂','🔥','✅','⚡','👀','🎉','😮','🙏','💡','⚠️'];
+
+  // ── Request notification permission on mount ───────────────────────────
+  useEffect(() => {
+    if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+      Notification.requestPermission().then(p => setNotifPerm(p));
+    }
+    // Seed seenMsgIds with all existing messages so we don't notify on first load
+    whatsappChats.forEach(c => {
+      (c.messages||[]).forEach(m => seenMsgIds.current.add(m.id));
+      (c.messages||[]).forEach(m => (m.thread||[]).forEach(r => seenMsgIds.current.add(r.id)));
+    });
+    return () => {
+      clearInterval(titleInterval.current);
+      document.title = originalTitle.current;
+    };
+  }, []); // eslint-disable-line
+
+  // ── Watch for new messages and fire notifications ──────────────────────
+  useEffect(() => {
+    let newUnread = 0;
+    whatsappChats.forEach(chat => {
+      const isMember = chat.members?.includes(currentUser) || chat.type === 'channel';
+      if (!isMember) return;
+      (chat.messages||[]).forEach(msg => {
+        if (msg.sender === currentUser) return;  // don't notify own messages
+        if (msg.deleted) return;
+        if (seenMsgIds.current.has(msg.id)) {
+          // Already known — count as unread only if not in active chat
+          if (chat.id !== selectedChat) newUnread++;
+          return;
+        }
+        // New message we haven't seen
+        seenMsgIds.current.add(msg.id);
+        if (chat.id === selectedChat) return;  // in view, no notification needed
+        newUnread++;
+        const senderName = users.find(u=>u.id===msg.sender)?.name || msg.sender;
+        const channelName = chat.type === 'channel' ? `#${chat.name}` : senderName;
+        const preview = (msg.content||'').replace(/<[^>]+>/g,'').slice(0,60);
+        // Browser notification
+        if (notifPerm === 'granted') {
+          try {
+            const n = new Notification(`${senderName} in ${channelName}`, {
+              body: preview,
+              icon: '/favicon.ico',
+              tag: msg.id,
+              silent: false,
+            });
+            n.onclick = () => { window.focus(); setSelectedChat(chat.id); n.close(); };
+          } catch(e) { /* incognito or blocked */ }
+        }
+        // In-app toast
+        const toastId = 'toast-' + msg.id;
+        setToasts(prev => [...prev.slice(-4), { id:toastId, chatId:chat.id, channel:channelName, sender:senderName, body:preview }]);
+        setTimeout(() => setToasts(prev => prev.filter(t => t.id !== toastId)), 6000);
+      });
+    });
+    setTotalUnread(newUnread);
+  }, [whatsappChats]); // eslint-disable-line
+
+  // ── Flashing tab title when there are unread messages ─────────────────
+  useEffect(() => {
+    clearInterval(titleInterval.current);
+    if (totalUnread > 0) {
+      let flash = false;
+      titleInterval.current = setInterval(() => {
+        document.title = flash
+          ? `(${totalUnread}) 💬 ${originalTitle.current}`
+          : originalTitle.current;
+        flash = !flash;
+      }, 1500);
+    } else {
+      document.title = originalTitle.current;
+    }
+    return () => clearInterval(titleInterval.current);
+  }, [totalUnread]);
+
+  // ── Mark as read when switching to a chat ─────────────────────────────
+  const selectChat = (chatId) => {
+    setSelectedChat(chatId);
+    setThreadOpen(null);
+    setSearch('');
+    // Mark all messages in this chat as seen
+    const chat = whatsappChats.find(c=>c.id===chatId);
+    if (chat) {
+      (chat.messages||[]).forEach(m => {
+        seenMsgIds.current.add(m.id);
+        (m.thread||[]).forEach(r => seenMsgIds.current.add(r.id));
+      });
+    }
+  };
 
   const EMOJIS = ['👍','❤️','😂','🔥','✅','⚡','👀','🎉','😮','🙏','💡','⚠️'];
 
@@ -5216,7 +5323,7 @@ function WhatsAppChat({ whatsappChats, setWhatsappChats, users, currentUser, isM
   // Auto-select first channel
   useEffect(() => {
     if (!selectedChat && whatsappChats.length > 0)
-      setSelectedChat(whatsappChats[0].id);
+      selectChat(whatsappChats[0].id);
   }, [whatsappChats.length]); // eslint-disable-line
 
   // Scroll to bottom on new messages
@@ -5486,14 +5593,16 @@ function WhatsAppChat({ whatsappChats, setWhatsappChats, users, currentUser, isM
   // ── Sidebar channel / DM row ────────────────────────────────────────────
   const SidebarRow = ({ chat }) => {
     const lastMsg   = (chat.messages||[]).filter(m=>!m.deleted).slice(-1)[0];
-    const unreadCnt = (chat.messages||[]).filter(m=>m.sender!==currentUser && !m.deleted).length;
+    const unreadCnt = (chat.messages||[]).filter(m =>
+      m.sender !== currentUser && !m.deleted && !seenMsgIds.current.has(m.id)
+    ).length;
     const isActive  = selectedChat === chat.id;
     const isDM      = chat.type === 'dm';
     const dmOther   = isDM ? chat.members.find(m=>m!==currentUser) : null;
     const dmUser    = dmOther ? u(dmOther) : null;
 
     return (
-      <div onClick={()=>{ setSelectedChat(chat.id); setThreadOpen(null); setSearch(''); }}
+      <div onClick={()=>{ selectChat(chat.id); }}
         style={{ display:'flex', alignItems:'center', gap:8, padding:'6px 10px',
           borderRadius:6, cursor:'pointer', marginBottom:1,
           background: isActive ? 'var(--nav-active-bg)' : 'transparent',
@@ -5516,6 +5625,33 @@ function WhatsAppChat({ whatsappChats, setWhatsappChats, users, currentUser, isM
   };
 
   return (
+    <div style={{ position:'relative' }}>
+      {/* ── In-app toast notifications ──────────────────────────────────── */}
+      <div style={{ position:'fixed', bottom:24, right:24, zIndex:9999,
+        display:'flex', flexDirection:'column', gap:8, pointerEvents:'none' }}>
+        {toasts.map(toast => (
+          <div key={toast.id}
+            onClick={()=>{ selectChat(toast.chatId); setToasts(prev=>prev.filter(t=>t.id!==toast.id)); }}
+            style={{ background:'var(--bg-card)', border:'1px solid rgba(0,194,255,0.35)',
+              borderRadius:10, padding:'10px 14px', maxWidth:300, pointerEvents:'all',
+              boxShadow:'0 8px 32px rgba(0,0,0,0.5)', cursor:'pointer',
+              animation:'slideInToast 0.25s cubic-bezier(0.34,1.2,0.64,1)' }}>
+            <div style={{ fontSize:12, fontWeight:700, color:'var(--accent)', marginBottom:3 }}>
+              💬 {toast.channel}
+            </div>
+            <div style={{ fontSize:12, fontWeight:600, color:'var(--text-primary)', marginBottom:2 }}>
+              {toast.sender}
+            </div>
+            <div style={{ fontSize:11, color:'var(--text-muted)', lineHeight:1.4 }}>
+              {toast.body}{toast.body.length >= 60 ? '…' : ''}
+            </div>
+            <div style={{ fontSize:9, color:'var(--text-muted)', marginTop:4, fontFamily:'DM Mono' }}>
+              Click to open
+            </div>
+          </div>
+        ))}
+      </div>
+
     <div style={{ display:'grid', gridTemplateColumns:'220px 1fr', gap:0,
       height:'calc(100vh - 160px)', minHeight:500, border:'1px solid var(--border)',
       borderRadius:12, overflow:'hidden', background:'var(--bg-card)' }}>
@@ -5568,13 +5704,37 @@ function WhatsAppChat({ whatsappChats, setWhatsappChats, users, currentUser, isM
           )}
         </div>
 
-        {/* Drive status */}
-        <div style={{ padding:'8px 10px', borderTop:'1px solid var(--sidebar-border)',
-          fontSize:10, color: driveToken ? '#6ee7b7' : 'var(--text-muted)',
-          display:'flex', alignItems:'center', gap:5, fontFamily:'DM Mono' }}>
-          <div style={{ width:5, height:5, borderRadius:'50%',
-            background: driveToken?'#22c55e':'#6b7280', flexShrink:0 }} />
-          {driveToken ? 'Auto-saving to Drive' : 'Drive offline'}
+        {/* Drive + notifications status */}
+        <div style={{ padding:'8px 10px', borderTop:'1px solid var(--sidebar-border)', flexShrink:0 }}>
+          <div style={{ fontSize:10, color: driveToken ? '#6ee7b7' : 'var(--text-muted)',
+            display:'flex', alignItems:'center', gap:5, fontFamily:'DM Mono', marginBottom:5 }}>
+            <div style={{ width:5, height:5, borderRadius:'50%',
+              background: driveToken?'#22c55e':'#6b7280', flexShrink:0 }} />
+            {driveToken ? 'Auto-saving to Drive' : 'Drive offline'}
+          </div>
+          {notifPerm === 'default' && (
+            <button onClick={()=>Notification.requestPermission().then(p=>setNotifPerm(p))}
+              style={{ width:'100%', padding:'4px 8px', fontSize:10, background:'rgba(0,194,255,0.08)',
+                border:'1px solid rgba(0,194,255,0.2)', borderRadius:5, cursor:'pointer',
+                color:'var(--accent)', fontFamily:'DM Mono' }}>
+              🔔 Enable notifications
+            </button>
+          )}
+          {notifPerm === 'granted' && (
+            <div style={{ fontSize:10, color:'#6ee7b7', fontFamily:'DM Mono',
+              display:'flex', alignItems:'center', gap:4 }}>
+              🔔 Notifications on
+              {totalUnread > 0 && <span style={{ background:'#ef4444', color:'#fff',
+                borderRadius:10, padding:'0 5px', fontSize:9, fontWeight:700 }}>
+                {totalUnread}
+              </span>}
+            </div>
+          )}
+          {notifPerm === 'denied' && (
+            <div style={{ fontSize:10, color:'var(--text-muted)', fontFamily:'DM Mono' }}>
+              🔕 Notifications blocked in browser
+            </div>
+          )}
         </div>
       </div>
 
@@ -5802,7 +5962,8 @@ function WhatsAppChat({ whatsappChats, setWhatsappChats, users, currentUser, isM
           </div>
         </Modal>
       )}
-    </div>
+    </div>  {/* end grid */}
+    </div>  {/* end relative wrapper */}
   );
 }
 
