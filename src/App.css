@@ -871,3 +871,9 @@ kbd {
   padding: 1px 5px;
   font-size: 10px;
 }
+
+/* ── Chat toast notification animation ───────────────────────────────────── */
+@keyframes slideInToast {
+  from { opacity: 0; transform: translateX(60px) scale(0.95); }
+  to   { opacity: 1; transform: translateX(0) scale(1); }
+}
