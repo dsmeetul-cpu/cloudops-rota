@@ -5961,8 +5961,8 @@ function WhatsAppChat({ whatsappChats, setWhatsappChats, users, currentUser, isM
           </div>
         </Modal>
       )}
-    </div>  {/* end grid */}
-    </div>  {/* end relative wrapper */}
+    </div>
+    </div>
   );
 }
 
