@@ -1,6 +1,6 @@
 // src/App.js
 // CloudOps Rota — Full Production Build v2
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 24th April 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 25th April 2026
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
@@ -8048,29 +8048,25 @@ export default function App() {
         holidays:'shared', incidents:'shared', upgrades:'shared', wiki:'shared',
         glossary:'shared', contacts:'shared', swapRequests:'shared', absences:'shared',
         logbook:'shared', documents:'shared', whatsappChats:'shared',
-        timesheets:'engineer', toil:'engineer', overtime:'engineer', obsidianNotes:'engineer',
+        obsidianNotes:'shared',   // ← was 'engineer': notes is a flat array not keyed by uid
+        timesheets:'engineer', toil:'engineer', overtime:'engineer',
       }[key] || 'shared';
 
       if (own === 'manager' && !isManager) { setSyncing(false); return; }
 
       if (own === 'engineer') {
+        // Timesheets/toil/overtime: each engineer owns only their own slice
         const driveVal = await driveRead(driveToken, key).catch(() => null);
         const merged = { ...(driveVal || {}), [currentUser]: (data || {})[currentUser] };
         await driveWrite(driveToken, key, merged);
-      } else if (own === 'shared') {
-        const driveVal = await driveRead(driveToken, key).catch(() => null);
-        if (!driveVal) {
-          await driveWrite(driveToken, key, data);
-        } else if (Array.isArray(driveVal) && Array.isArray(data)) {
-          const localIds = new Set(data.map(r => r.id).filter(Boolean));
-          const merged = [...driveVal.filter(r => !localIds.has(r.id)), ...data];
-          await driveWrite(driveToken, key, merged);
-        } else if (typeof driveVal === 'object' && typeof data === 'object') {
-          await driveWrite(driveToken, key, { ...driveVal, ...data });
-        } else {
-          await driveWrite(driveToken, key, data);
-        }
       } else {
+        // ── Shared / manager keys ─────────────────────────────────────────
+        // Write local data as the authoritative source.
+        // We deliberately do NOT merge back from Drive here because merging
+        // causes deletions to be reversed: a deleted item has no local ID,
+        // so the merge would re-add it from Drive on the very next save.
+        // For a small team tool all writes go through the same React state,
+        // so the local array is always the correct truth after any add/edit/delete.
         await driveWrite(driveToken, key, data);
       }
       setLastSync(new Date());
