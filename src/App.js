@@ -2274,8 +2274,33 @@ function Incidents({ users, incidents, setIncidents, currentUser, isManager, tim
   };
 
   const resolve  = (id, e) => { e.stopPropagation(); setIncidents(incidents.map(i => i.id === id ? { ...i, status: 'Resolved', resolvedAt: new Date().toISOString().slice(0,16).replace('T',' ') } : i)); };
-  const deleteOne = (id, e) => { e.stopPropagation(); if (window.confirm('Delete this incident?')) setIncidents(incidents.filter(i => i.id !== id)); };
-  const deleteBulk = () => { if (window.confirm(`Delete ${selected.size} incidents?`)) { setIncidents(incidents.filter(i => !selected.has(i.id))); clearAll(); } };
+
+  // Helper: remove auto-logged INC timesheet entries for a set of incident IDs
+  const pruneTimesheetEntries = (deletedIds) => {
+    if (!setTimesheets) return;
+    const incLabels = new Set([...deletedIds].map(id => `INC ${id}`));
+    setTimesheets(prev => {
+      const updated = {};
+      Object.entries(prev || {}).forEach(([uid, entries]) => {
+        updated[uid] = (entries || []).filter(e => !incLabels.has(e.week));
+      });
+      return updated;
+    });
+  };
+
+  const deleteOne = (id, e) => {
+    e.stopPropagation();
+    if (!window.confirm('Delete this incident?')) return;
+    setIncidents(incidents.filter(i => i.id !== id));
+    pruneTimesheetEntries([id]);
+  };
+
+  const deleteBulk = () => {
+    if (!window.confirm(`Delete ${selected.size} incidents?`)) return;
+    setIncidents(incidents.filter(i => !selected.has(i.id)));
+    pruneTimesheetEntries([...selected]);
+    clearAll();
+  };
 
   const filtered = filter === 'all' ? incidents : incidents.filter(i => i.status === filter || i.severity === filter);
 
