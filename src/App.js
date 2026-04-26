@@ -3455,30 +3455,35 @@ function calcOncallPay(timesheetEntries, hourlyRate, upgradeHrs = 0, bankHolHrs 
   const bhStandby = bankHolHrs;
 
   // Incident hours from timesheets (entries with week starting "INC")
-  // Only count entries whose incident still exists in the live incidents list
+  // Only count entries whose incident still exists in the live incidents list.
+  // IMPORTANT: these hours are tracked separately in incidentHrs and must NOT
+  // also be added to workedWD/workedWE — doing so would double-count them in
+  // workedPay and show e.g. 6h for a 3h incident.
   let incidentHrs = 0;
   (timesheetEntries || [])
     .filter(e => {
       if (!e.week || !e.week.startsWith('INC')) return false;
-      // e.week = "INC MBO-1714900123456" — extract the incident ID after "INC "
       const incId = e.week.slice(4).trim();
-      if (liveIncidentIds && !liveIncidentIds.has(incId)) return false; // orphaned — skip
+      if (liveIncidentIds && !liveIncidentIds.has(incId)) return false;
       return true;
     })
     .forEach(e => {
-    const hrs = (e.weekday_oncall || 0) + (e.weekend_oncall || 0) + (e.worked_wd || 0) + (e.worked_we || 0);
-    incidentHrs += hrs;
-    // Route to the right bucket
-    const d = new Date(e.week?.replace('INC-','') || Date.now()).getDay();
-    if (d === 0 || d === 5 || d === 6) workedWE += (e.weekday_oncall||0)+(e.weekend_oncall||0);
-    else workedWD += (e.weekday_oncall||0)+(e.weekend_oncall||0);
-  });
+      // Sum all hour fields but deduplicate: worked_wd mirrors weekday_oncall, so
+      // prefer worked_wd+worked_we when present, otherwise fall back to oncall fields.
+      const hasWorked = (e.worked_wd || 0) + (e.worked_we || 0) > 0;
+      const hrs = hasWorked
+        ? (e.worked_wd || 0) + (e.worked_we || 0)
+        : (e.weekday_oncall || 0) + (e.weekend_oncall || 0);
+      incidentHrs += hrs;
+      // Do NOT add to workedWD/workedWE — incident pay is charged via incidentHrs
+    });
 
   const standbyPay  = (standbyWD + standbyWE + bhStandby) * ONCALL_STANDBY_RATE;
   const workedPay   = (workedWD + workedWE) * hourlyRate * ONCALL_WORKED_MULTIPLIER;
+  const incidentPay = incidentHrs * hourlyRate * ONCALL_WORKED_MULTIPLIER;
   const upgradePay  = upgradeHrs * hourlyRate * ONCALL_WORKED_MULTIPLIER;
   const bankHolPay  = bhStandby * ONCALL_STANDBY_RATE;
-  const totalOncallHours = standbyWD + workedWD + standbyWE + workedWE + upgradeHrs + bhStandby;
+  const totalOncallHours = standbyWD + workedWD + standbyWE + workedWE + incidentHrs + upgradeHrs + bhStandby;
 
   return {
     standbyWD: Math.round(standbyWD * 10) / 10,
@@ -3487,8 +3492,8 @@ function calcOncallPay(timesheetEntries, hourlyRate, upgradeHrs = 0, bankHolHrs 
     workedWE:  Math.round(workedWE  * 10) / 10,
     upgradeHrs, bankHolHrs,
     incidentHrs: Math.round(incidentHrs * 10) / 10,
-    standbyPay, workedPay, upgradePay, bankHolPay,
-    total: standbyPay + workedPay + upgradePay,
+    standbyPay, workedPay, incidentPay, upgradePay, bankHolPay,
+    total: standbyPay + workedPay + incidentPay + upgradePay,
     totalOncallHours: Math.round(totalOncallHours * 10) / 10,
     totalStandbyHours: Math.round((standbyWD + standbyWE + bhStandby) * 10) / 10,
     totalWorkedHours:  Math.round((workedWD + workedWE + upgradeHrs) * 10) / 10,
@@ -6901,19 +6906,31 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
       {/* On-call hours summary table */}
       <div className="card mb-16" style={{ overflowX:'auto' }}>
         <div className="card-title">On-Call Hours Summary — standby · worked · incidents · upgrades · bank holidays · overtime</div>
-        <table style={{ minWidth:900 }}>
+        <table style={{ minWidth:950, tableLayout:'fixed', width:'100%' }}>
+          <colgroup>
+            <col style={{ width:200 }} />  {/* Engineer */}
+            <col style={{ width:90 }} />   {/* Standby WD */}
+            <col style={{ width:90 }} />   {/* Worked WD */}
+            <col style={{ width:90 }} />   {/* Standby WE */}
+            <col style={{ width:90 }} />   {/* Worked WE */}
+            <col style={{ width:80 }} />   {/* Incidents */}
+            <col style={{ width:80 }} />   {/* Upgrades */}
+            <col style={{ width:80 }} />   {/* Bank Hol */}
+            <col style={{ width:80 }} />   {/* Overtime */}
+            <col style={{ width:75 }} />   {/* TOIL Bal */}
+          </colgroup>
           <thead>
             <tr>
-              <th>Engineer</th>
-              <th style={{ color:'#93c5fd' }}>Standby WD</th>
-              <th style={{ color:'#93c5fd' }}>Worked WD</th>
-              <th style={{ color:'#a78bfa' }}>Standby WE</th>
-              <th style={{ color:'#a78bfa' }}>Worked WE</th>
-              <th style={{ color:'#f59e0b' }}>Incidents</th>
-              <th style={{ color:'#818cf8' }}>Upgrades</th>
-              <th style={{ color:'#fca5a5' }}>Bank Hol</th>
-              <th style={{ color:'#e879f9' }}>Overtime</th>
-              <th>TOIL Bal.</th>
+              <th style={{ textAlign:'left', paddingLeft:8 }}>Engineer</th>
+              <th style={{ textAlign:'right', color:'#93c5fd' }}>Standby WD</th>
+              <th style={{ textAlign:'right', color:'#93c5fd' }}>Worked WD</th>
+              <th style={{ textAlign:'right', color:'#a78bfa' }}>Standby WE</th>
+              <th style={{ textAlign:'right', color:'#a78bfa' }}>Worked WE</th>
+              <th style={{ textAlign:'right', color:'#f59e0b' }}>Incidents</th>
+              <th style={{ textAlign:'right', color:'#818cf8' }}>Upgrades</th>
+              <th style={{ textAlign:'right', color:'#fca5a5' }}>Bank Hol</th>
+              <th style={{ textAlign:'right', color:'#e879f9' }}>Overtime</th>
+              <th style={{ textAlign:'right' }}>TOIL Bal.</th>
             </tr>
           </thead>
           <tbody>
@@ -6921,16 +6938,16 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
               const { oc, tb, incHrs, upgradeHrs, bankHolHrs, overtimeHrs } = getUserData(u);
               return (
                 <tr key={u.id}>
-                  <td><div style={{ display:'flex', gap:8, alignItems:'center' }}><Avatar user={u} size={24} /><div><div style={{ fontSize:12 }}>{u.name}</div><div style={{ fontSize:10, color:'var(--text-muted)', fontFamily:'DM Mono' }}>{u.id}</div></div></div></td>
-                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#93c5fd' }}>{oc.standbyWD}h</td>
-                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#93c5fd' }}>{oc.workedWD}h</td>
-                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#a78bfa' }}>{oc.standbyWE}h</td>
-                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#a78bfa' }}>{oc.workedWE}h</td>
-                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:incHrs>0?'#f59e0b':'var(--text-muted)' }}>{incHrs>0?`${incHrs}h`:'—'}</td>
-                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:upgradeHrs>0?'#818cf8':'var(--text-muted)' }}>{upgradeHrs>0?`${upgradeHrs}h`:'—'}</td>
-                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:bankHolHrs>0?'#fca5a5':'var(--text-muted)' }}>{bankHolHrs>0?`${bankHolHrs}h`:'—'}</td>
-                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:overtimeHrs>0?'#e879f9':'var(--text-muted)', fontWeight:overtimeHrs>0?700:400 }}>{overtimeHrs>0?`${overtimeHrs}h`:'—'}</td>
-                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:tb.balance>0?'#38bdf8':'#fca5a5' }}>{tb.balance}h</td>
+                  <td style={{ paddingLeft:8 }}><div style={{ display:'flex', gap:8, alignItems:'center' }}><Avatar user={u} size={24} /><div><div style={{ fontSize:12 }}>{u.name}</div><div style={{ fontSize:10, color:'var(--text-muted)', fontFamily:'DM Mono' }}>{u.id}</div></div></div></td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#93c5fd', textAlign:'right' }}>{oc.standbyWD}h</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#93c5fd', textAlign:'right' }}>{oc.workedWD}h</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#a78bfa', textAlign:'right' }}>{oc.standbyWE}h</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#a78bfa', textAlign:'right' }}>{oc.workedWE}h</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:incHrs>0?'#f59e0b':'var(--text-muted)', textAlign:'right' }}>{incHrs>0?`${incHrs}h`:'—'}</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:upgradeHrs>0?'#818cf8':'var(--text-muted)', textAlign:'right' }}>{upgradeHrs>0?`${upgradeHrs}h`:'—'}</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:bankHolHrs>0?'#fca5a5':'var(--text-muted)', textAlign:'right' }}>{bankHolHrs>0?`${bankHolHrs}h`:'—'}</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:overtimeHrs>0?'#e879f9':'var(--text-muted)', fontWeight:overtimeHrs>0?700:400, textAlign:'right' }}>{overtimeHrs>0?`${overtimeHrs}h`:'—'}</td>
+                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:tb.balance>0?'#38bdf8':'#fca5a5', textAlign:'right' }}>{tb.balance}h</td>
                 </tr>
               );
             })}
