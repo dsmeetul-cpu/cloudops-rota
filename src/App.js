@@ -1,6 +1,6 @@
 // src/App.js
 // CloudOps Rota — Full Production Build v2
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 25th April 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 26th April 2026
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
@@ -1054,7 +1054,8 @@ function Dashboard({ users, rota, holidays, incidents, timesheets, swapRequests,
               {users.map(u => {
                 const sheets = timesheets[u.id] || [];
                 const oc = sheets.reduce((a,b)=>a+(b.weekday_oncall||0)+(b.weekend_oncall||0),0);
-                const incHrs = sheets.filter(e=>e.week&&e.week.startsWith('INC')).reduce((a,e)=>a+(e.weekday_oncall||0)+(e.weekend_oncall||0),0);
+                const liveIncIds = new Set((incidents||[]).map(i=>i.id));
+                const incHrs = sheets.filter(e=>e.week&&e.week.startsWith('INC')&&liveIncIds.has(e.week.slice(4).trim())).reduce((a,e)=>a+(e.weekday_oncall||0)+(e.weekend_oncall||0),0);
                 const userInc = incidents.filter(i=>i.assigned_to===u.id);
                 const openUserInc = userInc.filter(i=>i.status==='Investigating').length;
                 const resolvedUserInc = userInc.filter(i=>i.status==='Resolved').length;
@@ -3409,7 +3410,10 @@ const TOIL_ACCRUAL_RATE = 1.0;       // 1:1 per UK WTR
 //
 // Incident hours come from timesheets entries flagged with week starting "INC".
 function calcOncallPay(timesheetEntries, hourlyRate, upgradeHrs = 0, bankHolHrs = 0,
-                       rotaForUser = {}, holidays = [], bankHolidays = [], startDs = null, endDs = null) {
+                       rotaForUser = {}, holidays = [], bankHolidays = [], startDs = null, endDs = null,
+                       liveIncidentIds = null) {
+  // liveIncidentIds: Set of incident IDs that still exist. If provided, INC timesheet
+  // entries whose incident has been deleted are excluded from the calculation.
 
   // ── Derive hours from rota entries ───────────────────────────────────────
   let standbyWD = 0, workedWD = 0, standbyWE = 0, workedWE = 0;
@@ -3451,8 +3455,17 @@ function calcOncallPay(timesheetEntries, hourlyRate, upgradeHrs = 0, bankHolHrs 
   const bhStandby = bankHolHrs;
 
   // Incident hours from timesheets (entries with week starting "INC")
+  // Only count entries whose incident still exists in the live incidents list
   let incidentHrs = 0;
-  (timesheetEntries || []).filter(e => e.week && e.week.startsWith('INC')).forEach(e => {
+  (timesheetEntries || [])
+    .filter(e => {
+      if (!e.week || !e.week.startsWith('INC')) return false;
+      // e.week = "INC MBO-1714900123456" — extract the incident ID after "INC "
+      const incId = e.week.slice(4).trim();
+      if (liveIncidentIds && !liveIncidentIds.has(incId)) return false; // orphaned — skip
+      return true;
+    })
+    .forEach(e => {
     const hrs = (e.weekday_oncall || 0) + (e.weekend_oncall || 0) + (e.worked_wd || 0) + (e.worked_we || 0);
     incidentHrs += hrs;
     // Route to the right bucket
@@ -6084,7 +6097,8 @@ function Capacity({ users, rota, holidays, timesheets, incidents, isManager }) {
     const openIncs = (incidents||[]).filter(i=>i.assigned_to===u.id&&i.status==='Investigating').length;
     const resolvedIncs = (incidents||[]).filter(i=>i.assigned_to===u.id&&i.status==='Resolved').length;
     const availPct = Math.round(((planWeeks-leaveWeeks)/planWeeks)*100);
-    const incHrs = sheets.filter(e=>e.week&&e.week.startsWith('INC')).reduce((a,e)=>a+(e.weekday_oncall||0)+(e.weekend_oncall||0),0);
+    const liveIds = new Set((incidents||[]).map(i=>i.id));
+    const incHrs = sheets.filter(e=>e.week&&e.week.startsWith('INC')&&liveIds.has(e.week.slice(4).trim())).reduce((a,e)=>a+(e.weekday_oncall||0)+(e.weekend_oncall||0),0);
     return { ...u, leaveWeeks, totalOC, ocIncs, openIncs, resolvedIncs, availPct, incHrs };
   });
 
@@ -6311,7 +6325,7 @@ function WeeklyReports({ users, incidents, timesheets, holidays, isManager }) {
 }
 
 // ── Payroll (Manager only) ─────────────────────────────────────────────────
-function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, rota, holidays, isManager, overtime: overtimeArr, driveToken }) {
+function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents, upgrades, rota, holidays, isManager, overtime: overtimeArr, driveToken }) {
   const [showExport, setShowExport] = React.useState(false);
   const [exportStart, setExportStart] = React.useState('');
   const [exportEnd,   setExportEnd]   = React.useState('');
@@ -6407,7 +6421,10 @@ function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, rota
       (!startDs || o.date >= startDs) && (!endDs || o.date <= endDs)
     ).reduce((s, o) => s + (o.hours || 0), 0);
 
-    const oc = calcOncallPay(ts, hourly, upgradeHrs, bankHolHrs, rotaForUser, userHols, bhList, startDs, endDs);
+    // Build a Set of live incident IDs so calcOncallPay can exclude orphaned INC timesheet entries
+    const liveIncidentIds = new Set((Array.isArray(incidents) ? incidents : []).map(i => i.id));
+
+    const oc = calcOncallPay(ts, hourly, upgradeHrs, bankHolHrs, rotaForUser, userHols, bhList, startDs, endDs, liveIncidentIds);
     const tb = calcTOILBalance(safeTS[u.id], safeToil, u.id);
     const incHrs = oc.incidentHrs || 0;
     return { p, annual, hourly, oc, tb, incHrs, upgradeHrs, bankHolHrs, overtimeHrs };
@@ -6752,6 +6769,30 @@ function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, rota
   const totalOvertimeHrs = safeUsers.reduce((s, u) => { const { overtimeHrs } = getUserData(u); return s + overtimeHrs; }, 0);
   const pendingOTCount   = safeOT.filter(o => o.status === 'pending').length;
 
+  // ── Recalc: purge orphaned INC timesheet entries not linked to any live incident ──
+  const [recalcMsg, setRecalcMsg] = React.useState('');
+  const recalcPayroll = () => {
+    const liveIds = new Set(safeInc.map(i => i.id));
+    let removed = 0;
+    setTimesheets(prev => {
+      const updated = {};
+      Object.entries(prev || {}).forEach(([uid, entries]) => {
+        const before = (entries || []).length;
+        updated[uid] = (entries || []).filter(e => {
+          if (!e.week || !e.week.startsWith('INC')) return true;
+          return liveIds.has(e.week.slice(4).trim());
+        });
+        removed += before - updated[uid].length;
+      });
+      return updated;
+    });
+    const msg = removed > 0
+      ? `✅ Removed ${removed} orphaned incident entr${removed === 1 ? 'y' : 'ies'} — figures updated.`
+      : '✅ All incident entries match live incidents — nothing to remove.';
+    setRecalcMsg(msg);
+    setTimeout(() => setRecalcMsg(''), 6000);
+  };
+
   return (
     <div>
       <PageHeader title="Payroll" sub="On-call pay, TOIL, tax and take-home — manager only"
@@ -6759,9 +6800,14 @@ function Payroll({ users, timesheets, payconfig, toil, incidents, upgrades, rota
           <button className="btn btn-secondary" onClick={() => setShowLogs(l => !l)}>
             📋 Export Log {exportLogs.length > 0 && `(${exportLogs.length})`}
           </button>
+          <button className="btn btn-secondary btn-sm" onClick={recalcPayroll}
+            title="Cross-check incident timesheet entries against live incidents and remove orphans">
+            ♻ Recalc
+          </button>
           <button className="btn btn-primary" onClick={() => setShowExport(true)}>📥 Export to Excel</button>
         </div>} />
 
+      {recalcMsg && <Alert type="success" style={{ marginBottom:12 }}>{recalcMsg}</Alert>}
       {logMsg && <Alert type="success" style={{ marginBottom:12 }}>{logMsg}</Alert>}
 
       {/* Export Log Panel */}
