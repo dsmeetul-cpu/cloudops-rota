@@ -1,6 +1,6 @@
 // src/App.js
 // CloudOps Rota — Full Production Build v2
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 2th7 April 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 27th April 2026
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
@@ -141,6 +141,33 @@ async function driveWriteJson(token, name, data, parentId) {
     method: 'PATCH',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body,
+  }).then(r => r.json());
+}
+
+// Delete a file from Drive by its file ID
+async function driveDeleteFile(token, fileId) {
+  return fetch(`https://www.googleapis.com/drive/v3/files/${fileId}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+// Upload a binary Blob to Drive (used for Excel exports)
+async function driveUploadBlob(token, name, blob, parentId) {
+  const pid = parentId || await getAppFolderId(token);
+  const existing = await driveFindFile(token, name, pid);
+  const form = new FormData();
+  form.append('metadata', new Blob([JSON.stringify(
+    existing ? { name } : { name, parents: pid ? [pid] : [] }
+  )], { type: 'application/json' }));
+  form.append('file', blob);
+  const url = existing
+    ? `https://www.googleapis.com/upload/drive/v3/files/${existing.id}?uploadType=multipart`
+    : 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart';
+  return fetch(url, {
+    method: existing ? 'PATCH' : 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: form,
   }).then(r => r.json());
 }
 
@@ -6422,15 +6449,52 @@ function WeeklyReports({ users, incidents, timesheets, holidays, isManager }) {
   );
 }
 
+// ── Payroll helpers — 11th-cycle date utils ────────────────────────────────
+
+// Returns the 11th of the previous month and 10th of the current month (the payroll cycle)
+function payrollCycleDates() {
+  const now = new Date();
+  const y = now.getFullYear(), m = now.getMonth(); // 0-indexed
+  // If today is on or before the 10th, we're still in the previous cycle
+  const cycleMonth = now.getDate() <= 10 ? m - 1 : m;
+  const cycleYear  = cycleMonth < 0 ? y - 1 : y;
+  const cm         = ((cycleMonth % 12) + 12) % 12;
+  const cycleStart = `${cycleYear}-${String(cm + 1).padStart(2,'0')}-11`;
+  // End = 10th of the following month
+  const endMonth   = cm + 1 >= 12 ? 0 : cm + 1;
+  const endYear    = cm + 1 >= 12 ? cycleYear + 1 : cycleYear;
+  const cycleEnd   = `${endYear}-${String(endMonth + 1).padStart(2,'0')}-10`;
+  return { cycleStart, cycleEnd };
+}
+
+// Calculate the Nth business working day of a month
+// Returns a Date for the Nth business day (Mon–Fri, excl. UK bank holidays)
+function nthBusinessDay(year, month, n, bhDates = []) {
+  const bhSet = new Set(bhDates);
+  let count = 0, d = new Date(year, month, 1);
+  while (count < n) {
+    const dow = d.getDay();
+    const ds  = d.toISOString().slice(0, 10);
+    if (dow !== 0 && dow !== 6 && !bhSet.has(ds)) count++;
+    if (count < n) d.setDate(d.getDate() + 1);
+  }
+  return d;
+}
+
 // ── Payroll (Manager only) ─────────────────────────────────────────────────
 function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents, upgrades, rota, holidays, isManager, overtime: overtimeArr, driveToken }) {
-  const [showExport, setShowExport] = React.useState(false);
-  const [exportStart, setExportStart] = React.useState('');
-  const [exportEnd,   setExportEnd]   = React.useState('');
+  const [tab,         setTab]         = React.useState('overview');  // 'overview' | 'takehome' | 'log'
+  const [showExport, setShowExport]   = React.useState(false);
   const [exporting,   setExporting]   = React.useState(false);
   const [exportLogs,  setExportLogs]  = React.useState([]);
-  const [showLogs,    setShowLogs]    = React.useState(false);
   const [logMsg,      setLogMsg]      = React.useState('');
+  const [deletingLog, setDeletingLog] = React.useState(null);
+  const [autoExportBanner, setAutoExportBanner] = React.useState(null);
+
+  // Default date range = current payroll cycle (11th prev → 10th curr)
+  const { cycleStart, cycleEnd } = React.useMemo(payrollCycleDates, []);
+  const [exportStart, setExportStart] = React.useState(cycleStart);
+  const [exportEnd,   setExportEnd]   = React.useState(cycleEnd);
 
   // Safe defaults so nothing crashes if props arrive undefined
   const safeUsers     = users     || [];
@@ -6452,11 +6516,37 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
         const existing = await driveFindFile(driveToken, 'export_log.json', folderId);
         if (existing) {
           const data = await driveReadJson(driveToken, existing.id);
-          if (Array.isArray(data)) setExportLogs(data);
+          if (Array.isArray(data)) setExportLogs(data.slice(0, 12));
         }
       } catch(e) { console.warn('Payroll: could not load export log', e); }
     })();
   }, [driveToken, isManager]); // eslint-disable-line
+
+  // Auto-export check: is today the 11th business day of the month?
+  React.useEffect(() => {
+    if (!driveToken || !isManager) return;
+    const now  = new Date();
+    const bhDates = (typeof UK_BANK_HOLIDAYS !== 'undefined') ? UK_BANK_HOLIDAYS.map(h => h.date) : [];
+    const deadline = nthBusinessDay(now.getFullYear(), now.getMonth(), 11, bhDates);
+    const todayDs  = now.toISOString().slice(0, 10);
+    const deadlineDs = deadline.toISOString().slice(0, 10);
+    // Check if today is on or past the deadline, and we haven't exported this cycle yet
+    if (todayDs >= deadlineDs) {
+      const alreadyExported = exportLogs.some(l => {
+        if (!l.rangeEnd || l.rangeEnd === 'all') return false;
+        return l.rangeEnd >= cycleStart && l.rangeEnd <= cycleEnd;
+      });
+      if (!alreadyExported) {
+        setAutoExportBanner({
+          deadline: deadlineDs,
+          isPast: todayDs > deadlineDs,
+          isToday: todayDs === deadlineDs,
+        });
+      } else {
+        setAutoExportBanner(null);
+      }
+    }
+  }, [exportLogs, driveToken, isManager, cycleStart, cycleEnd]); // eslint-disable-line
 
   // Guard AFTER all hooks
   if (!isManager) return <Alert type="warning">⚠ Payroll is restricted to managers.</Alert>;
@@ -6832,32 +6922,84 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
       XLSX.utils.book_append_sheet(wb, ws2, '📅 Daily Detail');
 
       const fname = `CloudOps-Hours-${(exportStart||'all').replace(/-/g,'')}-${(exportEnd||'time').replace(/-/g,'')}.xlsx`;
+
+      // ── Write to file and also upload to Drive ───────────────────────────────
+      const wbBuf = XLSX.write(wb, { bookType:'xlsx', type:'array' });
       XLSX.writeFile(wb, fname);
 
-      // ── Save export log entry to Drive ───────────────────────────────────
+      // Build log entry
       const logEntry = {
-        id:         'exp-' + Date.now(),
-        exportedAt: new Date().toISOString(),
-        exportedBy: safeUsers[0]?.id || 'manager', // best-effort — manager is current user
-        filename:   fname,
-        rangeStart: exportStart || 'all',
-        rangeEnd:   exportEnd   || 'all',
+        id:           'exp-' + Date.now(),
+        exportedAt:   new Date().toISOString(),
+        exportedBy:   safeUsers[0]?.id || 'manager',
+        filename:     fname,
+        rangeStart:   exportStart || 'all',
+        rangeEnd:     exportEnd   || 'all',
         engineerCount: safeUsers.length,
-        totalHrs:   s1Rows.reduce((a,r)=>a+(parseFloat(r[4])||0)+(parseFloat(r[5])||0)+(parseFloat(r[6])||0)+(parseFloat(r[7])||0),0),
+        totalHrs:     s1Rows.reduce((a,r)=>a+(parseFloat(r[4])||0)+(parseFloat(r[5])||0)+(parseFloat(r[6])||0)+(parseFloat(r[7])||0),0),
+        driveFileId:  null, // filled in below if Drive upload succeeds
       };
-      const updatedLogs = [logEntry, ...exportLogs];
-      setExportLogs(updatedLogs);
+
+      // Cap logs at 12 (drop oldest)
+      const updatedLogs = [logEntry, ...exportLogs].slice(0, 12);
+
       if (driveToken) {
         try {
           const folderId = await driveGetOrCreateSubfolder(driveToken, 'CloudOps-Payroll-Exports');
+          // Upload the .xlsx file to Drive
+          const xlsxBlob = new Blob([wbBuf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+          const uploaded = await driveUploadBlob(driveToken, fname, xlsxBlob, folderId).catch(() => null);
+          if (uploaded?.id) updatedLogs[0].driveFileId = uploaded.id;
+          // Save the log JSON
           await driveWriteJson(driveToken, 'export_log.json', updatedLogs, folderId);
-          setLogMsg(`✅ Export logged to Drive — CloudOps-Rota/CloudOps-Payroll-Exports/`);
-        } catch(e) { console.warn('Payroll export log save failed:', e); }
+          setLogMsg(`✅ Exported & saved to Drive — CloudOps-Rota/CloudOps-Payroll-Exports/${fname}`);
+        } catch(e) { console.warn('Payroll export Drive save failed:', e); setLogMsg('⚠ Downloaded locally — Drive save failed.'); }
       }
+      setExportLogs(updatedLogs);
       setShowExport(false);
+      setTab('log'); // Switch to log tab to show the new entry
     } finally {
       setExporting(false);
     }
+  };
+
+  // ── Delete a single log entry (and its Drive file) ────────────────────────
+  const deleteLogEntry = async (logId) => {
+    setDeletingLog(logId);
+    try {
+      const entry = exportLogs.find(l => l.id === logId);
+      if (entry?.driveFileId && driveToken) {
+        await driveDeleteFile(driveToken, entry.driveFileId).catch(() => {});
+      }
+      const updatedLogs = exportLogs.filter(l => l.id !== logId);
+      setExportLogs(updatedLogs);
+      if (driveToken) {
+        const folderId = await driveGetOrCreateSubfolder(driveToken, 'CloudOps-Payroll-Exports');
+        await driveWriteJson(driveToken, 'export_log.json', updatedLogs, folderId);
+      }
+      setLogMsg('🗑 Log entry deleted.');
+      setTimeout(() => setLogMsg(''), 4000);
+    } catch(e) { console.warn('Delete log entry failed:', e); }
+    finally { setDeletingLog(null); }
+  };
+
+  // ── Clear all log entries ─────────────────────────────────────────────────
+  const clearAllLogs = async () => {
+    if (!window.confirm('Delete all export logs and their Drive files? This cannot be undone.')) return;
+    setDeletingLog('all');
+    try {
+      if (driveToken) {
+        await Promise.allSettled(
+          exportLogs.filter(l => l.driveFileId).map(l => driveDeleteFile(driveToken, l.driveFileId))
+        );
+        const folderId = await driveGetOrCreateSubfolder(driveToken, 'CloudOps-Payroll-Exports');
+        await driveWriteJson(driveToken, 'export_log.json', [], folderId);
+      }
+      setExportLogs([]);
+      setLogMsg('🗑 All logs cleared.');
+      setTimeout(() => setLogMsg(''), 4000);
+    } catch(e) { console.warn('Clear all logs failed:', e); }
+    finally { setDeletingLog(null); }
   };
 
   // ── Summary stats (all time) ──────────────────────────────────────────────
@@ -6891,13 +7033,14 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
     setTimeout(() => setRecalcMsg(''), 6000);
   };
 
+  // ── Cycle label helper ─────────────────────────────────────────────────────
+  const fmtD = ds => ds ? new Date(ds + 'T12:00:00').toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}) : '—';
+  const cycleLabel = `${fmtD(cycleStart)} – ${fmtD(cycleEnd)}`;
+
   return (
     <div>
-      <PageHeader title="Payroll" sub="On-call pay, TOIL, tax and take-home — manager only"
+      <PageHeader title="Payroll" sub={`Cycle: ${cycleLabel} · manager only`}
         actions={<div style={{ display:'flex', gap:8 }}>
-          <button className="btn btn-secondary" onClick={() => setShowLogs(l => !l)}>
-            📋 Export Log {exportLogs.length > 0 && `(${exportLogs.length})`}
-          </button>
           <button className="btn btn-secondary btn-sm" onClick={recalcPayroll}
             title="Cross-check incident timesheet entries against live incidents and remove orphans">
             ♻ Recalc
@@ -6905,39 +7048,218 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
           <button className="btn btn-primary" onClick={() => setShowExport(true)}>📥 Export to Excel</button>
         </div>} />
 
-      {recalcMsg && <Alert type="success" style={{ marginBottom:12 }}>{recalcMsg}</Alert>}
-      {logMsg && <Alert type="success" style={{ marginBottom:12 }}>{logMsg}</Alert>}
+      {/* Auto-export deadline banner */}
+      {autoExportBanner && (
+        <div style={{ background: autoExportBanner.isPast ? 'rgba(239,68,68,0.12)' : 'rgba(245,158,11,0.12)',
+          border: `1px solid ${autoExportBanner.isPast ? 'rgba(239,68,68,0.35)' : 'rgba(245,158,11,0.35)'}`,
+          borderRadius:8, padding:'10px 16px', marginBottom:14, display:'flex', alignItems:'center', gap:12, fontSize:13 }}>
+          <span style={{ fontSize:20 }}>{autoExportBanner.isPast ? '🚨' : '⚠️'}</span>
+          <div style={{ flex:1 }}>
+            <strong style={{ color: autoExportBanner.isPast ? '#fca5a5' : '#fcd34d' }}>
+              {autoExportBanner.isPast ? 'Payroll submission overdue!' : 'Payroll due today!'}
+            </strong>
+            <span style={{ color:'var(--text-secondary)', marginLeft:8, fontSize:12 }}>
+              The 11th business day deadline {autoExportBanner.isPast ? `was ${fmtD(autoExportBanner.deadline)}` : 'is today'} — export to Excel and submit to payroll.
+            </span>
+          </div>
+          <button className="btn btn-primary btn-sm" onClick={() => setShowExport(true)}>📥 Export Now</button>
+        </div>
+      )}
 
-      {/* Export Log Panel */}
-      {showLogs && (
-        <div className="card mb-16">
-          <div className="card-title">📋 Payroll Export Log</div>
-          {exportLogs.length === 0 ? (
-            <div style={{ color:'var(--text-muted)', fontSize:12, padding:'12px 0' }}>No exports yet. Each Excel export is automatically logged here and saved to <code>CloudOps-Rota/CloudOps-Payroll-Exports/</code> in Google Drive.</div>
-          ) : (
-            <table style={{ fontSize:12 }}>
-              <thead>
-                <tr>
-                  <th>Date/Time</th><th>File Name</th><th>Period</th>
-                  <th>Engineers</th><th>Total Hrs</th>
-                </tr>
-              </thead>
-              <tbody>
-                {exportLogs.map(log => (
-                  <tr key={log.id}>
-                    <td style={{ fontFamily:'DM Mono', fontSize:11, color:'var(--text-muted)' }}>
-                      {new Date(log.exportedAt).toLocaleString('en-GB',{day:'2-digit',month:'2-digit',year:'2-digit',hour:'2-digit',minute:'2-digit'})}
-                    </td>
-                    <td style={{ fontFamily:'DM Mono', fontSize:11, color:'#93c5fd' }}>{log.filename}</td>
-                    <td style={{ fontSize:11 }}>
-                      {log.rangeStart === 'all' ? 'All time' : `${log.rangeStart} → ${log.rangeEnd}`}
-                    </td>
-                    <td style={{ textAlign:'center', fontFamily:'DM Mono' }}>{log.engineerCount}</td>
-                    <td style={{ textAlign:'right', fontFamily:'DM Mono', color:'#6ee7b7' }}>{Math.round(log.totalHrs)}h</td>
+      {recalcMsg && <Alert type="success" style={{ marginBottom:12 }}>{recalcMsg}</Alert>}
+      {logMsg    && <Alert type="success" style={{ marginBottom:12 }}>{logMsg}</Alert>}
+
+      {/* KPI bar — always visible */}
+      <div className="grid-4 mb-16">
+        <StatCard label="Incident Hours"   value={`${totalIncidentHrs}h`} sub="Auto-logged from incidents"  accent="#f59e0b" icon="🚨" />
+        <StatCard label="Upgrade Hours"    value={`${totalUpgradeHrs}h`}  sub="Approved upgrade days"       accent="#818cf8" icon="⬆" />
+        <StatCard label="Overtime Hours"   value={`${totalOvertimeHrs}h`} sub="Approved overtime"           accent="#10b981" icon="🕐" />
+        <StatCard label="Pending OT"       value={pendingOTCount}          sub="Awaiting approval"           accent="#f59e0b" icon="⏳" />
+      </div>
+
+      {/* Tabs */}
+      <div className="tab-bar" style={{ marginBottom:16 }}>
+        {[
+          ['overview',  '📋 Hours Summary'],
+          ['takehome',  '💷 Take-Home'],
+          ['log',       `📁 Export Log${exportLogs.length > 0 ? ` (${exportLogs.length})` : ''}`],
+        ].map(([id, label]) => (
+          <div key={id} className={`tab${tab === id ? ' active' : ''}`} onClick={() => setTab(id)}>{label}</div>
+        ))}
+      </div>
+
+      {/* ── TAB: Overview ─────────────────────────────────────────────────── */}
+      {tab === 'overview' && (
+        <div className="card mb-16" style={{ overflowX:'auto' }}>
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:12 }}>
+            <div className="card-title">On-Call Hours — {cycleLabel}</div>
+            <div style={{ fontSize:11, color:'var(--text-muted)', fontFamily:'DM Mono' }}>Data from 11th of each month</div>
+          </div>
+          <table style={{ minWidth:950, tableLayout:'fixed', width:'100%' }}>
+            <colgroup>
+              <col style={{ width:200 }} /><col style={{ width:90 }} /><col style={{ width:90 }} />
+              <col style={{ width:90 }} /><col style={{ width:90 }} /><col style={{ width:80 }} />
+              <col style={{ width:80 }} /><col style={{ width:80 }} /><col style={{ width:80 }} />
+              <col style={{ width:75 }} />
+            </colgroup>
+            <thead>
+              <tr>
+                <th style={{ textAlign:'left' }}>Engineer</th>
+                <th style={{ textAlign:'right', color:'#93c5fd' }}>Standby WD</th>
+                <th style={{ textAlign:'right', color:'#93c5fd' }}>Worked WD</th>
+                <th style={{ textAlign:'right', color:'#a78bfa' }}>Standby WE</th>
+                <th style={{ textAlign:'right', color:'#a78bfa' }}>Worked WE</th>
+                <th style={{ textAlign:'right', color:'#f59e0b' }}>Incidents</th>
+                <th style={{ textAlign:'right', color:'#818cf8' }}>Upgrades</th>
+                <th style={{ textAlign:'right', color:'#fca5a5' }}>Bank Hol</th>
+                <th style={{ textAlign:'right', color:'#e879f9' }}>Overtime</th>
+                <th style={{ textAlign:'right' }}>TOIL Bal.</th>
+              </tr>
+            </thead>
+            <tbody>
+              {safeUsers.map(u => {
+                const { oc, tb, incHrs, upgradeHrs, bankHolHrs, overtimeHrs } = getUserData(u, cycleStart, cycleEnd);
+                return (
+                  <tr key={u.id}>
+                    <td><div style={{ display:'flex', gap:8, alignItems:'center' }}><Avatar user={u} size={24} /><div><div style={{ fontSize:12 }}>{u.name}</div><div style={{ fontSize:10, color:'var(--text-muted)', fontFamily:'DM Mono' }}>{u.id}</div></div></div></td>
+                    <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#93c5fd', textAlign:'right' }}>{oc.standbyWD}h</td>
+                    <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#93c5fd', textAlign:'right' }}>{oc.workedWD}h</td>
+                    <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#a78bfa', textAlign:'right' }}>{oc.standbyWE}h</td>
+                    <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#a78bfa', textAlign:'right' }}>{oc.workedWE}h</td>
+                    <td style={{ fontFamily:'DM Mono', fontSize:12, color:incHrs>0?'#f59e0b':'var(--text-muted)', textAlign:'right' }}>{incHrs>0?`${incHrs}h`:'—'}</td>
+                    <td style={{ fontFamily:'DM Mono', fontSize:12, color:upgradeHrs>0?'#818cf8':'var(--text-muted)', textAlign:'right' }}>{upgradeHrs>0?`${upgradeHrs}h`:'—'}</td>
+                    <td style={{ fontFamily:'DM Mono', fontSize:12, color:bankHolHrs>0?'#fca5a5':'var(--text-muted)', textAlign:'right' }}>{bankHolHrs>0?`${bankHolHrs}h`:'—'}</td>
+                    <td style={{ fontFamily:'DM Mono', fontSize:12, color:overtimeHrs>0?'#e879f9':'var(--text-muted)', fontWeight:overtimeHrs>0?700:400, textAlign:'right' }}>{overtimeHrs>0?`${overtimeHrs}h`:'—'}</td>
+                    <td style={{ fontFamily:'DM Mono', fontSize:12, color:tb.balance>0?'#38bdf8':'#fca5a5', textAlign:'right' }}>{tb.balance}h</td>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                );
+              })}
+            </tbody>
+          </table>
+          <div style={{ marginTop:10, fontSize:11, color:'var(--text-muted)' }}>
+            Daily: 10am–7pm · Weekday OC: 7pm–7am · Weekend OC: Fri 7pm–Mon 7am · Bank Hol OC: 9am–7am · Overtime: manager-approved only
+          </div>
+        </div>
+      )}
+
+      {/* ── TAB: Take-Home ────────────────────────────────────────────────── */}
+      {tab === 'takehome' && (
+        <>
+          <div style={{ fontSize:12, color:'var(--text-muted)', marginBottom:14 }}>
+            💷 Estimated take-home after UK Income Tax, National Insurance (2025-26), pension and student loan. Based on annualised on-call pay.
+          </div>
+          <div className="grid-2 mb-16">
+            {safeUsers.map(u => {
+              const { p, annual, oc, incHrs } = getUserData(u, cycleStart, cycleEnd);
+              const annualOC = oc.total * 12;
+              const tx = calcUKTax(annual + annualOC, { pensionPct:p.pensionPct||0, studentLoan:p.studentLoan||false });
+              return (
+                <div key={u.id} className="card">
+                  <div style={{ display:'flex', gap:10, alignItems:'center', marginBottom:10 }}>
+                    <Avatar user={u} size={28} />
+                    <div style={{ flex:1 }}>
+                      <div style={{ fontSize:13, fontWeight:600 }}>{u.name}</div>
+                      <div style={{ fontSize:11, color:'var(--text-muted)' }}>
+                        £{annual.toLocaleString()}/yr base · Eff. rate: {(tx.effectiveRate*100).toFixed(1)}%
+                        {incHrs>0 && <span style={{ color:'#f59e0b', marginLeft:6 }}>· 🚨 {incHrs}h incident</span>}
+                      </div>
+                    </div>
+                  </div>
+                  <div style={{ background:'rgba(30,64,175,0.1)', borderRadius:8, padding:'8px 12px', marginBottom:10, fontSize:11 }}>
+                    <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}><span style={{ color:'var(--text-muted)' }}>Annual gross (inc. OC)</span><span style={{ fontFamily:'DM Mono' }}>£{Math.round(tx.annualGross).toLocaleString()}</span></div>
+                    <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}><span style={{ color:'#fca5a5' }}>Income Tax</span><span style={{ fontFamily:'DM Mono', color:'#fca5a5' }}>-£{Math.round(tx.incomeTax).toLocaleString()}</span></div>
+                    <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}><span style={{ color:'#fcd34d' }}>National Insurance</span><span style={{ fontFamily:'DM Mono', color:'#fcd34d' }}>-£{Math.round(tx.ni).toLocaleString()}</span></div>
+                    {(p.pensionPct||0)>0 && <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}><span style={{ color:'#93c5fd' }}>Pension ({p.pensionPct}%)</span><span style={{ fontFamily:'DM Mono', color:'#93c5fd' }}>-£{Math.round(tx.pension).toLocaleString()}</span></div>}
+                    {p.studentLoan && <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}><span style={{ color:'#c4b5fd' }}>Student Loan Plan 2</span><span style={{ fontFamily:'DM Mono', color:'#c4b5fd' }}>-£{Math.round(tx.slRepay).toLocaleString()}</span></div>}
+                    <div style={{ display:'flex', justifyContent:'space-between', borderTop:'1px solid var(--border)', paddingTop:4, marginTop:4 }}><span style={{ fontWeight:600 }}>Annual take-home</span><span style={{ fontFamily:'DM Mono', fontWeight:700, color:'#6ee7b7' }}>£{Math.round(tx.annualNet).toLocaleString()}</span></div>
+                  </div>
+                  <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:6, fontSize:11 }}>
+                    {[['Monthly','monthly'],['Weekly','weekly'],['Daily','daily'],['Hourly','hourly']].map(([label,key]) => (
+                      <div key={key} style={{ background:'rgba(30,64,175,0.15)', borderRadius:6, padding:'6px 8px', textAlign:'center' }}>
+                        <div style={{ color:'var(--text-muted)', marginBottom:2, fontSize:10 }}>{label}</div>
+                        <div style={{ fontWeight:700, color:'#10b981', fontFamily:'DM Mono', fontSize:12 }}>£{tx[key].net.toFixed(key==='hourly'?2:0)}</div>
+                        <div style={{ color:'var(--text-muted)', fontSize:9 }}>gross £{tx[key].gross.toFixed(key==='hourly'?2:0)}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+
+      {/* ── TAB: Export Log ───────────────────────────────────────────────── */}
+      {tab === 'log' && (
+        <div className="card mb-16">
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:12 }}>
+            <div className="card-title">📁 Payroll Export Log</div>
+            <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+              <span style={{ fontSize:11, color:'var(--text-muted)', fontFamily:'DM Mono' }}>
+                {exportLogs.length}/12 entries · Files saved to Drive
+              </span>
+              {exportLogs.length > 0 && (
+                <button className="btn btn-danger btn-sm" onClick={clearAllLogs} disabled={deletingLog === 'all'}>
+                  {deletingLog === 'all' ? '⏳…' : '🗑 Clear All'}
+                </button>
+              )}
+            </div>
+          </div>
+          {exportLogs.length === 0 ? (
+            <div style={{ color:'var(--text-muted)', fontSize:13, padding:'24px 0', textAlign:'center' }}>
+              <div style={{ fontSize:32, marginBottom:8 }}>📭</div>
+              No exports yet. Each Excel export is automatically logged here and saved to
+              <code style={{ margin:'0 4px' }}>CloudOps-Rota/CloudOps-Payroll-Exports/</code> in Google Drive.
+            </div>
+          ) : (
+            <div style={{ overflowX:'auto' }}>
+              <table style={{ width:'100%' }}>
+                <thead>
+                  <tr>
+                    <th>Date / Time</th>
+                    <th>File Name</th>
+                    <th>Period</th>
+                    <th style={{ textAlign:'center' }}>Engineers</th>
+                    <th style={{ textAlign:'right' }}>Total Hrs</th>
+                    <th style={{ textAlign:'center' }}>Drive</th>
+                    <th style={{ textAlign:'center' }}>Delete</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {exportLogs.map(log => (
+                    <tr key={log.id}>
+                      <td style={{ fontFamily:'DM Mono', fontSize:11, color:'var(--text-muted)', whiteSpace:'nowrap' }}>
+                        {new Date(log.exportedAt).toLocaleString('en-GB',{day:'2-digit',month:'2-digit',year:'2-digit',hour:'2-digit',minute:'2-digit'})}
+                      </td>
+                      <td style={{ fontFamily:'DM Mono', fontSize:11, color:'#93c5fd' }}>{log.filename}</td>
+                      <td style={{ fontSize:11, whiteSpace:'nowrap' }}>
+                        {log.rangeStart === 'all' ? 'All time' : `${fmtD(log.rangeStart)} → ${fmtD(log.rangeEnd)}`}
+                      </td>
+                      <td style={{ textAlign:'center', fontFamily:'DM Mono', fontSize:12 }}>{log.engineerCount}</td>
+                      <td style={{ textAlign:'right', fontFamily:'DM Mono', fontSize:12, color:'#6ee7b7' }}>{Math.round(log.totalHrs)}h</td>
+                      <td style={{ textAlign:'center' }}>
+                        {log.driveFileId
+                          ? <span title="Saved in Google Drive" style={{ fontSize:16 }}>✅</span>
+                          : <span title="No Drive file" style={{ fontSize:14, color:'var(--text-muted)' }}>—</span>
+                        }
+                      </td>
+                      <td style={{ textAlign:'center' }}>
+                        <button className="btn btn-danger btn-sm"
+                          onClick={() => deleteLogEntry(log.id)}
+                          disabled={deletingLog === log.id}
+                          title="Delete this log entry and its Drive file">
+                          {deletingLog === log.id ? '⏳' : '🗑'}
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div style={{ marginTop:10, fontSize:11, color:'var(--text-muted)' }}>
+                Deleting an entry also permanently removes the .xlsx file from Google Drive.
+                Max 12 entries stored — oldest are auto-removed on each new export.
+              </div>
+            </div>
           )}
         </div>
       )}
@@ -6946,27 +7268,35 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
       {showExport && (
         <Modal title="Export Payroll to Excel" onClose={() => setShowExport(false)}>
           <div style={{ display:'flex', flexDirection:'column', gap:16, padding:'8px 0' }}>
-            <Alert type="info">Select the week/date range to export. Leave blank to export all data.</Alert>
+            <Alert type="info">
+              📅 Current payroll cycle: <strong>{cycleLabel}</strong>.
+              Dates default to the 11th of the previous month → 10th of the current month.
+            </Alert>
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
               <div>
-                <div style={{ fontSize:12, color:'var(--text-muted)', marginBottom:6 }}>From (start of week)</div>
+                <div style={{ fontSize:12, color:'var(--text-muted)', marginBottom:6 }}>From (11th of prev. month)</div>
                 <input type="date" className="input" value={exportStart} onChange={e => setExportStart(e.target.value)} />
               </div>
               <div>
-                <div style={{ fontSize:12, color:'var(--text-muted)', marginBottom:6 }}>To (end of week)</div>
+                <div style={{ fontSize:12, color:'var(--text-muted)', marginBottom:6 }}>To (10th of curr. month)</div>
                 <input type="date" className="input" value={exportEnd} onChange={e => setExportEnd(e.target.value)} />
               </div>
             </div>
-            {/* Quick range shortcuts */}
             <div>
               <div style={{ fontSize:11, color:'var(--text-muted)', marginBottom:6 }}>Quick ranges</div>
               <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
                 {[
-                  ['This month', () => { const n=new Date(); const y=n.getFullYear(),m=String(n.getMonth()+1).padStart(2,'0'); setExportStart(`${y}-${m}-01`); setExportEnd(new Date(y,n.getMonth()+1,0).toISOString().slice(0,10)); }],
-                  ['Last month', () => { const n=new Date(); const d=new Date(n.getFullYear(),n.getMonth(),0); const s=new Date(d.getFullYear(),d.getMonth(),1); setExportStart(s.toISOString().slice(0,10)); setExportEnd(d.toISOString().slice(0,10)); }],
+                  ['Current cycle', () => { setExportStart(cycleStart); setExportEnd(cycleEnd); }],
+                  ['Prev. cycle', () => {
+                    const n=new Date(); const y=n.getFullYear(), m=n.getMonth();
+                    const pc = m - 2; const pcy = pc < 0 ? y-1 : y; const pcm = ((pc%12)+12)%12;
+                    setExportStart(`${pcy}-${String(pcm+1).padStart(2,'0')}-11`);
+                    const endM = pcm+1>=12?0:pcm+1; const endY = pcm+1>=12?pcy+1:pcy;
+                    setExportEnd(`${endY}-${String(endM+1).padStart(2,'0')}-10`);
+                  }],
                   ['Last 4 weeks', () => { const e=new Date(); const s=new Date(); s.setDate(e.getDate()-28); setExportStart(s.toISOString().slice(0,10)); setExportEnd(e.toISOString().slice(0,10)); }],
-                  ['This year', () => { const y=new Date().getFullYear(); setExportStart(`${y}-01-01`); setExportEnd(`${y}-12-31`); }],
-                  ['All time', () => { setExportStart(''); setExportEnd(''); }],
+                  ['This year',    () => { const y=new Date().getFullYear(); setExportStart(`${y}-01-11`); setExportEnd(`${y}-12-10`); }],
+                  ['All time',     () => { setExportStart(''); setExportEnd(''); }],
                 ].map(([label, fn]) => (
                   <button key={label} className="btn btn-secondary btn-sm" onClick={fn}>{label}</button>
                 ))}
@@ -6974,123 +7304,19 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
             </div>
             {(exportStart || exportEnd) && (
               <div style={{ fontSize:12, color:'var(--text-secondary)', background:'rgba(59,130,246,0.1)', borderRadius:8, padding:'8px 12px' }}>
-                📅 Exporting: <strong>{exportStart || 'start'}</strong> → <strong>{exportEnd || 'end'}</strong>
-                &nbsp;· {safeUsers.length} engineers
+                📅 Exporting: <strong>{exportStart ? fmtD(exportStart) : 'start'}</strong> → <strong>{exportEnd ? fmtD(exportEnd) : 'end'}</strong>
+                &nbsp;· {safeUsers.length} engineers · File will be saved to Google Drive automatically.
               </div>
             )}
             <div style={{ display:'flex', gap:8, justifyContent:'flex-end', marginTop:4 }}>
               <button className="btn btn-secondary" onClick={() => setShowExport(false)}>Cancel</button>
               <button className="btn btn-primary" onClick={doExportExcel} disabled={exporting}>
-                {exporting ? '⏳ Exporting…' : '📥 Download Excel'}
+                {exporting ? '⏳ Exporting…' : '📥 Download & Save to Drive'}
               </button>
             </div>
           </div>
         </Modal>
       )}
-
-      {/* Summary KPIs */}
-      <div className="grid-4 mb-16">
-        <StatCard label="Incident Hours"   value={`${totalIncidentHrs}h`}                    sub="Auto-logged from incidents"    accent="#f59e0b" icon="🚨" />
-        <StatCard label="Upgrade Hours"    value={`${totalUpgradeHrs}h`}                     sub="Approved upgrade days"         accent="#818cf8" icon="⬆" />
-        <StatCard label="Overtime Hours"   value={`${totalOvertimeHrs}h`}                    sub="Approved overtime"             accent="#10b981" icon="🕐" />
-        <StatCard label="Pending OT"       value={pendingOTCount}                             sub="Awaiting approval"             accent="#f59e0b" icon="⏳" />
-      </div>
-
-      {/* On-call hours summary table */}
-      <div className="card mb-16" style={{ overflowX:'auto' }}>
-        <div className="card-title">On-Call Hours Summary — standby · worked · incidents · upgrades · bank holidays · overtime</div>
-        <table style={{ minWidth:950, tableLayout:'fixed', width:'100%' }}>
-          <colgroup>
-            <col style={{ width:200 }} />  {/* Engineer */}
-            <col style={{ width:90 }} />   {/* Standby WD */}
-            <col style={{ width:90 }} />   {/* Worked WD */}
-            <col style={{ width:90 }} />   {/* Standby WE */}
-            <col style={{ width:90 }} />   {/* Worked WE */}
-            <col style={{ width:80 }} />   {/* Incidents */}
-            <col style={{ width:80 }} />   {/* Upgrades */}
-            <col style={{ width:80 }} />   {/* Bank Hol */}
-            <col style={{ width:80 }} />   {/* Overtime */}
-            <col style={{ width:75 }} />   {/* TOIL Bal */}
-          </colgroup>
-          <thead>
-            <tr>
-              <th style={{ textAlign:'left', paddingLeft:8 }}>Engineer</th>
-              <th style={{ textAlign:'right', color:'#93c5fd' }}>Standby WD</th>
-              <th style={{ textAlign:'right', color:'#93c5fd' }}>Worked WD</th>
-              <th style={{ textAlign:'right', color:'#a78bfa' }}>Standby WE</th>
-              <th style={{ textAlign:'right', color:'#a78bfa' }}>Worked WE</th>
-              <th style={{ textAlign:'right', color:'#f59e0b' }}>Incidents</th>
-              <th style={{ textAlign:'right', color:'#818cf8' }}>Upgrades</th>
-              <th style={{ textAlign:'right', color:'#fca5a5' }}>Bank Hol</th>
-              <th style={{ textAlign:'right', color:'#e879f9' }}>Overtime</th>
-              <th style={{ textAlign:'right' }}>TOIL Bal.</th>
-            </tr>
-          </thead>
-          <tbody>
-            {safeUsers.map(u => {
-              const { oc, tb, incHrs, upgradeHrs, bankHolHrs, overtimeHrs } = getUserData(u);
-              return (
-                <tr key={u.id}>
-                  <td style={{ paddingLeft:8 }}><div style={{ display:'flex', gap:8, alignItems:'center' }}><Avatar user={u} size={24} /><div><div style={{ fontSize:12 }}>{u.name}</div><div style={{ fontSize:10, color:'var(--text-muted)', fontFamily:'DM Mono' }}>{u.id}</div></div></div></td>
-                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#93c5fd', textAlign:'right' }}>{oc.standbyWD}h</td>
-                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#93c5fd', textAlign:'right' }}>{oc.workedWD}h</td>
-                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#a78bfa', textAlign:'right' }}>{oc.standbyWE}h</td>
-                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#a78bfa', textAlign:'right' }}>{oc.workedWE}h</td>
-                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:incHrs>0?'#f59e0b':'var(--text-muted)', textAlign:'right' }}>{incHrs>0?`${incHrs}h`:'—'}</td>
-                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:upgradeHrs>0?'#818cf8':'var(--text-muted)', textAlign:'right' }}>{upgradeHrs>0?`${upgradeHrs}h`:'—'}</td>
-                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:bankHolHrs>0?'#fca5a5':'var(--text-muted)', textAlign:'right' }}>{bankHolHrs>0?`${bankHolHrs}h`:'—'}</td>
-                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:overtimeHrs>0?'#e879f9':'var(--text-muted)', fontWeight:overtimeHrs>0?700:400, textAlign:'right' }}>{overtimeHrs>0?`${overtimeHrs}h`:'—'}</td>
-                  <td style={{ fontFamily:'DM Mono', fontSize:12, color:tb.balance>0?'#38bdf8':'#fca5a5', textAlign:'right' }}>{tb.balance}h</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-        <div style={{ marginTop:10, fontSize:11, color:'var(--text-muted)' }}>
-          Daily: 10am–7pm · Weekday OC: 7pm–7am · Weekend OC: Fri 7pm–Mon 7am · Bank Hol OC: 9am–7am · Overtime: manager-approved only
-        </div>
-      </div>
-
-      {/* Full take-home breakdown per engineer */}
-      <div className="card-title" style={{ marginBottom:12 }}>💷 Take-Home Breakdown (base + OC, after UK tax 2025-26)</div>
-      <div className="grid-2 mb-16">
-        {safeUsers.map(u => {
-          const { p, annual, hourly, oc, tb, incHrs } = getUserData(u);
-          const annualOC = oc.total * 12;
-          const tx = calcUKTax(annual + annualOC, { pensionPct:p.pensionPct||0, studentLoan:p.studentLoan||false });
-          return (
-            <div key={u.id} className="card">
-              <div style={{ display:'flex', gap:10, alignItems:'center', marginBottom:10 }}>
-                <Avatar user={u} size={28} />
-                <div style={{ flex:1 }}>
-                  <div style={{ fontSize:13, fontWeight:600 }}>{u.name}</div>
-                  <div style={{ fontSize:11, color:'var(--text-muted)' }}>
-                    £{annual.toLocaleString()}/yr base · Eff. rate: {(tx.effectiveRate*100).toFixed(1)}%
-                    {incHrs>0 && <span style={{ color:'#f59e0b', marginLeft:6 }}>· 🚨 {incHrs}h incident</span>}
-                  </div>
-                </div>
-              </div>
-              <div style={{ background:'rgba(30,64,175,0.1)', borderRadius:8, padding:'8px 12px', marginBottom:10, fontSize:11 }}>
-                <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}><span style={{ color:'var(--text-muted)' }}>Annual gross (inc. OC)</span><span style={{ fontFamily:'DM Mono' }}>£{Math.round(tx.annualGross).toLocaleString()}</span></div>
-                <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}><span style={{ color:'#fca5a5' }}>Income Tax</span><span style={{ fontFamily:'DM Mono', color:'#fca5a5' }}>-£{Math.round(tx.incomeTax).toLocaleString()}</span></div>
-                <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}><span style={{ color:'#fcd34d' }}>National Insurance</span><span style={{ fontFamily:'DM Mono', color:'#fcd34d' }}>-£{Math.round(tx.ni).toLocaleString()}</span></div>
-                {(p.pensionPct||0)>0 && <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}><span style={{ color:'#93c5fd' }}>Pension ({p.pensionPct}%)</span><span style={{ fontFamily:'DM Mono', color:'#93c5fd' }}>-£{Math.round(tx.pension).toLocaleString()}</span></div>}
-                {p.studentLoan && <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}><span style={{ color:'#c4b5fd' }}>Student Loan Plan 2</span><span style={{ fontFamily:'DM Mono', color:'#c4b5fd' }}>-£{Math.round(tx.slRepay).toLocaleString()}</span></div>}
-                <div style={{ display:'flex', justifyContent:'space-between', borderTop:'1px solid var(--border)', paddingTop:4, marginTop:4 }}><span style={{ fontWeight:600 }}>Annual take-home</span><span style={{ fontFamily:'DM Mono', fontWeight:700, color:'#6ee7b7' }}>£{Math.round(tx.annualNet).toLocaleString()}</span></div>
-              </div>
-              <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:6, fontSize:11 }}>
-                {[['Monthly','monthly'],['Weekly','weekly'],['Daily','daily'],['Hourly','hourly']].map(([label,key]) => (
-                  <div key={key} style={{ background:'rgba(30,64,175,0.15)', borderRadius:6, padding:'6px 8px', textAlign:'center' }}>
-                    <div style={{ color:'var(--text-muted)', marginBottom:2, fontSize:10 }}>{label}</div>
-                    <div style={{ fontWeight:700, color:'#10b981', fontFamily:'DM Mono', fontSize:12 }}>£{tx[key].net.toFixed(key==='hourly'?2:0)}</div>
-                    <div style={{ color:'var(--text-muted)', fontSize:9 }}>gross £{tx[key].gross.toFixed(key==='hourly'?2:0)}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          );
-        })}
-      </div>
     </div>
   );
 }
