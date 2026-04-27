@@ -7037,6 +7037,33 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
   const fmtD = ds => ds ? new Date(ds + 'T12:00:00').toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}) : '—';
   const cycleLabel = `${fmtD(cycleStart)} – ${fmtD(cycleEnd)}`;
 
+  // ── All available payroll cycles from Jan 2026 onwards ────────────────────
+  const allCycles = React.useMemo(() => {
+    const cycles = [];
+    const now = new Date();
+    // Go from Jan 2026 up to 12 months in the future
+    let y = 2026, m = 0; // Jan 2026
+    while (y < now.getFullYear() + 2 || (y === now.getFullYear() + 1 && m <= now.getMonth())) {
+      const cm   = m;
+      const cy   = y;
+      const endM = cm + 1 >= 12 ? 0 : cm + 1;
+      const endY = cm + 1 >= 12 ? cy + 1 : cy;
+      const start = `${cy}-${String(cm + 1).padStart(2,'0')}-11`;
+      const end   = `${endY}-${String(endM + 1).padStart(2,'0')}-10`;
+      const label = new Date(cy, cm, 11).toLocaleDateString('en-GB',{month:'long',year:'numeric'}) + ` (11 ${String(cm+1).padStart(2,'0')} – 10 ${String(endM+1).padStart(2,'0')})`;
+      cycles.push({ start, end, label });
+      m++; if (m >= 12) { m = 0; y++; }
+    }
+    return cycles.reverse(); // most recent first
+  }, []);
+
+  // Which cycle is currently selected in the overview tab
+  const [viewCycleStart, setViewCycleStart] = React.useState(cycleStart);
+  const [viewCycleEnd,   setViewCycleEnd]   = React.useState(cycleEnd);
+  const viewCycleLabel = `${fmtD(viewCycleStart)} – ${fmtD(viewCycleEnd)}`;
+
+  const tabIcons = { overview: '📋', takehome: '💷', log: '📁' };
+
   return (
     <div>
       <PageHeader title="Payroll" sub={`Cycle: ${cycleLabel} · manager only`}
@@ -7077,23 +7104,53 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
         <StatCard label="Pending OT"       value={pendingOTCount}          sub="Awaiting approval"           accent="#f59e0b" icon="⏳" />
       </div>
 
-      {/* Tabs */}
-      <div className="tab-bar" style={{ marginBottom:16 }}>
+      {/* ── Pill-style tab buttons ─────────────────────────────────────────── */}
+      <div className="payroll-tab-bar">
         {[
-          ['overview',  '📋 Hours Summary'],
-          ['takehome',  '💷 Take-Home'],
-          ['log',       `📁 Export Log${exportLogs.length > 0 ? ` (${exportLogs.length})` : ''}`],
-        ].map(([id, label]) => (
-          <div key={id} className={`tab${tab === id ? ' active' : ''}`} onClick={() => setTab(id)}>{label}</div>
+          { id:'overview', label:'Hours Summary' },
+          { id:'takehome', label:'Take-Home' },
+          { id:'log',      label:'Export Log', badge: exportLogs.length || null },
+        ].map(({ id, label, badge }) => (
+          <div key={id} className={`payroll-tab${tab === id ? ' active' : ''}`} onClick={() => setTab(id)}>
+            <span>{tabIcons[id]}</span>
+            <span>{label}</span>
+            {badge != null && <span className="tab-badge">{badge}</span>}
+          </div>
         ))}
       </div>
 
       {/* ── TAB: Overview ─────────────────────────────────────────────────── */}
       {tab === 'overview' && (
         <div className="card mb-16" style={{ overflowX:'auto' }}>
-          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:12 }}>
-            <div className="card-title">On-Call Hours — {cycleLabel}</div>
-            <div style={{ fontSize:11, color:'var(--text-muted)', fontFamily:'DM Mono' }}>Data from 11th of each month</div>
+          {/* Cycle selector */}
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:14, flexWrap:'wrap', gap:10 }}>
+            <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+              <div className="card-title" style={{ marginBottom:0 }}>On-Call Hours</div>
+              <div style={{ fontSize:11, color:'var(--text-muted)', fontFamily:'DM Mono', background:'rgba(0,194,255,0.07)', border:'1px solid rgba(0,194,255,0.15)', borderRadius:5, padding:'2px 8px' }}>
+                {viewCycleLabel}
+              </div>
+            </div>
+            <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+              <label style={{ fontSize:11, color:'var(--text-muted)', fontFamily:'DM Mono', whiteSpace:'nowrap' }}>Cycle:</label>
+              <select className="input" style={{ fontSize:12, padding:'5px 10px', minWidth:260, fontFamily:'DM Mono' }}
+                value={viewCycleStart}
+                onChange={e => {
+                  const c = allCycles.find(c => c.start === e.target.value);
+                  if (c) { setViewCycleStart(c.start); setViewCycleEnd(c.end); }
+                }}>
+                {allCycles.map(c => (
+                  <option key={c.start} value={c.start}
+                    style={{ background:'var(--bg-card)', color:'var(--text-primary)' }}>
+                    {c.start === cycleStart ? `▶ ` : ''}{c.label}
+                  </option>
+                ))}
+              </select>
+              {viewCycleStart !== cycleStart && (
+                <button className="btn btn-secondary btn-sm" onClick={() => { setViewCycleStart(cycleStart); setViewCycleEnd(cycleEnd); }}>
+                  ↩ Current
+                </button>
+              )}
+            </div>
           </div>
           <table style={{ minWidth:950, tableLayout:'fixed', width:'100%' }}>
             <colgroup>
@@ -7118,7 +7175,7 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
             </thead>
             <tbody>
               {safeUsers.map(u => {
-                const { oc, tb, incHrs, upgradeHrs, bankHolHrs, overtimeHrs } = getUserData(u, cycleStart, cycleEnd);
+                const { oc, tb, incHrs, upgradeHrs, bankHolHrs, overtimeHrs } = getUserData(u, viewCycleStart, viewCycleEnd);
                 return (
                   <tr key={u.id}>
                     <td><div style={{ display:'flex', gap:8, alignItems:'center' }}><Avatar user={u} size={24} /><div><div style={{ fontSize:12 }}>{u.name}</div><div style={{ fontSize:10, color:'var(--text-muted)', fontFamily:'DM Mono' }}>{u.id}</div></div></div></td>
