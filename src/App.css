@@ -603,6 +603,80 @@ h1, h2, h3 { font-family: 'Syne', sans-serif; }
   margin-bottom: 18px;
   flex-wrap: wrap;
 }
+.tab {
+  padding: 6px 16px;
+  font-size: 12px;
+  font-weight: 500;
+  font-family: 'DM Sans', sans-serif;
+  color: var(--text-muted);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  white-space: nowrap;
+  user-select: none;
+}
+.tab:hover { background: rgba(255,255,255,0.05); color: var(--text-secondary); }
+.tab.active {
+  background: var(--bg-card);
+  color: var(--accent);
+  border: 1px solid var(--border);
+  box-shadow: 0 1px 4px rgba(0,0,0,0.35);
+}
+
+/* ── Payroll pill-style tabs ─────────────────────────────────────────────── */
+.payroll-tab-bar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+.payroll-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 20px;
+  font-size: 12.5px;
+  font-weight: 600;
+  font-family: 'DM Sans', sans-serif;
+  color: var(--text-muted);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s, box-shadow 0.15s;
+  white-space: nowrap;
+  user-select: none;
+  position: relative;
+}
+.payroll-tab:hover {
+  background: var(--bg-card2);
+  color: var(--text-secondary);
+  border-color: rgba(0,194,255,0.18);
+}
+.payroll-tab.active {
+  background: rgba(0,194,255,0.08);
+  color: var(--accent);
+  border-color: rgba(0,194,255,0.4);
+  box-shadow: 0 0 0 1px rgba(0,194,255,0.12), 0 2px 8px rgba(0,0,0,0.3);
+}
+.payroll-tab .tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  background: rgba(0,194,255,0.15);
+  color: var(--accent);
+  font-size: 10px;
+  font-family: 'DM Mono', monospace;
+  font-weight: 700;
+  border-radius: 10px;
+}
+.payroll-tab:not(.active) .tab-badge {
+  background: rgba(255,255,255,0.07);
+  color: var(--text-muted);
+}
+
 .tab-bar .btn {
   background: transparent;
   border: none;
