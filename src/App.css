@@ -800,6 +800,35 @@ h1, h2, h3 { font-family: 'Syne', sans-serif; }
   font-family: 'DM Mono', monospace;
 }
 
+/* ── Global Table Baseline ───────────────────────────────────────────────── */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  color: var(--text-primary);
+}
+table th {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  font-size: 11px;
+  font-weight: 700;
+  font-family: 'DM Mono', monospace;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  background: var(--bg-card2);
+  white-space: nowrap;
+}
+table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+  font-size: 12.5px;
+}
+table tbody tr:last-child td { border-bottom: none; }
+table tbody tr:hover { background: var(--bg-card2); }
+
 /* ── Google Drive status ─────────────────────────────────────────────────── */
 .gd-status {
   display: flex;
