@@ -1,6 +1,6 @@
 // src/App.js
 // CloudOps Rota — Full Production Build v2
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 26th April 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 2th7 April 2026
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
@@ -2477,6 +2477,22 @@ function Timesheets({ users, timesheets, setTimesheets, currentUser, isManager, 
   const totalWE  = sheets.reduce((a, b) => a + (b.weekend_oncall || 0), 0);
   const grossOC  = totalWD * rate * 0.5 + totalWE * rate * 0.75;
 
+  // Engineers can only see pay details for their own timesheet
+  const canSeePay = isManager || activeUser === currentUser;
+
+  const thStyle = {
+    padding: '8px 12px',
+    borderBottom: '1px solid var(--border)',
+    textAlign: 'left',
+    fontSize: 11,
+    fontWeight: 700,
+    fontFamily: 'DM Mono, monospace',
+    color: 'var(--text-muted)',
+    textTransform: 'uppercase',
+    letterSpacing: '0.5px',
+    whiteSpace: 'nowrap',
+  };
+
   const visibleUsers = isManager ? users : [users.find(u => u.id === currentUser)].filter(Boolean);
 
   const openAdd  = () => { setForm({ week: '', weekday_oncall: '', weekend_oncall: '', notes: '' }); setEditRow(null); setAddModal(true); };
@@ -2511,35 +2527,47 @@ function Timesheets({ users, timesheets, setTimesheets, currentUser, isManager, 
       <div className="grid-3 mb-16">
         <StatCard label="Weekday OC Hrs"  value={totalWD + 'h'} sub="@50% uplift"         accent="#166534" />
         <StatCard label="Weekend OC Hrs"  value={totalWE + 'h'} sub="@75% uplift"         accent="#854d0e" />
-        <StatCard label="Est. OC Pay"     value={'£' + Math.round(grossOC).toLocaleString()} sub="Before tax" accent="#10b981" />
+        {canSeePay
+          ? <StatCard label="Est. OC Pay" value={'£' + Math.round(grossOC).toLocaleString()} sub="Before tax" accent="#10b981" />
+          : <StatCard label="Est. OC Pay" value="—" sub="Managers only" accent="#4a6080" />}
       </div>
       <div className="card">
         <div className="flex-between mb-12">
           <div className="card-title">On-Call Hours — {user?.name}</div>
         </div>
-        <table>
+        <div style={{ overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 600 }}>
           <thead>
-            <tr>
-              <th style={{ width: 32 }}>
+            <tr style={{ background: 'var(--bg-card2)' }}>
+              <th style={{ width: 32, padding: '8px 10px', borderBottom: '1px solid var(--border)', textAlign: 'center' }}>
                 <input type="checkbox" checked={selected.size === sheets.length && sheets.length > 0} onChange={() => { if (selected.size === sheets.length) clearAll(); else sheets.forEach((_, i) => { if (!selected.has(i)) toggleOne(i); }); }} />
               </th>
-              <th>Week</th><th>Weekday OC Hrs</th><th>Weekend OC Hrs</th><th>Weekday Pay</th><th>Weekend Pay</th><th>Notes</th><th>Actions</th>
+              <th style={thStyle}>Week</th>
+              <th style={thStyle}>Weekday OC Hrs</th>
+              <th style={thStyle}>Weekend OC Hrs</th>
+              {canSeePay && <th style={thStyle}>Weekday Pay</th>}
+              {canSeePay && <th style={thStyle}>Weekend Pay</th>}
+              <th style={{...thStyle, width: '35%'}}>Notes</th>
+              <th style={thStyle}>Actions</th>
             </tr>
           </thead>
           <tbody>
+            {sheets.length === 0 && (
+              <tr><td colSpan={canSeePay ? 8 : 6} style={{ padding: '24px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>No entries yet</td></tr>
+            )}
             {sheets.map((s, idx) => {
               const wdPay = (s.weekday_oncall || 0) * rate * 0.5;
               const wePay = (s.weekend_oncall || 0) * rate * 0.75;
               return (
-                <tr key={idx}>
-                  <td><input type="checkbox" checked={selected.has(idx)} onChange={() => toggleOne(idx)} /></td>
-                  <td style={{ fontFamily: 'DM Mono', color: 'var(--accent)' }}>{s.week}</td>
-                  <td>{s.weekday_oncall || 0}h</td>
-                  <td>{s.weekend_oncall || 0}h</td>
-                  <td style={{ fontFamily: 'DM Mono', color: '#6ee7b7' }}>£{wdPay.toFixed(2)}</td>
-                  <td style={{ fontFamily: 'DM Mono', color: '#fcd34d' }}>£{wePay.toFixed(2)}</td>
-                  <td style={{ color: 'var(--text-muted)' }}>{s.notes || '—'}</td>
-                  <td>
+                <tr key={idx} style={{ borderBottom: '1px solid var(--border)' }}>
+                  <td style={{ padding: '8px 10px', textAlign: 'center' }}><input type="checkbox" checked={selected.has(idx)} onChange={() => toggleOne(idx)} /></td>
+                  <td style={{ padding: '8px 12px', fontFamily: 'DM Mono', fontSize: 12, color: 'var(--accent)' }}>{s.week}</td>
+                  <td style={{ padding: '8px 12px', fontFamily: 'DM Mono', fontSize: 12, textAlign: 'center' }}>{s.weekday_oncall || 0}h</td>
+                  <td style={{ padding: '8px 12px', fontFamily: 'DM Mono', fontSize: 12, textAlign: 'center' }}>{s.weekend_oncall || 0}h</td>
+                  {canSeePay && <td style={{ padding: '8px 12px', fontFamily: 'DM Mono', fontSize: 12, color: '#6ee7b7' }}>£{wdPay.toFixed(2)}</td>}
+                  {canSeePay && <td style={{ padding: '8px 12px', fontFamily: 'DM Mono', fontSize: 12, color: '#fcd34d' }}>£{wePay.toFixed(2)}</td>}
+                  <td style={{ padding: '8px 12px', fontSize: 12, color: 'var(--text-muted)', maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.notes || '—'}</td>
+                  <td style={{ padding: '8px 10px' }}>
                     <div style={{ display: 'flex', gap: 4 }}>
                       <button className="btn btn-secondary btn-sm" onClick={() => openEdit(idx)}>✏</button>
                       <button className="btn btn-danger btn-sm" onClick={() => deleteOne(idx)}>🗑</button>
@@ -2550,6 +2578,7 @@ function Timesheets({ users, timesheets, setTimesheets, currentUser, isManager, 
             })}
           </tbody>
         </table>
+        </div>
       </div>
 
       {addModal && (
@@ -5242,6 +5271,10 @@ function WhatsAppChat({ whatsappChats, setWhatsappChats, users, currentUser, isM
   const [saveStatus,    setSaveStatus]    = useState('');
   const [loadingChats,  setLoadingChats]  = useState(false);
   const [showPinned,    setShowPinned]    = useState(false);
+  const [onlineUsers,   setOnlineUsers]   = useState([currentUser]); // presence: uids seen recently
+  const POLL_INTERVAL_MS   = 20000;  // poll Drive for new messages every 20 s
+  const PRESENCE_WRITE_MS  = 60000;  // write heartbeat every 60 s
+  const PRESENCE_ONLINE_MS = 180000; // online = seen within 3 min
   // ── Notification state ──────────────────────────────────────────────────
   const [toasts,        setToasts]        = useState([]);   // [{id,title,body,chatId}]
   const [notifPerm,     setNotifPerm]     = useState(typeof Notification !== 'undefined' ? Notification.permission : 'default');
@@ -5361,6 +5394,66 @@ function WhatsAppChat({ whatsappChats, setWhatsappChats, users, currentUser, isM
       finally { setLoadingChats(false); }
     })();
   }, [driveToken]); // eslint-disable-line
+
+  // ── Write presence heartbeat to Drive ─────────────────────────────────────
+  const writePresence = useCallback(async () => {
+    if (!driveToken) return;
+    try {
+      const existing = await driveFindFile(driveToken, 'presence.json').catch(() => null);
+      let presence = {};
+      if (existing) {
+        try { presence = await driveReadJson(driveToken, existing.id); } catch (_) {}
+      }
+      presence[currentUser] = new Date().toISOString();
+      await driveWriteJson(driveToken, 'presence.json', presence);
+      // Compute online users from all timestamps
+      const now = Date.now();
+      const online = Object.entries(presence)
+        .filter(([, ts]) => now - new Date(ts).getTime() < PRESENCE_ONLINE_MS)
+        .map(([uid]) => uid);
+      setOnlineUsers(online.length > 0 ? online : [currentUser]);
+    } catch (_) {}
+  }, [driveToken, currentUser, PRESENCE_ONLINE_MS]);
+
+  // Write presence on mount + every 60 s
+  useEffect(() => {
+    if (!driveToken) return;
+    writePresence();
+    const presenceTimer = setInterval(writePresence, PRESENCE_WRITE_MS);
+    return () => clearInterval(presenceTimer);
+  }, [driveToken, writePresence, PRESENCE_WRITE_MS]);
+
+  // ── Poll Drive for new messages every 20 s ─────────────────────────────────
+  useEffect(() => {
+    if (!driveToken) return;
+    const pollTimer = setInterval(async () => {
+      try {
+        const f = await driveFindFile(driveToken, 'whatsappChats.json');
+        if (f) {
+          const data = await driveReadJson(driveToken, f.id);
+          if (Array.isArray(data) && data.length > 0) {
+            setWhatsappChats(prev => {
+              // Only update if Drive has newer/more messages to avoid re-render loops
+              const prevTotal = prev.reduce((n, c) => n + (c.messages?.length || 0), 0);
+              const nextTotal = data.reduce((n, c) => n + (c.messages?.length || 0), 0);
+              return nextTotal >= prevTotal ? data : prev;
+            });
+          }
+        }
+        // Also read presence
+        const pf = await driveFindFile(driveToken, 'presence.json').catch(() => null);
+        if (pf) {
+          const presence = await driveReadJson(driveToken, pf.id).catch(() => ({}));
+          const now = Date.now();
+          const online = Object.entries(presence)
+            .filter(([, ts]) => now - new Date(ts).getTime() < PRESENCE_ONLINE_MS)
+            .map(([uid]) => uid);
+          setOnlineUsers(online.length > 0 ? online : [currentUser]);
+        }
+      } catch (_) {}
+    }, POLL_INTERVAL_MS);
+    return () => clearInterval(pollTimer);
+  }, [driveToken, currentUser, POLL_INTERVAL_MS, PRESENCE_ONLINE_MS]);
 
   // Auto-select first channel
   useEffect(() => {
@@ -5709,7 +5802,7 @@ function WhatsAppChat({ whatsappChats, setWhatsappChats, users, currentUser, isM
           <div style={{ fontSize:10, color:'var(--text-muted)', fontFamily:'DM Mono',
             display:'flex', alignItems:'center', gap:4, marginTop:2 }}>
             <div className="dot-live" style={{ width:6, height:6 }} />
-            {users.length} members online
+            {onlineUsers.length} {onlineUsers.length === 1 ? 'member' : 'members'} online
           </div>
         </div>
 
@@ -8077,7 +8170,13 @@ export default function App() {
       if (data.overtime     != null) setOvertime(data.overtime);
       if (data.logbook      != null) setLogbook(data.logbook);
       if (data.documents    != null) setDocuments(data.documents);
-      if (data.obsidianNotes   != null) setObsidianNotes(data.obsidianNotes);
+      if (data.obsidianNotes   != null) {
+        // Guard: recover from old engineer-keyed bug where it was saved as {uid:[…]}
+        const rawNotes = data.obsidianNotes;
+        setObsidianNotes(Array.isArray(rawNotes)
+          ? rawNotes
+          : Object.values(rawNotes).flat().filter(n => n && typeof n === 'object'));
+      }
       if (data.whatsappChats   != null) setWhatsappChats(data.whatsappChats);
       if (data.permissions     != null) setPermissions(data.permissions);
 
@@ -8215,7 +8314,7 @@ export default function App() {
     timesheets:    'engineer',
     toil:          'engineer',
     overtime:      'engineer',
-    obsidianNotes: 'engineer',
+    obsidianNotes: 'shared',   // flat array keyed by note id — NOT by uid
   };
 
   // Safe write — respects ownership so no caller can clobber data they don't own
