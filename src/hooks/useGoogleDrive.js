@@ -26,6 +26,7 @@ const FILES = {
   whatsappChats: 'whatsappChats.json',
   // ── Permissions (added) ──────────────────────────────────────────────────
   permissions:   'permissions.json',
+  timekeeping:   'timekeeping.json',
 };
 
 let folderId = null;
