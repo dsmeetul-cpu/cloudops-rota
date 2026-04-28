@@ -1,6 +1,6 @@
 // src/App.js
 // CloudOps Rota — Full Production Build v2
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 27th April 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 28th April 2026
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
@@ -14,6 +14,7 @@ import {
   DEFAULT_PAYCONFIG, SHIFTS, UK_BANK_HOLIDAYS, generateRota,
   generateTrigramId, TRICOLORS
 } from './utils/defaults';
+import TimeKeeping from './TimeKeeping';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Google Drive auto-connects on page load using the OAuth Client ID below.
@@ -776,8 +777,9 @@ const NAV = [
     { id: 'incidents', icon: '🚨', label: 'Incidents', badge: true },
   ]},
   { section: 'People', items: [
-    { id: 'timesheets', icon: '⏱', label: 'Timesheets'     },
-    { id: 'holidays',   icon: '🌴', label: 'Holidays',      managerOnly: true },
+    { id: 'timesheets',   icon: '⏱', label: 'Timesheets'                      },
+    { id: 'timekeeping',  icon: '🕒', label: 'Time Keeping', managerOnly: true },
+    { id: 'holidays',     icon: '🌴', label: 'Holidays',      managerOnly: true },
     { id: 'swaps',      icon: '🔁', label: 'Shift Swaps'    },
     { id: 'upgrades',   icon: '⬆', label: 'Upgrade Days'   },
     { id: 'stress',     icon: '📊', label: 'Stress Score',  managerOnly: true },
@@ -8309,6 +8311,7 @@ export default function App() {
   const [overtime, setOvertime]       = useState([]);
   const [logbook, setLogbook]         = useState([]);
   const [documents, setDocuments]     = useState([]);
+  const [timekeeping, setTimekeeping] = useState({});
   const [obsidianNotes, setObsidianNotes] = useState([]);
   const [whatsappChats, setWhatsappChats] = useState([]);
   const [secureLinks, setSecureLinks] = useState([]);
@@ -8453,6 +8456,7 @@ export default function App() {
       if (data.overtime     != null) setOvertime(data.overtime);
       if (data.logbook      != null) setLogbook(data.logbook);
       if (data.documents    != null) setDocuments(data.documents);
+      if (data.timekeeping  != null) setTimekeeping(data.timekeeping);
       if (data.obsidianNotes   != null) {
         // Guard: recover from old engineer-keyed bug where it was saved as {uid:[…]}
         const rawNotes = data.obsidianNotes;
@@ -8566,6 +8570,7 @@ export default function App() {
   useEffect(() => { save('overtime', overtime); },         [overtime]);
   useEffect(() => { save('logbook', logbook); },           [logbook]);
   useEffect(() => { save('documents', documents); },       [documents]);
+  useEffect(() => { save('timekeeping', timekeeping); },   [timekeeping]);
   useEffect(() => { save('obsidianNotes', obsidianNotes); },[obsidianNotes]);
   useEffect(() => { save('whatsappChats', whatsappChats); },[whatsappChats]);
   useEffect(() => { save('permissions',   permissions);   },[permissions]);
@@ -8743,6 +8748,7 @@ export default function App() {
         if (data.overtime != null) setOvertime(data.overtime);
         if (data.logbook != null) setLogbook(data.logbook);
         if (data.documents != null) setDocuments(data.documents);
+        if (data.timekeeping != null) setTimekeeping(data.timekeeping);
         if (data.obsidianNotes != null) setObsidianNotes(data.obsidianNotes);
         if (data.whatsappChats != null) setWhatsappChats(data.whatsappChats);
         if (data.permissions   != null) setPermissions(data.permissions);
@@ -8936,6 +8942,7 @@ export default function App() {
       case 'rota':       return <RotaPage {...props} />;
       case 'incidents':  return <Incidents {...props} timesheets={timesheets} setTimesheets={setTimesheets} />;
       case 'timesheets': return <Timesheets {...props} />;
+      case 'timekeeping': return <TimeKeeping users={users} holidays={holidays} currentUser={currentUser} isManager={isManager} bankHolidays={UK_BANK_HOLIDAYS} timekeeping={timekeeping} setTimekeeping={setTimekeeping} driveToken={driveToken} />;
       case 'holidays':   return <Holidays {...props} />;
       case 'swaps':      return <ShiftSwaps {...props} driveToken={driveToken} />;
       case 'upgrades':   return <UpgradeDays {...props} timesheets={timesheets} setTimesheets={setTimesheets} />;
