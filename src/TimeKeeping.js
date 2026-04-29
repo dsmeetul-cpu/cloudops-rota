@@ -13,14 +13,6 @@ const GRACE_LATE_WARN   = 15; // mins: amber
 const GRACE_LATE_LATE   = 20; // mins: red
 const STREAK_THRESHOLD  = 3;  // consecutive late arrivals = pattern alert
 
-// ── Constants ────────────────────────────────────────────────────────────────
-const RTO_DAYS_REQUIRED = 3;
-const START_TIME        = '09:00';
-const END_TIME          = '18:00';
-const GRACE_LATE_WARN   = 15; // mins: amber
-const GRACE_LATE_LATE   = 20; // mins: red
-const STREAK_THRESHOLD  = 3;  // consecutive late arrivals = pattern alert
-
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function parseTime(str) {
   if (!str) return null;
