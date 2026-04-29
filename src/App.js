@@ -15,6 +15,7 @@ import {
   generateTrigramId, TRICOLORS
 } from './utils/defaults';
 import TimeKeeping from './TimeKeeping';
+import TOIL from './TOIL';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Google Drive auto-connects on page load using the OAuth Client ID below.
@@ -80,8 +81,13 @@ async function getAppFolderId(token) {
 }
 
 // Find a file by name, searching inside the app folder first (then root fallback)
+// ── Module-level file-ID cache (avoids repeated search queries) ─────────────
+const _fileIdCache = {};
+
 async function driveFindFile(token, name, parentId) {
   const pid = parentId || await getAppFolderId(token);
+  const cacheKey = `${pid}/${name}`;
+  if (_fileIdCache[cacheKey]) return { id: _fileIdCache[cacheKey], name };
   const q = pid
     ? encodeURIComponent(`name='${name}' and '${pid}' in parents and trashed=false`)
     : encodeURIComponent(`name='${name}' and trashed=false`);
@@ -89,7 +95,9 @@ async function driveFindFile(token, name, parentId) {
     `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`,
     { headers: { Authorization: `Bearer ${token}` } }
   ).then(r => r.json());
-  return resp.files && resp.files.length > 0 ? resp.files[0] : null;
+  const file = resp.files && resp.files.length > 0 ? resp.files[0] : null;
+  if (file) _fileIdCache[cacheKey] = file.id;
+  return file;
 }
 
 // Find or create a subfolder inside the app folder
@@ -115,8 +123,10 @@ async function driveGetOrCreateSubfolder(token, folderName) {
 }
 
 async function driveReadJson(token, fileId) {
-  return fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
-    { headers: { Authorization: `Bearer ${token}` } }
+  // Cache-bust: without _t Google CDN can serve a stale response for up to 60s
+  return fetch(
+    `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&_t=${Date.now()}`,
+    { headers: { Authorization: `Bearer ${token}`, 'Cache-Control': 'no-cache' } }
   ).then(r => r.json());
 }
 
@@ -124,20 +134,40 @@ async function driveReadJson(token, fileId) {
 async function driveWriteJson(token, name, data, parentId) {
   const body = JSON.stringify(data);
   const pid  = parentId || await getAppFolderId(token);
-  const existing = await driveFindFile(token, name, pid);
-  if (existing) {
-    return fetch(`https://www.googleapis.com/upload/drive/v3/files/${existing.id}?uploadType=media`, {
+  const cacheKey = `${pid}/${name}`;
+
+  // Use cached file ID if available to skip the search round-trip
+  let fileId = _fileIdCache[cacheKey] || null;
+  if (!fileId) {
+    const existing = await driveFindFile(token, name, pid);
+    fileId = existing?.id || null;
+  }
+
+  if (fileId) {
+    const result = await fetch(
+      `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`, {
       method: 'PATCH',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body,
     }).then(r => r.json());
+    // If PATCH fails (file deleted externally), clear cache and retry as new
+    if (result.error) {
+      delete _fileIdCache[cacheKey];
+      fileId = null;
+    } else {
+      _fileIdCache[cacheKey] = result.id || fileId;
+      return result;
+    }
   }
+
+  // Create new file
   const meta = { name, mimeType: 'application/json', ...(pid ? { parents: [pid] } : {}) };
   const created = await fetch('https://www.googleapis.com/drive/v3/files', {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(meta),
   }).then(r => r.json());
+  if (created.id) _fileIdCache[cacheKey] = created.id;
   return fetch(`https://www.googleapis.com/upload/drive/v3/files/${created.id}?uploadType=media`, {
     method: 'PATCH',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -3573,95 +3603,7 @@ function calcTOILBalance(timesheetEntries, toilEntries, userId) {
 }
 
 // ── TOIL ──────────────────────────────────────────────────────────────────
-function TOIL({ users, timesheets, toil, setToil, currentUser, isManager }) {
-  const safeToil = Array.isArray(toil) ? toil : Object.values(toil || {});
-  const manualToil = isManager ? safeToil : safeToil.filter(t => t.userId === currentUser);
-  const [showModal, setShowModal] = useState(false);
-  const [form, setForm] = useState({ userId: currentUser, hours: '', reason: '', date: '', type: 'Used' });
-
-  const addManual = () => {
-    if (!form.hours || !form.date) return;
-    setToil([...toil, { id: 't' + Date.now(), ...form, hours: +form.hours }]);
-    setShowModal(false);
-  };
-
-  const visibleUsers = isManager ? users : users.filter(u => u.id === currentUser);
-
-  return (
-    <div>
-      <PageHeader title="TOIL — Time Off In Lieu"
-        sub="UK Working Time Regulations 1998 — 1:1 accrual on worked on-call hours · max 40h carryover"
-        actions={isManager && <button className="btn btn-primary" onClick={() => setShowModal(true)}>+ Manual Entry</button>} />
-      <Alert type="info">🇬🇧 UK WTR: TOIL accrues at <strong>1:1</strong> for hours <em>worked</em> during on-call (standby hours do not accrue TOIL). Maximum carryover is <strong>40 hours (5 days)</strong> per the Working Time Regulations 1998.</Alert>
-      <div className="grid-2 mb-16">
-        {visibleUsers.map(u => {
-          const b = calcTOILBalance(timesheets[u.id], toil, u.id);
-          return (
-            <div key={u.id} className="card">
-              <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 12 }}>
-                <Avatar user={u} size={32} />
-                <div>
-                  <div className="name-sm">{u.name}</div>
-                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Worked OC: {b.workedOC}h → auto TOIL: {b.autoToil}h</div>
-                </div>
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
-                <div><div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Auto (1:1 worked)</div><div style={{ fontSize: 16, fontWeight: 600, color: '#38bdf8' }}>{b.autoToil}h</div></div>
-                <div><div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Manual</div><div style={{ fontSize: 16, fontWeight: 600, color: '#93c5fd' }}>{b.manualAccrued}h</div></div>
-                <div><div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Used</div><div style={{ fontSize: 16, fontWeight: 600, color: '#fcd34d' }}>{b.used}h</div></div>
-                <div><div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Balance (max {b.cappedAt}h)</div><div style={{ fontSize: 16, fontWeight: 600, color: b.balance >= 0 ? '#38bdf8' : '#fca5a5' }}>{b.balance}h</div></div>
-              </div>
-              {b.balance >= TOIL_MAX_CARRYOVER_HOURS && <div style={{ marginTop: 8, fontSize: 11, color: '#fcd34d' }}>⚠ At WTR carryover cap — use before year end</div>}
-            </div>
-          );
-        })}
-      </div>
-      {manualToil.length > 0 && (
-        <div className="card">
-          <div className="card-title">Manual TOIL Entries</div>
-          <table>
-            <thead><tr><th>Engineer</th><th>Date</th><th>Type</th><th>Hours</th><th>Reason</th></tr></thead>
-            <tbody>
-              {manualToil.map(t => {
-                const u = users.find(x => x.id === t.userId);
-                return (
-                  <tr key={t.id}>
-                    <td><div style={{ display: 'flex', gap: 6, alignItems: 'center' }}><Avatar user={u} size={22} /><span style={{ fontSize: 12 }}>{u?.name}</span></div></td>
-                    <td style={{ fontFamily: 'DM Mono', fontSize: 12 }}>{t.date}</td>
-                    <td><Tag label={t.type} type={t.type === 'Accrued' ? 'green' : 'amber'} /></td>
-                    <td style={{ fontFamily: 'DM Mono', fontSize: 12 }}>{t.hours}h</td>
-                    <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>{t.reason || '—'}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
-      {showModal && (
-        <Modal title="Manual TOIL Entry" onClose={() => setShowModal(false)}>
-          <FormGroup label="Engineer">
-            <select className="select" value={form.userId} onChange={e => setForm({ ...form, userId: e.target.value })}>
-              {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
-            </select>
-          </FormGroup>
-          <FormGroup label="Type">
-            <select className="select" value={form.type} onChange={e => setForm({ ...form, type: e.target.value })}>
-              <option>Accrued</option><option>Used</option>
-            </select>
-          </FormGroup>
-          <FormGroup label="Date"><input className="input" type="date" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} /></FormGroup>
-          <FormGroup label="Hours"><input className="input" type="number" min="0.5" step="0.5" value={form.hours} onChange={e => setForm({ ...form, hours: e.target.value })} /></FormGroup>
-          <FormGroup label="Reason"><input className="input" value={form.reason} onChange={e => setForm({ ...form, reason: e.target.value })} /></FormGroup>
-          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
-            <button className="btn btn-secondary" onClick={() => setShowModal(false)}>Cancel</button>
-            <button className="btn btn-primary" onClick={addManual}>Add Entry</button>
-          </div>
-        </Modal>
-      )}
-    </div>
-  );
-}
+// TOIL component moved to src/TOIL.js — imported at top of file
 
 // ── Absence / Sickness ─────────────────────────────────────────────────────
 function Absence({ users, absences, setAbsences, currentUser, isManager, driveToken }) {
@@ -5301,7 +5243,7 @@ function WhatsAppChat({ whatsappChats, setWhatsappChats, users, currentUser, isM
   const [loadingChats,  setLoadingChats]  = useState(false);
   const [showPinned,    setShowPinned]    = useState(false);
   const [onlineUsers,   setOnlineUsers]   = useState([currentUser]); // presence: uids seen recently
-  const POLL_INTERVAL_MS   = 20000;  // poll Drive for new messages every 20 s
+  const POLL_INTERVAL_MS   = 8000;   // poll Drive every 8 s for near-real-time
   const PRESENCE_WRITE_MS  = 60000;  // write heartbeat every 60 s
   const PRESENCE_ONLINE_MS = 180000; // online = seen within 3 min
   // ── Notification state ──────────────────────────────────────────────────
@@ -5408,6 +5350,7 @@ function WhatsAppChat({ whatsappChats, setWhatsappChats, users, currentUser, isM
 
 
   // ── Load from Drive on mount ────────────────────────────────────────────
+  const lastRevRef = useRef(0);
   useEffect(() => {
     if (!driveToken) return;
     (async () => {
@@ -5415,9 +5358,13 @@ function WhatsAppChat({ whatsappChats, setWhatsappChats, users, currentUser, isM
       try {
         const f = await driveFindFile(driveToken, 'whatsappChats.json');
         if (f) {
-          const data = await driveReadJson(driveToken, f.id);
-          if (Array.isArray(data) && data.length > 0)
-            setWhatsappChats(prev => data.length >= prev.length ? data : prev);
+          const raw  = await driveReadJson(driveToken, f.id);
+          const data = raw?.chats ?? (Array.isArray(raw) ? raw : null);
+          const rev  = raw?._rev ?? 0;
+          if (data && data.length > 0) {
+            setWhatsappChats(data);
+            lastRevRef.current = rev;
+          }
         }
       } catch(e) { console.warn('Chat load:', e?.message); }
       finally { setLoadingChats(false); }
@@ -5452,21 +5399,20 @@ function WhatsAppChat({ whatsappChats, setWhatsappChats, users, currentUser, isM
     return () => clearInterval(presenceTimer);
   }, [driveToken, writePresence, PRESENCE_WRITE_MS]);
 
-  // ── Poll Drive for new messages every 20 s ─────────────────────────────────
+  // ── Poll Drive for new messages every 8 s (near-real-time) ────────────────
   useEffect(() => {
     if (!driveToken) return;
     const pollTimer = setInterval(async () => {
       try {
         const f = await driveFindFile(driveToken, 'whatsappChats.json');
         if (f) {
-          const data = await driveReadJson(driveToken, f.id);
-          if (Array.isArray(data) && data.length > 0) {
-            setWhatsappChats(prev => {
-              // Only update if Drive has newer/more messages to avoid re-render loops
-              const prevTotal = prev.reduce((n, c) => n + (c.messages?.length || 0), 0);
-              const nextTotal = data.reduce((n, c) => n + (c.messages?.length || 0), 0);
-              return nextTotal >= prevTotal ? data : prev;
-            });
+          const raw  = await driveReadJson(driveToken, f.id);
+          const rev  = raw?._rev ?? 0;
+          const data = raw?.chats ?? (Array.isArray(raw) ? raw : null);
+          // Only update state if Drive has a newer revision — avoids unnecessary re-renders
+          if (data && rev > lastRevRef.current) {
+            lastRevRef.current = rev;
+            setWhatsappChats(data);
           }
         }
         // Also read presence
@@ -5496,10 +5442,13 @@ function WhatsAppChat({ whatsappChats, setWhatsappChats, users, currentUser, isM
   }, [selectedChat, (whatsappChats.find(c=>c.id===selectedChat)?.messages||[]).length]);
 
   // Persist to Drive after every change
+  // _rev is a monotonic timestamp — pollers on other clients use it to detect stale state
   const persist = (next) => {
-    setWhatsappChats(next);
+    const withRev = next.map ? next : next; // already an array
+    const payload = { _rev: Date.now(), chats: Array.isArray(next) ? next : next.chats };
+    setWhatsappChats(Array.isArray(next) ? next : next.chats);
     if (driveToken) {
-      driveWriteJson(driveToken, 'whatsappChats.json', next)
+      driveWriteJson(driveToken, 'whatsappChats.json', payload)
         .catch(e => console.warn('Chat save:', e));
     }
   };
@@ -5832,6 +5781,7 @@ function WhatsAppChat({ whatsappChats, setWhatsappChats, users, currentUser, isM
             display:'flex', alignItems:'center', gap:4, marginTop:2 }}>
             <div className="dot-live" style={{ width:6, height:6 }} />
             {onlineUsers.length} {onlineUsers.length === 1 ? 'member' : 'members'} online
+            <span style={{ opacity:0.5, marginLeft:2 }}>· live</span>
           </div>
         </div>
 
@@ -6453,19 +6403,19 @@ function WeeklyReports({ users, incidents, timesheets, holidays, isManager }) {
 
 // ── Payroll helpers — 11th-cycle date utils ────────────────────────────────
 
-// Returns the 11th of the previous month and 10th of the current month (the payroll cycle)
+// Returns the 10th of the previous month and 9th of the current month (the payroll cycle)
 function payrollCycleDates() {
   const now = new Date();
   const y = now.getFullYear(), m = now.getMonth(); // 0-indexed
-  // If today is on or before the 10th, we're still in the previous cycle
-  const cycleMonth = now.getDate() <= 10 ? m - 1 : m;
+  // If today is on or before the 9th, we're still in the previous cycle
+  const cycleMonth = now.getDate() <= 9 ? m - 1 : m;
   const cycleYear  = cycleMonth < 0 ? y - 1 : y;
   const cm         = ((cycleMonth % 12) + 12) % 12;
-  const cycleStart = `${cycleYear}-${String(cm + 1).padStart(2,'0')}-11`;
-  // End = 10th of the following month
+  const cycleStart = `${cycleYear}-${String(cm + 1).padStart(2,'0')}-10`;
+  // End = 9th of the following month
   const endMonth   = cm + 1 >= 12 ? 0 : cm + 1;
   const endYear    = cm + 1 >= 12 ? cycleYear + 1 : cycleYear;
-  const cycleEnd   = `${endYear}-${String(endMonth + 1).padStart(2,'0')}-10`;
+  const cycleEnd   = `${endYear}-${String(endMonth + 1).padStart(2,'0')}-09`;
   return { cycleStart, cycleEnd };
 }
 
@@ -6654,22 +6604,22 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
       // SHEET 1 — Hours Summary (one row per engineer, totals)
       // ─────────────────────────────────────────────────────────────────────
       const s1Hdrs = [
-        'Trigram', 'Full Name', 'Export Date', 'Period',
+        'Employment ID', 'Trigram', 'Full Name', 'Export Date', 'Period',
         'Standby WD (h)', 'Worked WD (h)', 'Standby WE (h)', 'Worked WE (h)',
         'Incident Hrs', 'Upgrade Hrs', 'Bank Hol Hrs', 'Overtime Hrs', 'TOIL Bal (h)',
       ];
       const s1Rows = safeUsers.map(u => {
         const { oc, tb, incHrs, upgradeHrs, bankHolHrs, overtimeHrs } = getUserData(u, exportStart, exportEnd);
-        return [u.id, u.name, today, rangeLabel,
+        return [u.employment_id||'—', u.id, u.name, today, rangeLabel,
           oc.standbyWD, oc.workedWD, oc.standbyWE, oc.workedWE,
           incHrs, upgradeHrs, bankHolHrs, overtimeHrs||0, tb.balance];
       });
-      const s1TotRow = ['TOTAL', `${safeUsers.length} engineers`, today, rangeLabel,
-        ...Array.from({length:9}, (_,i) => s1Rows.reduce((a,r)=>a+(parseFloat(r[4+i])||0),0)), ''];
+      const s1TotRow = ['', 'TOTAL', `${safeUsers.length} engineers`, today, rangeLabel,
+        ...Array.from({length:9}, (_,i) => s1Rows.reduce((a,r)=>a+(parseFloat(r[5+i])||0),0)), ''];
       const ws1Data = [s1Hdrs, ...s1Rows, s1TotRow];
       const ws1 = XLSX.utils.aoa_to_sheet(ws1Data);
-      ws1['!cols'] = [8,24,12,18,14,13,14,13,12,12,12,13,13].map(w=>({wch:w}));
-      ws1['!freeze'] = { xSplit: 2, ySplit: 1 }; // freeze name cols + header row
+      ws1['!cols'] = [14,8,24,12,18,14,13,14,13,12,12,12,13,13].map(w=>({wch:w}));
+      ws1['!freeze'] = { xSplit: 3, ySplit: 1 };
       // Header styling: dark navy bg, white bold text
       const H = { font:{bold:true,color:{rgb:'FFFFFF'}}, fill:{fgColor:{rgb:'0F1629'}}, alignment:{horizontal:'center',wrapText:true}, border:{bottom:{style:'medium',color:{rgb:'3B82F6'}}} };
       styleRow(ws1, 0, s1Hdrs.length, H);
@@ -6677,12 +6627,12 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
       s1Rows.forEach((_, i) => {
         const bg = i % 2 === 0 ? '0F1629' : '131D35';
         styleRow(ws1, i+1, s1Hdrs.length, { fill:{fgColor:{rgb:bg}}, font:{color:{rgb:'E2E8F0'}} });
-        // Colour-code numeric cols
-        for (let c = 4; c <= 11; c++) {
+        // Colour-code numeric cols (now start at col 5)
+        for (let c = 5; c <= 12; c++) {
           const addr = XLSX.utils.encode_cell({r:i+1, c});
           if (!ws1[addr]) continue;
           const colours = ['93C5FD','93C5FD','A78BFA','A78BFA','FCD34D','818CF8','FCA5A5','6EE7B7'];
-          ws1[addr].s = { ...ws1[addr].s, font:{color:{rgb:colours[c-4]}, bold: parseFloat(ws1[addr].v)>0 } };
+          ws1[addr].s = { ...ws1[addr].s, font:{color:{rgb:colours[c-5]}, bold: parseFloat(ws1[addr].v)>0 } };
         }
       });
       // Totals row: bold teal
@@ -6691,7 +6641,7 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
       // ─────────────────────────────────────────────────────────────────────
       // SHEET 2 — Daily Detail (exact dates for every shift/overtime entry)
       // ─────────────────────────────────────────────────────────────────────
-      const s2Hdrs = ['Trigram','Full Name','Date','Day','Shift Type','Hours','Category','Notes'];
+      const s2Hdrs = ['Employment ID','Trigram','Full Name','Date','Day','Shift Type','Hours','Category','Notes'];
       const SHIFT_HRS = { daily:9, evening:12, weekend:12, bankholiday:22, upgrade:8, holiday:0, off:0 };
       const SHIFT_CAT = { daily:'Daily Shift', evening:'Weekday On-Call', weekend:'Weekend On-Call', bankholiday:'Bank Holiday OC', upgrade:'Upgrade Day', holiday:'Annual Leave', off:'' };
       const s2Rows = [];
@@ -6704,14 +6654,14 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
         rotaEntries.forEach(([date, shift]) => {
           const dayName = new Date(date+'T12:00:00').toLocaleDateString('en-GB',{weekday:'long'});
           const hrs = SHIFT_HRS[shift] || 0;
-          if (hrs > 0) s2Rows.push([u.id, u.name, fmtUK(date), dayName, SHIFT_CAT[shift]||shift, hrs, 'On-Call/Shift','']);
+          if (hrs > 0) s2Rows.push([u.employment_id||'—', u.id, u.name, fmtUK(date), dayName, SHIFT_CAT[shift]||shift, hrs, 'On-Call/Shift','']);
         });
         // Upgrade days with actual engineer-logged hours
         safeUpgrades.filter(up => up.date && (!exportStart||up.date>=exportStart) && (!exportEnd||up.date<=exportEnd)).forEach(up => {
           const et = (up.engineerTimes||[]).find(e=>e.engineerId===u.id&&e.approved);
           if (et) {
             const dayName = new Date(up.date+'T12:00:00').toLocaleDateString('en-GB',{weekday:'long'});
-            s2Rows.push([u.id, u.name, fmtUK(up.date), dayName, 'Upgrade Day', et.hours, 'Upgrade', up.title||'']);
+            s2Rows.push([u.employment_id||'—', u.id, u.name, fmtUK(up.date), dayName, 'Upgrade Day', et.hours, 'Upgrade', up.title||'']);
           }
         });
         // Approved overtime with exact dates
@@ -6719,7 +6669,7 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
           .sort((a,b)=>a.date.localeCompare(b.date))
           .forEach(o => {
             const dayName = new Date(o.date+'T12:00:00').toLocaleDateString('en-GB',{weekday:'long'});
-            s2Rows.push([u.id, u.name, fmtUK(o.date), dayName, 'Overtime', o.hours, 'Overtime', o.reason||'']);
+            s2Rows.push([u.employment_id||'—', u.id, u.name, fmtUK(o.date), dayName, 'Overtime', o.hours, 'Overtime', o.reason||'']);
           });
         // Incidents with hours logged
         const incRows = (incidents||[]).filter(inc => inc.assigned_to===u.id && inc.hours_worked > 0
@@ -6728,7 +6678,7 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
           const d = inc.date||inc.created_at||'';
           if (!d) return;
           const dayName = new Date(d.slice(0,10)+'T12:00:00').toLocaleDateString('en-GB',{weekday:'long'});
-          s2Rows.push([u.id, u.name, fmtUK(d.slice(0,10)), dayName, 'Incident', inc.hours_worked||0, 'Incident', inc.title||'']);
+          s2Rows.push([u.employment_id||'—', u.id, u.name, fmtUK(d.slice(0,10)), dayName, 'Incident', inc.hours_worked||0, 'Incident', inc.title||'']);
         });
       });
 
@@ -6740,8 +6690,8 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
 
       const ws2Data = [s2Hdrs, ...s2Rows];
       const ws2 = XLSX.utils.aoa_to_sheet(ws2Data);
-      ws2['!cols'] = [8,22,12,12,20,8,14,28].map(w=>({wch:w}));
-      ws2['!freeze'] = { xSplit: 2, ySplit: 1 };
+      ws2['!cols'] = [14,8,22,12,12,20,8,14,28].map(w=>({wch:w}));
+      ws2['!freeze'] = { xSplit: 3, ySplit: 1 };
       styleRow(ws2, 0, s2Hdrs.length, H);
       // Colour-code rows by category
       const catColours = { 'Daily Shift':'1E40AF','Weekday On-Call':'166534','Weekend On-Call':'854D0E','Bank Holiday OC':'7F1D1D','Upgrade Day':'5B21B6','Upgrade':'5B21B6','Annual Leave':'92400E','Overtime':'0F766E','Incident':'92400E' };
@@ -6917,10 +6867,95 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
         });
       }
 
-      // Build workbook — 3 sheets
+      // ─────────────────────────────────────────────────────────────────────
+      // SHEET 4 — Standby & Worked Hours Pay Breakdown
+      // Standby WD + Standby WE + Bank Hol = Standby Shifts @ £5/hr  <1164>
+      // Incidents + Overtime                = Worked on Standby @ 1.5x <2011>
+      // ─────────────────────────────────────────────────────────────────────
+      const STANDBY_RATE = 5;    // £5 per standby hour (pay code 1164)
+      const WORKED_MULT  = 1.5;  // 1.5× basic hourly rate (pay code 2011)
+
+      const s4Hdrs = [
+        'Employment ID', 'Trigram', 'Full Name', 'Period',
+        'Standby WD (h)', 'Standby WE (h)', 'Bank Hol (h)',
+        'Hours on Standby Shifts @ £5/hr <1164>',
+        'Standby Shift Pay (£)',
+        'Incident Hrs', 'Overtime Hrs',
+        'Hours Worked while on Standby Shift @ 1.5× Basic <2011>',
+        'Basic Hourly Rate (£)', '1.5× Rate (£)', 'Worked Shift Pay (£)',
+        'Total Additional Pay (£)',
+      ];
+
+      const s4Rows = safeUsers.map(u => {
+        const { oc, incHrs, upgradeHrs, bankHolHrs, overtimeHrs } = getUserData(u, exportStart, exportEnd);
+        const p = (payconfig || {})[u.id] || {};
+        const basicHourly = p.rate || 0;
+        const standbyTotal = (oc.standbyWD || 0) + (oc.standbyWE || 0) + (bankHolHrs || 0);
+        const workedTotal  = (incHrs || 0) + (overtimeHrs || 0);
+        const standbyPay   = standbyTotal * STANDBY_RATE;
+        const workedPay    = workedTotal  * basicHourly * WORKED_MULT;
+        return [
+          u.employment_id || '—', u.id, u.name, rangeLabel,
+          oc.standbyWD || 0, oc.standbyWE || 0, bankHolHrs || 0,
+          standbyTotal,
+          +standbyPay.toFixed(2),
+          incHrs || 0, overtimeHrs || 0,
+          workedTotal,
+          +basicHourly.toFixed(2),
+          +(basicHourly * WORKED_MULT).toFixed(2),
+          +workedPay.toFixed(2),
+          +(standbyPay + workedPay).toFixed(2),
+        ];
+      });
+
+      // Totals row
+      const s4TotRow = ['', 'TOTAL', `${safeUsers.length} engineers`, rangeLabel,
+        ...Array.from({length:12}, (_,i) => {
+          const col = 4 + i;
+          return s4Rows.reduce((a,r) => a + (parseFloat(r[col]) || 0), 0).toFixed(2);
+        }),
+      ];
+
+      const ws4Data = [s4Hdrs, ...s4Rows, s4TotRow];
+      const ws4 = XLSX.utils.aoa_to_sheet(ws4Data);
+      ws4['!cols'] = [14,8,22,18,13,13,12,32,16,13,13,36,16,14,16,18].map(w=>({wch:w}));
+      ws4['!freeze'] = { xSplit: 3, ySplit: 1 };
+
+      const H4 = { font:{bold:true,color:{rgb:'FFFFFF'}}, fill:{fgColor:{rgb:'0F1629'}}, alignment:{horizontal:'center',wrapText:true}, border:{bottom:{style:'medium',color:{rgb:'10B981'}}} };
+      styleRow(ws4, 0, s4Hdrs.length, H4);
+
+      // Column group headers: Standby section (cols 7) = green, Worked section (col 11) = amber, totals = teal
+      const standbyColour = { fill:{fgColor:{rgb:'064E3B'}}, font:{color:{rgb:'6EE7B7'},bold:true} };
+      const workedColour  = { fill:{fgColor:{rgb:'78350F'}}, font:{color:{rgb:'FCD34D'},bold:true} };
+      const totalColour   = { fill:{fgColor:{rgb:'1E3A5F'}}, font:{color:{rgb:'34D399'},bold:true} };
+
+      s4Rows.forEach((_, i) => {
+        const bg = i % 2 === 0 ? '0F1629' : '111827';
+        styleRow(ws4, i+1, s4Hdrs.length, { fill:{fgColor:{rgb:bg}}, font:{color:{rgb:'E2E8F0'}} });
+        // Standby total (col 7) and pay (col 8)
+        [7,8].forEach(c => {
+          const addr = XLSX.utils.encode_cell({r:i+1,c});
+          if (ws4[addr]) ws4[addr].s = standbyColour;
+        });
+        // Worked total (col 11) and pay cols (cols 14,15)
+        [11,14,15].forEach(c => {
+          const addr = XLSX.utils.encode_cell({r:i+1,c});
+          if (ws4[addr]) ws4[addr].s = workedColour;
+        });
+        // Grand total (col 15)
+        const tAddr = XLSX.utils.encode_cell({r:i+1,c:15});
+        if (ws4[tAddr]) ws4[tAddr].s = totalColour;
+      });
+      // Style totals row
+      styleRow(ws4, s4Rows.length+1, s4Hdrs.length, { fill:{fgColor:{rgb:'1E3A5F'}}, font:{bold:true,color:{rgb:'6EE7B7'}}, border:{top:{style:'medium',color:{rgb:'10B981'}}} });
+
+      // ─────────────────────────────────────────────────────────────────────
+      // Build workbook — 4 sheets
+      // ─────────────────────────────────────────────────────────────────────
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws3, '📊 Dashboard');
       XLSX.utils.book_append_sheet(wb, ws1, '📋 Hours Summary');
+      XLSX.utils.book_append_sheet(wb, ws4, '💷 Standby & Worked Pay');
       XLSX.utils.book_append_sheet(wb, ws2, '📅 Daily Detail');
 
       const fname = `CloudOps-Hours-${(exportStart||'all').replace(/-/g,'')}-${(exportEnd||'time').replace(/-/g,'')}.xlsx`;
@@ -7050,9 +7085,9 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
       const cy   = y;
       const endM = cm + 1 >= 12 ? 0 : cm + 1;
       const endY = cm + 1 >= 12 ? cy + 1 : cy;
-      const start = `${cy}-${String(cm + 1).padStart(2,'0')}-11`;
-      const end   = `${endY}-${String(endM + 1).padStart(2,'0')}-10`;
-      const label = new Date(cy, cm, 11).toLocaleDateString('en-GB',{month:'long',year:'numeric'}) + ` (11 ${String(cm+1).padStart(2,'0')} – 10 ${String(endM+1).padStart(2,'0')})`;
+      const start = `${cy}-${String(cm + 1).padStart(2,'0')}-10`;
+      const end   = `${endY}-${String(endM + 1).padStart(2,'0')}-09`;
+      const label = new Date(cy, cm, 10).toLocaleDateString('en-GB',{month:'long',year:'numeric'}) + ` (10 ${String(cm+1).padStart(2,'0')} – 09 ${String(endM+1).padStart(2,'0')})`;
       cycles.push({ start, end, label });
       m++; if (m >= 12) { m = 0; y++; }
     }
@@ -7349,9 +7384,9 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
                   ['Prev. cycle', () => {
                     const n=new Date(); const y=n.getFullYear(), m=n.getMonth();
                     const pc = m - 2; const pcy = pc < 0 ? y-1 : y; const pcm = ((pc%12)+12)%12;
-                    setExportStart(`${pcy}-${String(pcm+1).padStart(2,'0')}-11`);
+                    setExportStart(`${pcy}-${String(pcm+1).padStart(2,'0')}-10`);
                     const endM = pcm+1>=12?0:pcm+1; const endY = pcm+1>=12?pcy+1:pcy;
-                    setExportEnd(`${endY}-${String(endM+1).padStart(2,'0')}-10`);
+                    setExportEnd(`${endY}-${String(endM+1).padStart(2,'0')}-09`);
                   }],
                   ['Last 4 weeks', () => { const e=new Date(); const s=new Date(); s.setDate(e.getDate()-28); setExportStart(s.toISOString().slice(0,10)); setExportEnd(e.toISOString().slice(0,10)); }],
                   ['This year',    () => { const y=new Date().getFullYear(); setExportStart(`${y}-01-11`); setExportEnd(`${y}-12-10`); }],
@@ -7654,7 +7689,7 @@ function PayConfig({ users, payconfig, setPayconfig, isManager, timesheets, over
 
 // ── Settings (Manager only, all settings here) ─────────────────────────────
 function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks, driveToken, profilePics, setProfilePicsState, rota, setRota, permissions, setPermissions }) {
-  const BLANK_FORM = { name: '', trigram: '', role: 'Engineer', mobile_number: '', google_email: '', profile_picture: '', avatar: '', color: '' };
+  const BLANK_FORM = { name: '', trigram: '', role: 'Engineer', employment_id: '', mobile_number: '', google_email: '', profile_picture: '', avatar: '', color: '' };
   const [showAdd, setShowAdd]         = useState(false);
   const [showLink, setShowLink]       = useState(false);
   const [editingUserId, setEditingUserId] = useState(null);
@@ -7767,6 +7802,7 @@ function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks, dri
     const avatar = form.avatar || form.name.split(' ').map(x => x[0]).join('').slice(0, 2).toUpperCase();
     const newUser = { id, name: form.name, role: form.role, tri: id.slice(0,3), avatar, color,
       mobile_number: form.mobile_number || '', google_email: form.google_email || '',
+      employment_id: form.employment_id || '',
       profile_picture: form.profile_picture || '' };
     const updatedUsers = [...users, newUser];
     setUsers(updatedUsers);
@@ -7939,6 +7975,12 @@ function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks, dri
       <input className="input" type="email" placeholder="Google Email" value={fv.google_email||''} onChange={e => setFv(f => ({...f, google_email: e.target.value}))} />
       <input className="input" type="tel" placeholder="Mobile Number" value={fv.mobile_number||''} onChange={e => setFv(f => ({...f, mobile_number: e.target.value}))} />
       <input className="input" placeholder="Avatar Initials (e.g. MB)" maxLength={3} value={fv.avatar||''} onChange={e => setFv(f => ({...f, avatar: e.target.value.toUpperCase()}))} />
+      {/* Employment ID */}
+      <div>
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 3 }}>Employment ID <span style={{ color: 'rgba(255,255,255,0.3)' }}>(Payroll / HR reference)</span></div>
+        <input className="input" placeholder="e.g. EMP-00123" value={fv.employment_id||''} onChange={e => setFv(f => ({...f, employment_id: e.target.value}))}
+          style={{ fontFamily: 'DM Mono', letterSpacing: 1 }} />
+      </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <label style={{ fontSize: 12, color: 'var(--text-muted)', minWidth: 80 }}>Colour</label>
         <input type="color" value={fv.color||'#1d4ed8'} onChange={e => setFv(f => ({...f, color: e.target.value}))}
@@ -8029,7 +8071,7 @@ function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks, dri
                 </div>
                 <Tag label={u.role} type={u.role === 'Manager' ? 'amber' : 'blue'} />
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                  <button className="btn btn-secondary btn-sm" onClick={() => { setEditForm({ name: u.name, trigram: u.id, role: u.role||'Engineer', mobile_number: u.mobile_number||'', google_email: u.google_email||'', profile_picture: u.profile_picture||'', avatar: u.avatar||'', color: u.color||'' }); setEditingUserId(u.id); }}>✎ Edit</button>
+                  <button className="btn btn-secondary btn-sm" onClick={() => { setEditForm({ name: u.name, trigram: u.id, role: u.role||'Engineer', employment_id: u.employment_id||'', mobile_number: u.mobile_number||'', google_email: u.google_email||'', profile_picture: u.profile_picture||'', avatar: u.avatar||'', color: u.color||'' }); setEditingUserId(u.id); }}>✎ Edit</button>
                   <button className="btn btn-secondary btn-sm" onClick={() => resetPassword(u.id)} title="Reset password to default (lowercase ID)">🔑 Reset PW</button>
                   <button className="btn btn-danger btn-sm" onClick={() => deleteUser(u.id)}>🗑</button>
                 </div>
@@ -8464,7 +8506,7 @@ export default function App() {
           ? rawNotes
           : Object.values(rawNotes).flat().filter(n => n && typeof n === 'object'));
       }
-      if (data.whatsappChats   != null) setWhatsappChats(data.whatsappChats);
+      if (data.whatsappChats != null) { const wc = data.whatsappChats; setWhatsappChats(wc?.chats ?? (Array.isArray(wc) ? wc : [])); }
       if (data.permissions     != null) setPermissions(data.permissions);
 
       setLastSync(new Date());
@@ -8750,7 +8792,7 @@ export default function App() {
         if (data.documents != null) setDocuments(data.documents);
         if (data.timekeeping != null) setTimekeeping(data.timekeeping);
         if (data.obsidianNotes != null) setObsidianNotes(data.obsidianNotes);
-        if (data.whatsappChats != null) setWhatsappChats(data.whatsappChats);
+        if (data.whatsappChats != null) { const wc = data.whatsappChats; setWhatsappChats(wc?.chats ?? (Array.isArray(wc) ? wc : [])); }
         if (data.permissions   != null) setPermissions(data.permissions);
         setLastSync(new Date());
         // Mark data loaded BEFORE setting token so saves don't fire with stale state
@@ -8947,7 +8989,7 @@ export default function App() {
       case 'swaps':      return <ShiftSwaps {...props} driveToken={driveToken} />;
       case 'upgrades':   return <UpgradeDays {...props} timesheets={timesheets} setTimesheets={setTimesheets} />;
       case 'stress':     return <StressScore {...props} overtime={overtime} holidays={holidays} />;
-      case 'toil':       return <TOIL {...props} />;
+      case 'toil':       return <TOIL users={users} timesheets={timesheets} toil={toil} setToil={setToil} currentUser={currentUser} isManager={isManager} />;
       case 'absence':    return <Absence {...props} driveToken={driveToken} />;
       case 'overtime':   return <Overtime {...props} overtime={overtime} setOvertime={setOvertime} driveToken={driveToken} />;
       case 'logbook':    return <Logbook {...props} />;
@@ -9161,7 +9203,7 @@ export default function App() {
                       if (has(data.logbook))       setLogbook(data.logbook);
                       if (has(data.documents))     setDocuments(data.documents);
                       if (has(data.obsidianNotes)) setObsidianNotes(data.obsidianNotes);
-                      if (has(data.whatsappChats)) setWhatsappChats(data.whatsappChats);
+                      if (has(data.whatsappChats)) { const wc = data.whatsappChats; setWhatsappChats(wc?.chats ?? (Array.isArray(wc) ? wc : [])); }
                       if (has(data.permissions))   setPermissions(data.permissions);
                       setLastSync(new Date());
                     } catch(e) { console.warn('Refresh failed:', e); }
