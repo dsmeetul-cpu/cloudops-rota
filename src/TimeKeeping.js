@@ -1,9 +1,17 @@
 // src/TimeKeeping.js
 // CloudOps Rota — Time Keeping / RTO Compliance Tracker
-// Manager-only: record office attendance, enforce 3-day RTO policy,
-// track late arrivals (grace 15–20 min), bank holidays, exclude holidays.
+// Manager: full dashboard, confirm check-ins, export to Excel
+// Engineer: check in (office/WFH), see own week view only
 
-import React, { useState, useMemo, useCallback, useEffect } from 'react';
+import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
+
+// ── Constants ────────────────────────────────────────────────────────────────
+const RTO_DAYS_REQUIRED = 3;
+const START_TIME        = '09:00';
+const END_TIME          = '18:00';
+const GRACE_LATE_WARN   = 15; // mins: amber
+const GRACE_LATE_LATE   = 20; // mins: red
+const STREAK_THRESHOLD  = 3;  // consecutive late arrivals = pattern alert
 
 // ── Constants ────────────────────────────────────────────────────────────────
 const RTO_DAYS_REQUIRED = 3;
@@ -138,14 +146,60 @@ function HeatCell({ record, bankHol, holiday, isToday, isFuture }) {
   );
 }
 
+// ── Excel export helper (manager only) ───────────────────────────────────────
+async function exportAttendanceExcel(engineers, timekeeping, bankHolidays, holidays, exportFrom, exportTo) {
+  const XLSX = window.XLSX;
+  if (!XLSX) { alert('XLSX library not loaded'); return; }
+
+  const bh = (bankHolidays || []).map(b => b.date || b);
+  const fmtDate = ds => new Date(ds+'T12:00:00').toLocaleDateString('en-GB');
+  const rangeLabel = exportFrom || exportTo
+    ? `${exportFrom ? fmtDate(exportFrom) : 'Start'} – ${exportTo ? fmtDate(exportTo) : 'End'}`
+    : 'All dates';
+
+  const hdrs = ['Employment ID','Trigram','Full Name','Date','Day','Type','Arrival','Departure','Hours Worked','Late Status','Confirmed by Manager','Notes'];
+  const rows = [];
+  engineers.forEach(u => {
+    const recs = (timekeeping || {})[u.id] || {};
+    Object.keys(recs).sort().forEach(d => {
+      if (exportFrom && d < exportFrom) return;
+      if (exportTo   && d > exportTo)   return;
+      const rec = recs[d];
+      const day = new Date(d+'T12:00:00').toLocaleDateString('en-GB',{weekday:'long'});
+      const isBH = isBankHoliday(d, bh);
+      const isHol= isOnHoliday(d, u.id, holidays);
+      const ls   = rec.type === 'office' ? lateStatus(rec.arrival) : null;
+      const hrs  = rec.type === 'office' && rec.arrival && rec.departure
+        ? ((parseTime(rec.departure) - parseTime(rec.arrival)) / 60).toFixed(1)
+        : '';
+      rows.push([
+        u.employment_id || '—', u.id, u.name, fmtDate(d), day,
+        isBH ? 'Bank Holiday' : isHol ? 'Holiday' : rec.type || '—',
+        rec.arrival || '—', rec.departure || '—', hrs ? `${hrs}h` : '—',
+        ls ? ls.label : rec.type === 'wfh' ? 'WFH' : rec.type === 'absent' ? 'Absent' : '—',
+        rec.confirmedBy ? `✓ ${rec.confirmedBy}` : '—',
+        rec.note || '',
+      ]);
+    });
+  });
+
+  const ws = XLSX.utils.aoa_to_sheet([hdrs, ...rows]);
+  ws['!cols'] = [14,8,22,12,12,10,8,10,10,14,18,24].map(w=>({wch:w}));
+  ws['!freeze'] = { xSplit: 3, ySplit: 1 };
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, '📋 Attendance');
+  const fname = `CloudOps-Attendance-${(exportFrom||'all').replace(/-/g,'')}-${(exportTo||'now').replace(/-/g,'')}.xlsx`;
+  XLSX.writeFile(wb, fname);
+}
+
 // ── Main Component ────────────────────────────────────────────────────────────
 export default function TimeKeeping({
   users, holidays, currentUser, isManager,
-  bankHolidays, // UK_BANK_HOLIDAYS array
+  bankHolidays,
   timekeeping, setTimekeeping,
   driveToken,
 }) {
-  const [tab,           setTab]           = useState('dashboard');
+  const [tab,           setTab]           = useState(isManager ? 'dashboard' : 'checkin');
   const [selectedUser,  setSelectedUser]  = useState(null);
   const [selectedWeek,  setSelectedWeek]  = useState(getWeekStart(todayStr()));
   const [showLogModal,  setShowLogModal]  = useState(false);
@@ -159,10 +213,64 @@ export default function TimeKeeping({
   const [filterUser,    setFilterUser]    = useState('all');
   const [alertFilter,   setAlertFilter]   = useState('all');
   const [viewMonth,     setViewMonth]     = useState(todayStr().slice(0,7));
+  // Export modal state
+  const [showExport,    setShowExport]    = useState(false);
+  const [exportFrom,    setExportFrom]    = useState('');
+  const [exportTo,      setExportTo]      = useState('');
+  const [exporting,     setExporting]     = useState(false);
+  // Engineer check-in state
+  const [checkInType,   setCheckInType]   = useState('office');
+  const [checkInNote,   setCheckInNote]   = useState('');
+  const [checkInSaving, setCheckInSaving] = useState(false);
+  const [checkInMsg,    setCheckInMsg]    = useState('');
 
   const engineers = useMemo(() => (users || []).filter(u => !u.isManager), [users]);
+  const me = useMemo(() => (users || []).find(u => u.id === currentUser), [users, currentUser]);
   const bh = useMemo(() => (bankHolidays || []).map(b => b.date || b), [bankHolidays]);
   const tk = timekeeping || {};
+
+  // ── Engineer: today's check-in status ───────────────────────────────────────
+  const myTodayRec = tk[currentUser]?.[todayStr()];
+  const hasCheckedIn = !!myTodayRec;
+
+  const doCheckIn = async () => {
+    if (hasCheckedIn && !window.confirm('You already checked in today — overwrite?')) return;
+    setCheckInSaving(true);
+    const now = new Date();
+    const arrival = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+    const updated = {
+      ...tk,
+      [currentUser]: {
+        ...(tk[currentUser] || {}),
+        [todayStr()]: {
+          type: checkInType,
+          arrival: checkInType === 'office' ? arrival : undefined,
+          note: checkInNote || undefined,
+          checkedInAt: now.toISOString(),
+          confirmedBy: null,
+        },
+      },
+    };
+    setTimekeeping(updated);
+    setCheckInMsg(`✅ Checked in at ${arrival} — ${checkInType === 'office' ? '🏢 In Office' : '🏠 WFH'}`);
+    setCheckInSaving(false);
+    setTimeout(() => setCheckInMsg(''), 6000);
+  };
+
+  const confirmCheckIn = (userId, date) => {
+    const rec = (tk[userId] || {})[date];
+    if (!rec) return;
+    const updated = { ...tk, [userId]: { ...(tk[userId] || {}), [date]: { ...rec, confirmedBy: currentUser, confirmedAt: new Date().toISOString() } } };
+    setTimekeeping(updated);
+  };
+
+  const unconfirmCheckIn = (userId, date) => {
+    const rec = (tk[userId] || {})[date];
+    if (!rec) return;
+    const { confirmedBy, confirmedAt, ...rest } = rec;
+    const updated = { ...tk, [userId]: { ...(tk[userId] || {}), [date]: rest } };
+    setTimekeeping(updated);
+  };
 
   // ── Derive stats per user for date range ────────────────────────────────────
   const getUserStats = useCallback((userId, startDate, endDate) => {
@@ -301,21 +409,20 @@ export default function TimeKeeping({
   const BLUE     = '#60a5fa';
   const MUTED    = '#475569';
 
-  const tabCfg = [
-    { id: 'dashboard', icon: '◈', label: 'Dashboard' },
-    { id: 'weekly',    icon: '📅', label: 'Weekly View' },
-    { id: 'monthly',   icon: '📆', label: 'Monthly' },
-    { id: 'heatmap',   icon: '🔥', label: 'Heat Map' },
-    { id: 'alerts',    icon: '🚨', label: `Alerts${patternAlerts.filter(a=>a.hasPattern).length > 0 ? ` (${patternAlerts.filter(a=>a.hasPattern).length})` : ''}` },
-    { id: 'log',       icon: '📋', label: 'Attendance Log' },
-  ];
-
-  if (!isManager) return (
-    <div style={{ padding: 32, color: '#94a3b8', textAlign: 'center' }}>
-      <div style={{ fontSize: 48, marginBottom: 12 }}>🔒</div>
-      <div style={{ fontSize: 16, fontWeight: 600 }}>Time Keeping is restricted to managers.</div>
-    </div>
-  );
+  const tabCfg = isManager
+    ? [
+        { id: 'dashboard', icon: '◈',  label: 'Dashboard' },
+        { id: 'checkins',  icon: '✅',  label: `Check-Ins${Object.values(tk).flatMap(u=>Object.entries(u)).filter(([d,r])=>d===todayStr()&&!r.confirmedBy).length > 0 ? ` (${Object.values(tk).flatMap(u=>Object.entries(u)).filter(([d,r])=>d===todayStr()&&!r.confirmedBy).length})` : ''}` },
+        { id: 'weekly',    icon: '📅',  label: 'Weekly View' },
+        { id: 'monthly',   icon: '📆',  label: 'Monthly' },
+        { id: 'heatmap',   icon: '🔥',  label: 'Heat Map' },
+        { id: 'alerts',    icon: '🚨',  label: `Alerts${patternAlerts.filter(a=>a.hasPattern).length > 0 ? ` (${patternAlerts.filter(a=>a.hasPattern).length})` : ''}` },
+        { id: 'log',       icon: '📋',  label: 'Attendance Log' },
+      ]
+    : [
+        { id: 'checkin',   icon: '✅',  label: 'Check In' },
+        { id: 'myweek',    icon: '📅',  label: 'My Week' },
+      ];
 
   return (
     <div style={{ maxWidth: 1200 }}>
@@ -329,11 +436,21 @@ export default function TimeKeeping({
             RTO Policy: {RTO_DAYS_REQUIRED} days/week in office · Start {START_TIME} · Grace {GRACE_LATE_WARN}–{GRACE_LATE_LATE} min
           </div>
         </div>
-        <button
-          onClick={() => { setLogUser(engineers[0]?.id || ''); setLogDate(todayStr()); setLogType('office'); setLogArrival('09:00'); setLogDeparture('18:00'); setLogNote(''); setShowLogModal(true); }}
-          style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '9px 20px', background: ACCENT, color: '#000', border: 'none', borderRadius: 8, fontWeight: 700, fontSize: 13, cursor: 'pointer', boxShadow: `0 0 14px rgba(0,194,255,0.3)` }}>
-          + Log Attendance
-        </button>
+        <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+          {isManager && (
+            <>
+              <button onClick={() => setShowExport(true)}
+                style={{ display:'flex', alignItems:'center', gap:6, padding:'8px 16px', background:'rgba(16,185,129,0.12)', color:'#34d399', border:'1px solid rgba(16,185,129,0.3)', borderRadius:8, fontWeight:700, fontSize:13, cursor:'pointer' }}>
+                📥 Export Excel
+              </button>
+              <button
+                onClick={() => { setLogUser(engineers[0]?.id || ''); setLogDate(todayStr()); setLogType('office'); setLogArrival('09:00'); setLogDeparture('18:00'); setLogNote(''); setShowLogModal(true); }}
+                style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '9px 20px', background: ACCENT, color: '#000', border: 'none', borderRadius: 8, fontWeight: 700, fontSize: 13, cursor: 'pointer', boxShadow: `0 0 14px rgba(0,194,255,0.3)` }}>
+                + Log Attendance
+              </button>
+            </>
+          )}
+        </div>
       </div>
 
       {/* ── Tabs ───────────────────────────────────────────────────────────── */}
@@ -351,6 +468,189 @@ export default function TimeKeeping({
           </div>
         ))}
       </div>
+
+      {/* ════════════════════════════════════════════════════════════════════ */}
+      {/* TAB: ENGINEER CHECK-IN                                              */}
+      {/* ════════════════════════════════════════════════════════════════════ */}
+      {tab === 'checkin' && (
+        <div style={{ maxWidth: 480 }}>
+          <div style={{ background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.07)', borderRadius:12, padding:24 }}>
+            <div style={{ fontSize:16, fontWeight:700, marginBottom:4 }}>Good {new Date().getHours() < 12 ? 'morning' : new Date().getHours() < 17 ? 'afternoon' : 'evening'}, {me?.name?.split(' ')[0] || 'there'} 👋</div>
+            <div style={{ fontSize:12, color:'#64748b', marginBottom:20 }}>{new Date().toLocaleDateString('en-GB',{weekday:'long',day:'2-digit',month:'long',year:'numeric'})}</div>
+
+            {hasCheckedIn ? (
+              <div style={{ background:'rgba(34,197,94,0.1)', border:'1px solid rgba(34,197,94,0.25)', borderRadius:10, padding:'16px 18px', marginBottom:16 }}>
+                <div style={{ fontSize:14, fontWeight:700, color:'#22c55e', marginBottom:6 }}>
+                  {myTodayRec.type === 'office' ? '🏢 In Office' : '🏠 Working from Home'}
+                </div>
+                <div style={{ fontSize:12, color:'#64748b', fontFamily:'DM Mono' }}>
+                  Checked in {myTodayRec.arrival ? `at ${myTodayRec.arrival}` : 'today'}
+                  {myTodayRec.confirmedBy && <span style={{ color:'#22c55e', marginLeft:8 }}>· ✓ Confirmed by manager</span>}
+                  {!myTodayRec.confirmedBy && <span style={{ color:'#f59e0b', marginLeft:8 }}>· Pending manager confirmation</span>}
+                </div>
+                {myTodayRec.note && <div style={{ fontSize:11, color:'#475569', marginTop:4 }}>Note: {myTodayRec.note}</div>}
+              </div>
+            ) : (
+              <div style={{ background:'rgba(245,158,11,0.08)', border:'1px solid rgba(245,158,11,0.2)', borderRadius:10, padding:'12px 16px', marginBottom:16, fontSize:12, color:'#f59e0b' }}>
+                ⏳ You haven't checked in today yet.
+              </div>
+            )}
+
+            <div style={{ marginBottom:14 }}>
+              <div style={{ fontSize:11, color:'#64748b', marginBottom:8, fontWeight:600, textTransform:'uppercase', letterSpacing:'0.5px' }}>Where are you working today?</div>
+              <div style={{ display:'flex', gap:8 }}>
+                {[['office','🏢 In Office','#22c55e'],['wfh','🏠 WFH','#60a5fa']].map(([v,l,c]) => (
+                  <div key={v} onClick={() => setCheckInType(v)}
+                    style={{ flex:1, padding:'12px 0', textAlign:'center', borderRadius:8, cursor:'pointer', fontSize:13, fontWeight:700,
+                      background: checkInType===v ? `rgba(${v==='office'?'34,197,94':'96,165,250'},0.15)` : 'rgba(255,255,255,0.03)',
+                      border: `1.5px solid ${checkInType===v ? c : 'rgba(255,255,255,0.08)'}`,
+                      color: checkInType===v ? c : '#64748b', transition:'all 0.15s' }}>
+                    {l}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div style={{ marginBottom:16 }}>
+              <div style={{ fontSize:11, color:'#64748b', marginBottom:5, fontWeight:600, textTransform:'uppercase', letterSpacing:'0.5px' }}>Note (optional)</div>
+              <input type="text" value={checkInNote} onChange={e=>setCheckInNote(e.target.value)}
+                placeholder="e.g. Working on project X, client site visit…"
+                style={{ width:'100%', boxSizing:'border-box', padding:'9px 12px', background:'rgba(255,255,255,0.05)', border:'1px solid rgba(255,255,255,0.1)', borderRadius:7, color:'#e2e8f0', fontSize:13, outline:'none' }} />
+            </div>
+
+            {checkInMsg && (
+              <div style={{ background:'rgba(34,197,94,0.1)', border:'1px solid rgba(34,197,94,0.25)', borderRadius:7, padding:'8px 12px', fontSize:12, color:'#22c55e', marginBottom:12 }}>
+                {checkInMsg}
+              </div>
+            )}
+
+            <button onClick={doCheckIn} disabled={checkInSaving}
+              style={{ width:'100%', padding:'12px 0', background:ACCENT, color:'#000', border:'none', borderRadius:8, fontWeight:800, fontSize:14, cursor:'pointer', boxShadow:`0 0 18px rgba(0,194,255,0.25)` }}>
+              {checkInSaving ? '⏳ Saving…' : hasCheckedIn ? '↩ Update Check-In' : `✓ Check In — ${new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})}`}
+            </button>
+          </div>
+
+          {/* My recent week */}
+          <div style={{ marginTop:16, background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.07)', borderRadius:10, padding:'14px 16px' }}>
+            <div style={{ fontSize:12, fontWeight:700, marginBottom:10, color:'#94a3b8' }}>This week</div>
+            <div style={{ display:'flex', gap:6 }}>
+              {getAllWeekdays(getWeekStart(todayStr())).map(d => {
+                const rec  = (tk[currentUser] || {})[d];
+                const isBH = isBankHoliday(d, bh);
+                const isT  = d === todayStr();
+                const isFut= d > todayStr();
+                let icon = '—', color = '#334155';
+                if (isBH)              { icon = '🏛'; color = '#a78bfa'; }
+                else if (isFut)        { icon = '·'; color = '#334155'; }
+                else if (rec?.type==='office') { icon='🏢'; color='#22c55e'; }
+                else if (rec?.type==='wfh')    { icon='🏠'; color='#60a5fa'; }
+                else if (rec?.type==='absent') { icon='🤒'; color='#ef4444'; }
+                return (
+                  <div key={d} style={{ flex:1, textAlign:'center', padding:'8px 4px', borderRadius:7,
+                    background: isT ? 'rgba(0,194,255,0.08)' : 'rgba(255,255,255,0.02)',
+                    border: `1px solid ${isT ? 'rgba(0,194,255,0.25)' : 'rgba(255,255,255,0.05)'}` }}>
+                    <div style={{ fontSize:9, color:'#475569', marginBottom:3, fontFamily:'DM Mono' }}>
+                      {new Date(d+'T12:00:00').toLocaleDateString('en-GB',{weekday:'short'})}
+                    </div>
+                    <div style={{ fontSize:16 }}>{icon}</div>
+                    {rec?.confirmedBy && <div style={{ fontSize:8, color:'#22c55e', marginTop:2 }}>✓</div>}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ════════════════════════════════════════════════════════════════════ */}
+      {/* TAB: ENGINEER MY WEEK (read-only own data)                         */}
+      {/* ════════════════════════════════════════════════════════════════════ */}
+      {tab === 'myweek' && (
+        <div>
+          <div style={{ fontSize:13, color:'#64748b', marginBottom:14 }}>Your attendance for the current week. Contact your manager to correct any errors.</div>
+          <div style={{ display:'flex', gap:6 }}>
+            {getAllWeekdays(getWeekStart(todayStr())).map(d => {
+              const rec  = (tk[currentUser] || {})[d];
+              const isBH = isBankHoliday(d, bh);
+              const isT  = d === todayStr();
+              const isFut= d > todayStr();
+              let typeLbl='No data', typeColor='#334155', typeIcon='—';
+              if (isBH)              { typeLbl='Bank Holiday'; typeColor='#a78bfa'; typeIcon='🏛'; }
+              else if (isOnHoliday(d,currentUser,holidays)) { typeLbl='Holiday'; typeColor='#c4b5fd'; typeIcon='🌴'; }
+              else if (isFut)        { typeLbl='Future'; typeColor='#334155'; typeIcon='·'; }
+              else if (rec?.type==='office') { typeLbl=rec.arrival?`In at ${rec.arrival}`:'In Office'; typeColor='#22c55e'; typeIcon='🏢'; }
+              else if (rec?.type==='wfh')    { typeLbl='WFH'; typeColor='#60a5fa'; typeIcon='🏠'; }
+              else if (rec?.type==='absent') { typeLbl='Absent'; typeColor='#ef4444'; typeIcon='🤒'; }
+              return (
+                <div key={d} style={{ flex:1, borderRadius:10, background: isT?'rgba(0,194,255,0.06)':'rgba(255,255,255,0.02)', border:`1.5px solid ${isT?'rgba(0,194,255,0.25)':'rgba(255,255,255,0.06)'}`, padding:'14px 10px', textAlign:'center' }}>
+                  <div style={{ fontSize:11, color:isT?ACCENT:'#64748b', fontWeight:600, marginBottom:4 }}>
+                    {new Date(d+'T12:00:00').toLocaleDateString('en-GB',{weekday:'short',day:'2-digit',month:'short'})}
+                  </div>
+                  <div style={{ fontSize:24, marginBottom:6 }}>{typeIcon}</div>
+                  <div style={{ fontSize:11, color:typeColor, fontWeight:600 }}>{typeLbl}</div>
+                  {rec?.confirmedBy
+                    ? <div style={{ fontSize:10, color:'#22c55e', marginTop:4 }}>✓ Confirmed</div>
+                    : rec && !isBH && <div style={{ fontSize:10, color:'#f59e0b', marginTop:4 }}>Pending</div>
+                  }
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ════════════════════════════════════════════════════════════════════ */}
+      {/* TAB: MANAGER CHECK-INS CONFIRMATION                                */}
+      {/* ════════════════════════════════════════════════════════════════════ */}
+      {tab === 'checkins' && isManager && (
+        <div>
+          <div style={{ fontSize:12, color:'#64748b', marginBottom:14 }}>
+            Engineers who have self-reported their attendance today. Confirm or edit their check-in time.
+          </div>
+          {engineers.map(u => {
+            const dayKeys = Object.keys(tk[u.id]||{}).sort().reverse().slice(0,5);
+            return (
+              <div key={u.id} style={{ background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.07)', borderRadius:10, padding:'14px 18px', marginBottom:10 }}>
+                <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:10 }}>
+                  <div style={{ width:32, height:32, borderRadius:'50%', background:'rgba(0,194,255,0.12)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:13, fontWeight:700, color:ACCENT }}>{u.name.charAt(0)}</div>
+                  <div style={{ flex:1 }}>
+                    <div style={{ fontSize:13, fontWeight:700 }}>{u.name}</div>
+                    <div style={{ fontSize:10, color:'#64748b', fontFamily:'DM Mono' }}>{u.id}</div>
+                  </div>
+                </div>
+                <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+                  {dayKeys.map(d => {
+                    const rec = (tk[u.id]||{})[d];
+                    const ls  = rec?.type==='office' ? lateStatus(rec.arrival) : null;
+                    return (
+                      <div key={d} style={{ display:'flex', alignItems:'center', gap:10, background:'rgba(255,255,255,0.02)', borderRadius:7, padding:'8px 12px' }}>
+                        <div style={{ fontSize:11, color:'#64748b', fontFamily:'DM Mono', minWidth:80 }}>{shortDate(d)}</div>
+                        <div style={{ flex:1, display:'flex', alignItems:'center', gap:8 }}>
+                          <span style={{ fontSize:13 }}>{rec?.type==='office'?'🏢':rec?.type==='wfh'?'🏠':'🤒'}</span>
+                          {rec?.arrival && <span style={{ fontSize:11, fontFamily:'DM Mono', color:ls?.color||'#94a3b8' }}>{rec.arrival}</span>}
+                          {ls?.status==='late' && <span style={{ fontSize:10, color:'#ef4444', fontWeight:700 }}>+{ls.diff}m late</span>}
+                          {rec?.note && <span style={{ fontSize:10, color:'#475569' }}>"{rec.note}"</span>}
+                        </div>
+                        {rec?.confirmedBy
+                          ? <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+                              <span style={{ fontSize:11, color:'#22c55e', fontWeight:600 }}>✓ Confirmed</span>
+                              <button onClick={() => unconfirmCheckIn(u.id, d)} style={{ padding:'2px 8px', background:'transparent', border:'1px solid rgba(239,68,68,0.3)', borderRadius:5, color:'#ef4444', fontSize:10, cursor:'pointer' }}>Undo</button>
+                            </div>
+                          : <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+                              <button onClick={() => confirmCheckIn(u.id, d)} style={{ padding:'4px 12px', background:'rgba(34,197,94,0.12)', border:'1px solid rgba(34,197,94,0.3)', borderRadius:6, color:'#22c55e', fontSize:11, fontWeight:700, cursor:'pointer' }}>✓ Confirm</button>
+                              <button onClick={() => openLog(u.id, d)} style={{ padding:'4px 10px', background:'rgba(255,255,255,0.04)', border:'1px solid rgba(255,255,255,0.08)', borderRadius:6, color:'#94a3b8', fontSize:11, cursor:'pointer' }}>✏ Edit</button>
+                            </div>
+                        }
+                      </div>
+                    );
+                  })}
+                  {dayKeys.length === 0 && <div style={{ fontSize:12, color:'#334155' }}>No check-ins recorded.</div>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* ════════════════════════════════════════════════════════════════════ */}
       {/* TAB: DASHBOARD                                                      */}
@@ -878,6 +1178,51 @@ export default function TimeKeeping({
                 })}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+
+      {/* ════════════════════════════════════════════════════════════════════ */}
+      {/* EXPORT EXCEL MODAL (manager only)                                  */}
+      {/* ════════════════════════════════════════════════════════════════════ */}
+      {showExport && isManager && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.7)', zIndex:9999, display:'flex', alignItems:'center', justifyContent:'center', padding:16 }}
+          onClick={e => { if (e.target===e.currentTarget) setShowExport(false); }}>
+          <div style={{ background:'#0f172a', border:'1px solid rgba(255,255,255,0.1)', borderRadius:14, padding:28, width:'100%', maxWidth:440, boxShadow:'0 25px 60px rgba(0,0,0,0.6)' }}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 }}>
+              <div style={{ fontSize:16, fontWeight:700 }}>📥 Export Attendance to Excel</div>
+              <button onClick={()=>setShowExport(false)} style={{ background:'none', border:'none', color:'#64748b', fontSize:20, cursor:'pointer' }}>✕</button>
+            </div>
+            <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
+              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+                <div>
+                  <div style={{ fontSize:11, color:'#64748b', marginBottom:5, fontWeight:600 }}>From</div>
+                  <input type="date" value={exportFrom} onChange={e=>setExportFrom(e.target.value)} style={inputStyle} />
+                </div>
+                <div>
+                  <div style={{ fontSize:11, color:'#64748b', marginBottom:5, fontWeight:600 }}>To</div>
+                  <input type="date" value={exportTo} onChange={e=>setExportTo(e.target.value)} style={inputStyle} />
+                </div>
+              </div>
+              <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+                {[
+                  ['This week', () => { const ws=getWeekStart(todayStr()); setExportFrom(ws); setExportTo(addDays(ws,4)); }],
+                  ['This month', () => { const [y,m]=todayStr().slice(0,7).split('-'); setExportFrom(`${y}-${m}-01`); setExportTo(new Date(y,m,0).toISOString().slice(0,10)); }],
+                  ['Last 30 days', () => { setExportFrom(addDays(todayStr(),-29)); setExportTo(todayStr()); }],
+                  ['All time', () => { setExportFrom(''); setExportTo(''); }],
+                ].map(([l,fn]) => (
+                  <button key={l} onClick={fn} style={{ padding:'4px 12px', background:'rgba(255,255,255,0.05)', border:'1px solid rgba(255,255,255,0.1)', borderRadius:6, color:'#94a3b8', fontSize:11, cursor:'pointer' }}>{l}</button>
+                ))}
+              </div>
+              <div style={{ display:'flex', gap:8, justifyContent:'flex-end', marginTop:4 }}>
+                <button onClick={()=>setShowExport(false)} style={{ padding:'8px 18px', background:'transparent', border:'1px solid rgba(255,255,255,0.1)', borderRadius:7, color:'#64748b', cursor:'pointer', fontSize:13 }}>Cancel</button>
+                <button onClick={async ()=>{ setExporting(true); await exportAttendanceExcel(engineers,tk,bankHolidays,holidays,exportFrom,exportTo); setExporting(false); setShowExport(false); }}
+                  disabled={exporting}
+                  style={{ padding:'8px 22px', background:ACCENT, color:'#000', border:'none', borderRadius:7, fontWeight:700, fontSize:13, cursor:'pointer' }}>
+                  {exporting ? '⏳ Exporting…' : '📥 Download Excel'}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}
