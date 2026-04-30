@@ -72,7 +72,19 @@ function getWeeksFrom(startDate, count = 13) {
 function getAllWeekdays(weekStart) {
   return Array.from({ length: 5 }, (_, i) => addDays(weekStart, i));
 }
-function todayStr() { return new Date().toISOString().slice(0, 10); }
+// Use London local time throughout (Europe/London handles GMT/BST automatically)
+function londonNow() {
+  return new Date(new Date().toLocaleString('en-GB', { timeZone: 'Europe/London' }));
+}
+function todayStr() {
+  const d = londonNow();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+function londonTimeStr() {
+  const d = londonNow();
+  return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+}
+function londonHour() { return londonNow().getHours(); }
 
 // ── MiniBar chart ─────────────────────────────────────────────────────────────
 function MiniBar({ value, max, color, height = 36, width = 22, label }) {
@@ -221,15 +233,21 @@ export default function TimeKeeping({
   const bh = useMemo(() => (bankHolidays || []).map(b => b.date || b), [bankHolidays]);
   const tk = timekeeping || {};
 
-  // ── Engineer: today's check-in status ───────────────────────────────────────
-  const myTodayRec = tk[currentUser]?.[todayStr()];
+  // ── Today's check-in status for current user (works for both eng + manager) ──
+  const myTodayRec   = tk[currentUser]?.[todayStr()];
   const hasCheckedIn = !!myTodayRec;
+
+  // Warning: it's past 9:30am London time and user hasn't checked in
+  const londonH = londonNow().getHours();
+  const londonM = londonNow().getMinutes();
+  const pastWarningTime = londonH > 9 || (londonH === 9 && londonM >= 30);
+  const isWorkday = isWeekday(todayStr()) && !isBankHoliday(todayStr(), bh) && !isOnHoliday(todayStr(), currentUser, holidays);
+  const showLateWarning = isWorkday && pastWarningTime && !hasCheckedIn;
 
   const doCheckIn = async () => {
     if (hasCheckedIn && !window.confirm('You already checked in today — overwrite?')) return;
     setCheckInSaving(true);
-    const now = new Date();
-    const arrival = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+    const arrival = londonTimeStr(); // always London local time
     const updated = {
       ...tk,
       [currentUser]: {
@@ -238,15 +256,17 @@ export default function TimeKeeping({
           type: checkInType,
           arrival: checkInType === 'office' ? arrival : undefined,
           note: checkInNote || undefined,
-          checkedInAt: now.toISOString(),
-          confirmedBy: null,
+          checkedInAt: new Date().toISOString(),
+          checkedInBy: currentUser,
+          confirmedBy: isManager ? currentUser : null, // manager self-confirms
+          confirmedAt: isManager ? new Date().toISOString() : null,
         },
       },
     };
     setTimekeeping(updated);
-    setCheckInMsg(`✅ Checked in at ${arrival} — ${checkInType === 'office' ? '🏢 In Office' : '🏠 WFH'}`);
+    setCheckInMsg(`✅ Checked in at ${arrival} London time — ${checkInType === 'office' ? '🏢 In Office' : '🏠 WFH'}`);
     setCheckInSaving(false);
-    setTimeout(() => setCheckInMsg(''), 6000);
+    setTimeout(() => setCheckInMsg(''), 8000);
   };
 
   const confirmCheckIn = (userId, date) => {
@@ -418,8 +438,92 @@ export default function TimeKeeping({
 
   return (
     <div style={{ maxWidth: 1200 }}>
+
+      {/* ══════════════════════════════════════════════════════════════════════ */}
+      {/* TOP CHECK-IN BAR — visible to everyone at all times                  */}
+      {/* ══════════════════════════════════════════════════════════════════════ */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16,
+        background: hasCheckedIn ? 'rgba(34,197,94,0.07)' : 'rgba(0,194,255,0.07)',
+        border: `1px solid ${hasCheckedIn ? 'rgba(34,197,94,0.25)' : 'rgba(0,194,255,0.25)'}`,
+        borderRadius: 12, padding: '12px 18px', flexWrap: 'wrap',
+      }}>
+        {/* Status pill */}
+        <div style={{ display:'flex', alignItems:'center', gap:8, flex:1, minWidth:180 }}>
+          <div style={{
+            width: 10, height: 10, borderRadius: '50%', flexShrink: 0,
+            background: hasCheckedIn ? '#22c55e' : '#f59e0b',
+            boxShadow: `0 0 8px ${hasCheckedIn ? '#22c55e' : '#f59e0b'}`,
+          }} />
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: hasCheckedIn ? '#22c55e' : '#f59e0b' }}>
+              {hasCheckedIn
+                ? (myTodayRec.type === 'office' ? '🏢 Checked in — In Office' : '🏠 Checked in — WFH')
+                : '⏳ Not checked in today'}
+            </div>
+            <div style={{ fontSize: 11, color: '#64748b', fontFamily: 'DM Mono', marginTop: 1 }}>
+              {hasCheckedIn
+                ? `${myTodayRec.arrival ? myTodayRec.arrival + ' London time' : 'Today'} · ${myTodayRec.confirmedBy ? '✓ Manager confirmed' : 'Pending confirmation'}`
+                : `London time: ${londonTimeStr()}`}
+            </div>
+          </div>
+        </div>
+
+        {/* Quick type toggle */}
+        {!hasCheckedIn && (
+          <div style={{ display:'flex', gap:6 }}>
+            {[['office','🏢 Office','#22c55e'],['wfh','🏠 WFH','#60a5fa']].map(([v,l,c]) => (
+              <div key={v} onClick={() => setCheckInType(v)}
+                style={{ padding:'6px 14px', borderRadius:7, cursor:'pointer', fontSize:12, fontWeight:700,
+                  background: checkInType===v ? `rgba(${v==='office'?'34,197,94':'96,165,250'},0.15)` : 'rgba(255,255,255,0.04)',
+                  border: `1.5px solid ${checkInType===v ? c : 'rgba(255,255,255,0.08)'}`,
+                  color: checkInType===v ? c : '#64748b', transition:'all 0.15s' }}>
+                {l}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Check-in / Update button */}
+        <button onClick={doCheckIn} disabled={checkInSaving}
+          style={{ padding:'9px 22px', background: hasCheckedIn ? 'rgba(255,255,255,0.08)' : ACCENT,
+            color: hasCheckedIn ? '#94a3b8' : '#000', border: hasCheckedIn ? '1px solid rgba(255,255,255,0.12)' : 'none',
+            borderRadius:8, fontWeight:800, fontSize:13, cursor:'pointer', whiteSpace:'nowrap',
+            boxShadow: hasCheckedIn ? 'none' : '0 0 16px rgba(0,194,255,0.3)' }}>
+          {checkInSaving ? '⏳…' : hasCheckedIn ? '↩ Update' : `✓ Check In — ${londonTimeStr()}`}
+        </button>
+      </div>
+
+      {/* Late check-in warning */}
+      {showLateWarning && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14,
+          background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)',
+          borderRadius: 10, padding: '10px 16px',
+        }}>
+          <span style={{ fontSize: 20 }}>⚠️</span>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: '#fca5a5' }}>You haven't checked in yet</div>
+            <div style={{ fontSize: 12, color: '#94a3b8' }}>
+              It's past 9:30am London time. Please check in above so your attendance is recorded for today.
+            </div>
+          </div>
+          <button onClick={doCheckIn}
+            style={{ padding:'7px 16px', background:'rgba(239,68,68,0.15)', border:'1px solid rgba(239,68,68,0.35)', borderRadius:7, color:'#fca5a5', fontWeight:700, fontSize:12, cursor:'pointer' }}>
+            Check In Now
+          </button>
+        </div>
+      )}
+
+      {/* Success message */}
+      {checkInMsg && (
+        <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:14, background:'rgba(34,197,94,0.1)', border:'1px solid rgba(34,197,94,0.25)', borderRadius:8, padding:'10px 14px', fontSize:13, color:'#22c55e', fontWeight:600 }}>
+          {checkInMsg}
+        </div>
+      )}
+
       {/* ── Header ─────────────────────────────────────────────────────────── */}
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 20, flexWrap: 'wrap', gap: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 16, flexWrap: 'wrap', gap: 12 }}>
         <div>
           <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, letterSpacing: '-0.5px' }}>
             🕒 Time Keeping
@@ -467,8 +571,8 @@ export default function TimeKeeping({
       {tab === 'checkin' && (
         <div style={{ maxWidth: 480 }}>
           <div style={{ background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.07)', borderRadius:12, padding:24 }}>
-            <div style={{ fontSize:16, fontWeight:700, marginBottom:4 }}>Good {new Date().getHours() < 12 ? 'morning' : new Date().getHours() < 17 ? 'afternoon' : 'evening'}, {me?.name?.split(' ')[0] || 'there'} 👋</div>
-            <div style={{ fontSize:12, color:'#64748b', marginBottom:20 }}>{new Date().toLocaleDateString('en-GB',{weekday:'long',day:'2-digit',month:'long',year:'numeric'})}</div>
+            <div style={{ fontSize:16, fontWeight:700, marginBottom:4 }}>Good {londonHour() < 12 ? 'morning' : londonHour() < 17 ? 'afternoon' : 'evening'}, {me?.name?.split(' ')[0] || 'there'} 👋</div>
+            <div style={{ fontSize:12, color:'#64748b', marginBottom:20 }}>{londonNow().toLocaleDateString('en-GB',{weekday:'long',day:'2-digit',month:'long',year:'numeric'})} · London</div>
 
             {hasCheckedIn ? (
               <div style={{ background:'rgba(34,197,94,0.1)', border:'1px solid rgba(34,197,94,0.25)', borderRadius:10, padding:'16px 18px', marginBottom:16 }}>
@@ -476,20 +580,24 @@ export default function TimeKeeping({
                   {myTodayRec.type === 'office' ? '🏢 In Office' : '🏠 Working from Home'}
                 </div>
                 <div style={{ fontSize:12, color:'#64748b', fontFamily:'DM Mono' }}>
-                  Checked in {myTodayRec.arrival ? `at ${myTodayRec.arrival}` : 'today'}
-                  {myTodayRec.confirmedBy && <span style={{ color:'#22c55e', marginLeft:8 }}>· ✓ Confirmed by manager</span>}
-                  {!myTodayRec.confirmedBy && <span style={{ color:'#f59e0b', marginLeft:8 }}>· Pending manager confirmation</span>}
+                  Checked in at <strong>{myTodayRec.arrival || '—'}</strong> London time
+                </div>
+                <div style={{ fontSize:11, color:'#64748b', marginTop:4 }}>
+                  {myTodayRec.confirmedBy
+                    ? <span style={{ color:'#22c55e' }}>✓ Confirmed by manager</span>
+                    : <span style={{ color:'#f59e0b' }}>⏳ Awaiting manager confirmation</span>}
                 </div>
                 {myTodayRec.note && <div style={{ fontSize:11, color:'#475569', marginTop:4 }}>Note: {myTodayRec.note}</div>}
               </div>
             ) : (
               <div style={{ background:'rgba(245,158,11,0.08)', border:'1px solid rgba(245,158,11,0.2)', borderRadius:10, padding:'12px 16px', marginBottom:16, fontSize:12, color:'#f59e0b' }}>
-                ⏳ You haven't checked in today yet.
+                ⏳ Not checked in yet today. Use the <strong>Check In</strong> button at the top of the page.
               </div>
             )}
 
+            {/* Location toggle */}
             <div style={{ marginBottom:14 }}>
-              <div style={{ fontSize:11, color:'#64748b', marginBottom:8, fontWeight:600, textTransform:'uppercase', letterSpacing:'0.5px' }}>Where are you working today?</div>
+              <div style={{ fontSize:11, color:'#64748b', marginBottom:8, fontWeight:600, textTransform:'uppercase', letterSpacing:'0.5px' }}>Where are you working?</div>
               <div style={{ display:'flex', gap:8 }}>
                 {[['office','🏢 In Office','#22c55e'],['wfh','🏠 WFH','#60a5fa']].map(([v,l,c]) => (
                   <div key={v} onClick={() => setCheckInType(v)}
@@ -506,19 +614,13 @@ export default function TimeKeeping({
             <div style={{ marginBottom:16 }}>
               <div style={{ fontSize:11, color:'#64748b', marginBottom:5, fontWeight:600, textTransform:'uppercase', letterSpacing:'0.5px' }}>Note (optional)</div>
               <input type="text" value={checkInNote} onChange={e=>setCheckInNote(e.target.value)}
-                placeholder="e.g. Working on project X, client site visit…"
+                placeholder="e.g. Client site visit, working from home today…"
                 style={{ width:'100%', boxSizing:'border-box', padding:'9px 12px', background:'rgba(255,255,255,0.05)', border:'1px solid rgba(255,255,255,0.1)', borderRadius:7, color:'#e2e8f0', fontSize:13, outline:'none' }} />
             </div>
 
-            {checkInMsg && (
-              <div style={{ background:'rgba(34,197,94,0.1)', border:'1px solid rgba(34,197,94,0.25)', borderRadius:7, padding:'8px 12px', fontSize:12, color:'#22c55e', marginBottom:12 }}>
-                {checkInMsg}
-              </div>
-            )}
-
             <button onClick={doCheckIn} disabled={checkInSaving}
-              style={{ width:'100%', padding:'12px 0', background:ACCENT, color:'#000', border:'none', borderRadius:8, fontWeight:800, fontSize:14, cursor:'pointer', boxShadow:`0 0 18px rgba(0,194,255,0.25)` }}>
-              {checkInSaving ? '⏳ Saving…' : hasCheckedIn ? '↩ Update Check-In' : `✓ Check In — ${new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})}`}
+              style={{ width:'100%', padding:'13px 0', background:ACCENT, color:'#000', border:'none', borderRadius:8, fontWeight:800, fontSize:14, cursor:'pointer', boxShadow:`0 0 18px rgba(0,194,255,0.25)` }}>
+              {checkInSaving ? '⏳ Saving…' : hasCheckedIn ? `↩ Update Check-In` : `✓ Check In — ${londonTimeStr()}`}
             </button>
           </div>
 
@@ -596,51 +698,129 @@ export default function TimeKeeping({
       {/* ════════════════════════════════════════════════════════════════════ */}
       {tab === 'checkins' && isManager && (
         <div>
-          <div style={{ fontSize:12, color:'#64748b', marginBottom:14 }}>
-            Engineers who have self-reported their attendance today. Confirm or edit their check-in time.
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:14, flexWrap:'wrap', gap:8 }}>
+            <div style={{ fontSize:12, color:'#64748b' }}>
+              Today — {londonNow().toLocaleDateString('en-GB',{weekday:'long',day:'2-digit',month:'long'})} · London time {londonTimeStr()}
+            </div>
+            <div style={{ display:'flex', gap:8, fontSize:11, color:'#475569' }}>
+              <span style={{ display:'flex', alignItems:'center', gap:4 }}><span style={{ width:8, height:8, borderRadius:'50%', background:'#22c55e', display:'inline-block' }} /> Confirmed</span>
+              <span style={{ display:'flex', alignItems:'center', gap:4 }}><span style={{ width:8, height:8, borderRadius:'50%', background:'#f59e0b', display:'inline-block' }} /> Pending</span>
+              <span style={{ display:'flex', alignItems:'center', gap:4 }}><span style={{ width:8, height:8, borderRadius:'50%', background:'#ef4444', display:'inline-block' }} /> Not checked in</span>
+            </div>
           </div>
-          {engineers.map(u => {
-            const dayKeys = Object.keys(tk[u.id]||{}).sort().reverse().slice(0,5);
+
+          {/* Today's summary counts */}
+          {(() => {
+            const total     = [...engineers, ...(isManager ? [users.find(u=>u.id===currentUser)].filter(Boolean) : [])].length;
+            const checkedIn = Object.keys(tk).filter(uid => tk[uid]?.[todayStr()]).length;
+            const confirmed = Object.keys(tk).filter(uid => tk[uid]?.[todayStr()]?.confirmedBy).length;
+            const missing   = total - checkedIn;
             return (
-              <div key={u.id} style={{ background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.07)', borderRadius:10, padding:'14px 18px', marginBottom:10 }}>
-                <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:10 }}>
-                  <div style={{ width:32, height:32, borderRadius:'50%', background:'rgba(0,194,255,0.12)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:13, fontWeight:700, color:ACCENT }}>{u.name.charAt(0)}</div>
-                  <div style={{ flex:1 }}>
-                    <div style={{ fontSize:13, fontWeight:700 }}>{u.name}</div>
-                    <div style={{ fontSize:10, color:'#64748b', fontFamily:'DM Mono' }}>{u.id}</div>
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10, marginBottom:16 }}>
+                {[
+                  { l:'Checked In',     v:checkedIn, c:'#22c55e' },
+                  { l:'Confirmed',      v:confirmed, c:'#00c2ff' },
+                  { l:'Not Checked In', v:missing,   c: missing > 0 ? '#ef4444' : '#22c55e' },
+                ].map(s => (
+                  <div key={s.l} style={{ background:'rgba(255,255,255,0.03)', border:`1px solid ${s.c}22`, borderRadius:8, padding:'10px 14px', textAlign:'center' }}>
+                    <div style={{ fontSize:22, fontWeight:800, color:s.c, fontFamily:'DM Mono' }}>{s.v}</div>
+                    <div style={{ fontSize:11, color:'#64748b', marginTop:2 }}>{s.l}</div>
                   </div>
-                </div>
-                <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
-                  {dayKeys.map(d => {
-                    const rec = (tk[u.id]||{})[d];
-                    const ls  = rec?.type==='office' ? lateStatus(rec.arrival) : null;
-                    return (
-                      <div key={d} style={{ display:'flex', alignItems:'center', gap:10, background:'rgba(255,255,255,0.02)', borderRadius:7, padding:'8px 12px' }}>
-                        <div style={{ fontSize:11, color:'#64748b', fontFamily:'DM Mono', minWidth:80 }}>{shortDate(d)}</div>
-                        <div style={{ flex:1, display:'flex', alignItems:'center', gap:8 }}>
-                          <span style={{ fontSize:13 }}>{rec?.type==='office'?'🏢':rec?.type==='wfh'?'🏠':'🤒'}</span>
-                          {rec?.arrival && <span style={{ fontSize:11, fontFamily:'DM Mono', color:ls?.color||'#94a3b8' }}>{rec.arrival}</span>}
-                          {ls?.status==='late' && <span style={{ fontSize:10, color:'#ef4444', fontWeight:700 }}>+{ls.diff}m late</span>}
-                          {rec?.note && <span style={{ fontSize:10, color:'#475569' }}>"{rec.note}"</span>}
-                        </div>
-                        {rec?.confirmedBy
-                          ? <div style={{ display:'flex', alignItems:'center', gap:6 }}>
-                              <span style={{ fontSize:11, color:'#22c55e', fontWeight:600 }}>✓ Confirmed</span>
-                              <button onClick={() => unconfirmCheckIn(u.id, d)} style={{ padding:'2px 8px', background:'transparent', border:'1px solid rgba(239,68,68,0.3)', borderRadius:5, color:'#ef4444', fontSize:10, cursor:'pointer' }}>Undo</button>
-                            </div>
-                          : <div style={{ display:'flex', alignItems:'center', gap:6 }}>
-                              <button onClick={() => confirmCheckIn(u.id, d)} style={{ padding:'4px 12px', background:'rgba(34,197,94,0.12)', border:'1px solid rgba(34,197,94,0.3)', borderRadius:6, color:'#22c55e', fontSize:11, fontWeight:700, cursor:'pointer' }}>✓ Confirm</button>
-                              <button onClick={() => openLog(u.id, d)} style={{ padding:'4px 10px', background:'rgba(255,255,255,0.04)', border:'1px solid rgba(255,255,255,0.08)', borderRadius:6, color:'#94a3b8', fontSize:11, cursor:'pointer' }}>✏ Edit</button>
-                            </div>
-                        }
-                      </div>
-                    );
-                  })}
-                  {dayKeys.length === 0 && <div style={{ fontSize:12, color:'#334155' }}>No check-ins recorded.</div>}
-                </div>
+                ))}
               </div>
             );
-          })}
+          })()}
+
+          <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+            {engineers.map(u => {
+              const rec = (tk[u.id] || {})[todayStr()];
+              const ls  = rec?.type === 'office' ? lateStatus(rec.arrival) : null;
+              const notCheckedIn = !rec;
+              const isBH  = isBankHoliday(todayStr(), bh);
+              const isHol = isOnHoliday(todayStr(), u.id, holidays);
+              if (isBH || isHol) return null; // no warning on bank hols or holidays
+
+              return (
+                <div key={u.id} style={{
+                  background: notCheckedIn ? 'rgba(239,68,68,0.05)' : rec.confirmedBy ? 'rgba(34,197,94,0.05)' : 'rgba(255,255,255,0.03)',
+                  border: `1px solid ${notCheckedIn ? 'rgba(239,68,68,0.2)' : rec.confirmedBy ? 'rgba(34,197,94,0.2)' : 'rgba(255,255,255,0.07)'}`,
+                  borderRadius: 10, padding: '12px 16px',
+                  display:'flex', alignItems:'center', gap:12, flexWrap:'wrap',
+                }}>
+                  {/* Status dot */}
+                  <div style={{ width:8, height:8, borderRadius:'50%', flexShrink:0,
+                    background: notCheckedIn ? '#ef4444' : rec.confirmedBy ? '#22c55e' : '#f59e0b',
+                    boxShadow: `0 0 6px ${notCheckedIn ? '#ef4444' : rec.confirmedBy ? '#22c55e' : '#f59e0b'}` }} />
+
+                  {/* Avatar + name */}
+                  <div style={{ display:'flex', alignItems:'center', gap:8, minWidth:160 }}>
+                    <div style={{ width:30, height:30, borderRadius:'50%', background:'rgba(0,194,255,0.12)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:12, fontWeight:700, color:'#00c2ff', flexShrink:0 }}>{u.name.charAt(0)}</div>
+                    <div>
+                      <div style={{ fontSize:13, fontWeight:700 }}>{u.name}</div>
+                      <div style={{ fontSize:10, color:'#64748b', fontFamily:'DM Mono' }}>{u.id}</div>
+                    </div>
+                  </div>
+
+                  {/* Status info */}
+                  <div style={{ flex:1 }}>
+                    {notCheckedIn ? (
+                      <span style={{ fontSize:12, color:'#ef4444', fontWeight:600 }}>⚠ Not checked in</span>
+                    ) : (
+                      <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
+                        <span style={{ fontSize:13 }}>{rec.type==='office'?'🏢':'🏠'}</span>
+                        <span style={{ fontSize:12, fontFamily:'DM Mono', color: ls?.color || '#94a3b8', fontWeight:700 }}>{rec.arrival || '—'}</span>
+                        {ls?.status === 'late' && <span style={{ fontSize:11, color:'#ef4444', fontWeight:700, background:'rgba(239,68,68,0.1)', padding:'1px 7px', borderRadius:4 }}>+{ls.diff}m late</span>}
+                        {ls?.status === 'warn' && <span style={{ fontSize:11, color:'#f59e0b', fontWeight:700, background:'rgba(245,158,11,0.1)', padding:'1px 7px', borderRadius:4 }}>+{ls.diff}m grace</span>}
+                        {rec.note && <span style={{ fontSize:11, color:'#475569' }}>"{rec.note}"</span>}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Actions */}
+                  <div style={{ display:'flex', gap:6 }}>
+                    {!notCheckedIn && (
+                      rec.confirmedBy
+                        ? <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+                            <span style={{ fontSize:11, color:'#22c55e', fontWeight:600 }}>✓ Confirmed</span>
+                            <button onClick={() => unconfirmCheckIn(u.id, todayStr())} style={{ padding:'3px 8px', background:'transparent', border:'1px solid rgba(239,68,68,0.3)', borderRadius:5, color:'#ef4444', fontSize:10, cursor:'pointer' }}>Undo</button>
+                          </div>
+                        : <button onClick={() => confirmCheckIn(u.id, todayStr())} style={{ padding:'5px 14px', background:'rgba(34,197,94,0.12)', border:'1px solid rgba(34,197,94,0.3)', borderRadius:6, color:'#22c55e', fontSize:12, fontWeight:700, cursor:'pointer' }}>✓ Confirm</button>
+                    )}
+                    <button onClick={() => openLog(u.id, todayStr())} style={{ padding:'5px 10px', background:'rgba(255,255,255,0.05)', border:'1px solid rgba(255,255,255,0.08)', borderRadius:6, color:'#94a3b8', fontSize:12, cursor:'pointer' }}>✏ {notCheckedIn ? 'Log' : 'Edit'}</button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Past check-ins (last 4 days) */}
+          <div style={{ marginTop:20 }}>
+            <div style={{ fontSize:12, fontWeight:700, color:'#64748b', marginBottom:10 }}>Recent (last 4 working days)</div>
+            {engineers.map(u => {
+              const recentDays = Array.from({length:4},(_,i) => addDays(todayStr(),-(i+1)))
+                .filter(d => isWeekday(d) && !isBankHoliday(d,bh) && !isOnHoliday(d,u.id,holidays));
+              const recentRecs = recentDays.map(d => ({ date:d, rec:(tk[u.id]||{})[d] }));
+              if (recentRecs.every(r=>!r.rec)) return null;
+              return (
+                <div key={u.id} style={{ display:'flex', alignItems:'center', gap:12, marginBottom:6, padding:'8px 12px', background:'rgba(255,255,255,0.02)', borderRadius:8 }}>
+                  <div style={{ fontSize:12, fontWeight:600, minWidth:130, color:'#94a3b8' }}>{u.name.split(' ')[0]}</div>
+                  <div style={{ display:'flex', gap:6 }}>
+                    {recentRecs.map(({date,rec}) => {
+                      const ls = rec?.type==='office' ? lateStatus(rec.arrival) : null;
+                      return (
+                        <div key={date} title={`${formatDate(date)}: ${rec ? (rec.arrival||rec.type) : 'No record'}`}
+                          style={{ padding:'4px 10px', borderRadius:5, fontSize:10, fontFamily:'DM Mono',
+                            background: !rec?'rgba(239,68,68,0.1)':rec.type==='office'?'rgba(34,197,94,0.1)':'rgba(96,165,250,0.1)',
+                            color: !rec?'#ef4444':ls?.color||'#94a3b8', border:`1px solid ${!rec?'rgba(239,68,68,0.2)':'rgba(255,255,255,0.07)'}` }}>
+                          {shortDate(date)}&nbsp;{!rec?'—':rec.arrival||(rec.type==='wfh'?'WFH':'Abs')}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 
