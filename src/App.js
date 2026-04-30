@@ -1,6 +1,6 @@
 // src/App.js
 // CloudOps Rota — Full Production Build v2
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 29th April 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 30th April 2026
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
@@ -16,6 +16,7 @@ import {
 } from './utils/defaults';
 import TimeKeeping from './TimeKeeping';
 import TOIL from './TOIL';
+import RotaPage from './Rota';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Google Drive auto-connects on page load using the OAuth Client ID below.
@@ -1541,610 +1542,7 @@ function CalendarView({ users, rota, holidays, upgrades, absences }) {
   );
 }
 
-// ── Rota Page (Manager only editable) ─────────────────────────────────────
-function RotaPage({ users, rota, setRota, holidays, upgrades, swapRequests, setSwapRequests, isManager }) {
-  const [startDate, setStartDate] = useState(() => new Date().toISOString().slice(0, 10));
-  const [weeks, setWeeks]         = useState(4);
-  const [generated, setGenerated] = useState(true);
-  const [editCell, setEditCell]   = useState(null);
-  const [bulkSelected, setBulkSelected] = useState(new Set());
-  const [bulkShift, setBulkShift] = useState('daily');
-  const [swapSuggestion, setSwapSuggestion] = useState(null);
-  const [viewMode, setViewMode]   = useState('compact'); // 'compact' | 'hours'
-  const DAYS = ['M','T','W','T','F','S','S'];
-  // managerUnlocked: global toggle — rota is read-only by default.
-  // Manager must click the 🔒 unlock button in the toolbar to enable editing.
-  const [managerUnlocked, setManagerUnlocked] = useState(false);
-
-  // lockedCells: Set of "userId::date" strings — protected from Clear/Generate
-  const [lockedCells, setLockedCells] = useState(new Set());
-  const toggleLock  = (userId, date) => {
-    const key = `${userId}::${date}`;
-    setLockedCells(prev => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n; });
-  };
-  const isLocked = (userId, date) => lockedCells.has(`${userId}::${date}`);
-
-  // Editing is only allowed when the manager has explicitly unlocked
-  const canEdit = isManager && managerUnlocked;
-
-  // Shift hour definitions
-  const SHIFT_HOURS = {
-    daily:       { start: '10:00', end: '19:00', label: '10am – 7pm',   desc: 'Daily Shift (Mon–Fri)',             standbyHrs: 0,  workedHrs: 9  },
-    evening:     { start: '19:00', end: '07:00', label: '7pm – 7am',    desc: 'Weekday On-Call (Mon–Thu)',         standbyHrs: 12, workedHrs: 0  },
-    weekend:     { start: '19:00', end: '07:00', label: '7pm – 7am',    desc: 'Weekend On-Call (Fri 7pm–Mon 7am)', standbyHrs: 60, workedHrs: 0  },
-    bankholiday: { start: '09:00', end: '07:00', label: '9am – 7am',    desc: 'Bank Holiday On-Call',              standbyHrs: 22, workedHrs: 0  },
-    upgrade:     { start: '00:00', end: '23:59', label: 'All day',       desc: 'Upgrade Day',                      standbyHrs: 0,  workedHrs: 8  },
-    holiday:     { start: '',      end: '',       label: 'Holiday',       desc: 'Annual Leave',                     standbyHrs: 0,  workedHrs: 0  },
-  };
-
-  const generate = () => {
-    if (!isManager) return;
-    const generated = sanitiseRota(generateRota(users, startDate, weeks));
-    // Merge: for each user+date, keep existing manual entry if one exists.
-    // Only fill in dates that are currently 'off' / not set.
-    setRota(prev => {
-      const merged = { ...generated };
-      users.forEach(u => {
-        const existing = prev[u.id] || {};
-        const genDates = generated[u.id] || {};
-        merged[u.id] = { ...genDates };
-        Object.entries(existing).forEach(([date, shift]) => {
-          if (shift && shift !== 'off') {
-            // Manual entry wins — keep it regardless of what generate produced
-            merged[u.id][date] = shift;
-          }
-        });      });
-      return merged;
-    });
-    setGenerated(true);
-  };
-
-  const setCell = (userId, date, shift) => {
-    if (!canEdit) return;
-    const dow = new Date(date).getDay();
-    const isWeekend = dow === 0 || dow === 6;
-    const safeShift = (shift === 'daily' && isWeekend) ? 'weekend' : shift;
-    setRota(prev => ({ ...prev, [userId]: { ...(prev[userId] || {}), [date]: safeShift } }));
-    setEditCell(null);
-  };
-
-  const deleteCell = (userId, date) => {
-    if (!canEdit) return;
-    const next = JSON.parse(JSON.stringify(rota));
-    if (next[userId]) delete next[userId][date];
-    setRota(next);
-  };
-
-  const toggleBulk = (userId, date) => {
-    if (!canEdit) return;
-    const key = `${userId}::${date}`;
-    setBulkSelected(prev => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n; });
-  };
-
-  const applyBulk = () => {
-    if (!isManager) return; // Only managers can bulk edit
-    const next = JSON.parse(JSON.stringify(rota));
-    bulkSelected.forEach(key => {
-      const [uid, date] = key.split('::');
-      next[uid] = { ...(next[uid] || {}), [date]: bulkShift };
-    });
-    setRota(next); setBulkSelected(new Set());
-  };
-
-  const deleteBulk = () => {
-    if (!isManager) return; // Only managers can bulk delete
-    const next = JSON.parse(JSON.stringify(rota));
-    bulkSelected.forEach(key => {
-      const [uid, date] = key.split('::');
-      if (next[uid]) delete next[uid][date];
-    });
-    setRota(next); setBulkSelected(new Set());
-  };
-
-  const checkConflicts = () => {
-    const conflicts = [];
-    holidays.filter(h => h.status === 'approved').forEach(hol => {
-      const d = new Date(hol.start);
-      while (d <= new Date(hol.end)) {
-        const ds = d.toISOString().slice(0,10);
-        const shift = rota[hol.userId]?.[ds];
-        if (shift && shift !== 'off') {
-          const available = users.filter(u => u.id !== hol.userId && (!rota[u.id]?.[ds] || rota[u.id][ds] === 'off'));
-          conflicts.push({ userId: hol.userId, date: ds, shift, available });
-        }
-        d.setDate(d.getDate() + 1);
-      }
-    });
-    setSwapSuggestion(conflicts);
-  };
-
-  const applySwap = (conflict, coverId) => {
-    const newRota = JSON.parse(JSON.stringify(rota));
-    newRota[coverId] = { ...(newRota[coverId] || {}), [conflict.date]: conflict.shift };
-    if (newRota[conflict.userId]) delete newRota[conflict.userId][conflict.date];
-    setRota(newRota);
-    setSwapSuggestion(prev => prev.filter(c => !(c.userId === conflict.userId && c.date === conflict.date)));
-  };
-
-  const approveSwap = (swapId) => {
-    if (!isManager) return;
-    const swap = (swapRequests || []).find(s => s.id === swapId);
-    if (!swap) return;
-    const newRota = JSON.parse(JSON.stringify(rota));
-    const reqShift = newRota[swap.requesterId]?.[swap.reqDate];
-    const tgtShift = newRota[swap.targetId]?.[swap.tgtDate];
-    if (reqShift) { newRota[swap.targetId] = { ...(newRota[swap.targetId]||{}), [swap.reqDate]: reqShift }; delete newRota[swap.requesterId][swap.reqDate]; }
-    if (tgtShift) { newRota[swap.requesterId] = { ...(newRota[swap.requesterId]||{}), [swap.tgtDate]: tgtShift }; delete newRota[swap.targetId][swap.tgtDate]; }
-    setRota(newRota);
-    setSwapRequests(swapRequests.map(s => s.id === swapId ? { ...s, status: 'approved' } : s));
-  };
-
-  const pendingSwaps = (swapRequests || []).filter(s => s.status === 'pending');
-  // Snap startDate to the Monday of the chosen week (fixes day offset bug)
-  const weekStarts = Array.from({ length: weeks }, (_, w) => {
-    const d = new Date(startDate + 'T12:00:00'); // use noon to avoid DST issues
-    const dow = d.getDay(); // 0=Sun,1=Mon…6=Sat
-    const toMon = (dow === 0) ? -6 : 1 - dow; // offset back to Monday
-    d.setDate(d.getDate() + toMon + w * 7);
-    return d;
-  });
-
-  return (
-    <div>
-      <PageHeader title="Rota Management" sub={isManager ? 'Generate & manage on-call schedule' : 'View on-call schedule'} />
-      {isManager && (
-        <div className="card mb-16">
-          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
-            <div className="card-title" style={{ marginBottom:0 }}>⚙ Generate & Controls</div>
-            {/* Global lock/unlock toggle — rota is locked by default */}
-            <button
-              onClick={() => setManagerUnlocked(v => !v)}
-              style={{
-                display:'flex', alignItems:'center', gap:6,
-                background: managerUnlocked ? 'rgba(239,68,68,0.15)' : 'rgba(34,197,94,0.12)',
-                border: `1px solid ${managerUnlocked ? '#ef4444' : '#22c55e'}`,
-                borderRadius:8, padding:'6px 14px', cursor:'pointer',
-                color: managerUnlocked ? '#fca5a5' : '#4ade80',
-                fontSize:12, fontWeight:600, transition:'all 0.2s'
-              }}>
-              {managerUnlocked ? '🔓 Unlocked — editing enabled' : '🔒 Locked — click to enable editing'}
-            </button>
-          </div>
-          {!managerUnlocked && (
-            <div style={{ padding:'8px 12px', background:'rgba(34,197,94,0.06)', border:'1px solid rgba(34,197,94,0.2)', borderRadius:6, fontSize:11, color:'#4ade80', marginBottom:12 }}>
-              🔒 Rota is in read-only mode. Click <strong>Locked</strong> above to unlock and enable editing.
-            </div>
-          )}
-          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-            <FormGroup label="Start Date">
-              <input className="input" type="date" value={startDate} onChange={e => setStartDate(e.target.value)} style={{ width: 180 }} />
-            </FormGroup>
-            <FormGroup label="Weeks">
-              <select className="select" value={weeks} onChange={e => setWeeks(+e.target.value)} style={{ width: 120 }}>
-                {[2,4,6,8,12,16,24,26,52].map(w => <option key={w} value={w}>{w} week{w>=52?' (1 year)':w>=26?' (6 months)':w>=12?' (3 months)':''}</option>)}
-              </select>
-            </FormGroup>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-              <button className="btn btn-primary" onClick={generate} disabled={!canEdit} style={{ opacity: canEdit ? 1 : 0.4 }}>🔄 Generate Rota</button>
-              <div style={{ fontSize: 9, color: 'rgba(255,255,255,0.35)', textAlign: 'center' }}>🔒 Keeps manual entries</div>
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-              <button className="btn btn-secondary" disabled={!canEdit} style={{ opacity: canEdit ? 1 : 0.4 }} onClick={() => {
-                if (!canEdit) return;
-                if (window.confirm('⚠️  Regenerate from scratch? Locked cells will be preserved, all others overwritten.')) {
-                  const fresh = sanitiseRota(generateRota(users, startDate, weeks));
-                  setRota(prev => {
-                    const merged = { ...fresh };
-                    users.forEach(u => {
-                      merged[u.id] = { ...(fresh[u.id] || {}) };
-                      Object.entries(prev[u.id] || {}).forEach(([date, shift]) => {
-                        if (isLocked(u.id, date)) merged[u.id][date] = shift;
-                      });
-                    });
-                    return merged;
-                  });
-                  setGenerated(true);
-                }
-              }}>↺ Force Regenerate</button>
-              <div style={{ fontSize: 9, color: 'rgba(255,80,80,0.5)', textAlign: 'center' }}>⚠ Overwrites all shifts</div>
-            </div>
-            <button className="btn btn-danger" disabled={!canEdit} style={{ opacity: canEdit ? 1 : 0.4 }} onClick={() => {
-              if (!canEdit) return;
-              if (window.confirm('⚠️  Clear all rota entries? Locked cells will be preserved.')) {
-                setRota(prev => {
-                  const next = {};
-                  users.forEach(u => {
-                    next[u.id] = {};
-                    Object.entries(prev[u.id] || {}).forEach(([date, shift]) => {
-                      if (isLocked(u.id, date)) next[u.id][date] = shift;
-                    });
-                  });
-                  return next;
-                });
-              }
-            }}>🗑 Clear Rota</button>
-            <button className="btn btn-secondary" onClick={checkConflicts}>🔍 Check Conflicts</button>
-            <button className="ical-btn" onClick={() => users.forEach(u => { const ic = generateICalFeed(rota[u.id] || {}, u.name); downloadIcal(ic, `rota-${u.id}.ics`); })}>📥 Export All (.ics)</button>
-          </div>
-          {bulkSelected.size > 0 && (
-            <div style={{ marginTop: 12, padding: '10px 14px', background: 'rgba(59,130,246,.1)', border: '1px solid #3b82f655', borderRadius: 8, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-              <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{bulkSelected.size} cell(s) selected</span>
-              <select className="select" value={bulkShift} onChange={e => setBulkShift(e.target.value)} style={{ width: 160 }}>
-                <option value="daily">Daily Shift</option>
-                <option value="evening">Weekday On-Call</option>
-                <option value="weekend">Weekend On-Call</option>
-                <option value="off">Off</option>
-              </select>
-              <button className="btn btn-primary btn-sm" onClick={applyBulk}>✓ Apply to Selected</button>
-              <button className="btn btn-danger btn-sm" onClick={deleteBulk}>🗑 Delete Selected</button>
-              <button className="btn btn-secondary btn-sm" onClick={() => setBulkSelected(new Set())}>✕ Clear</button>
-            </div>
-          )}
-        </div>
-      )}
-      {swapSuggestion && swapSuggestion.length > 0 && isManager && (
-        <div className="card mb-16" style={{ borderColor: '#f59e0b' }}>
-          <div className="card-title" style={{ color: '#f59e0b' }}>⚠ Holiday Conflicts — Suggested Cover</div>
-          {swapSuggestion.map((c, i) => {
-            const eng = users.find(u => u.id === c.userId);
-            return (
-              <div key={i} style={{ padding: '10px 0', borderBottom: '1px solid var(--border)' }}>
-                <div className="name-sm">{eng?.name} is on holiday on {c.date} but has {SHIFT_COLORS[c.shift]?.label}</div>
-                <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
-                  {c.available.length === 0 && <span className="muted-xs">No engineers available for cover</span>}
-                  {c.available.map(a => (
-                    <button key={a.id} className="btn btn-success btn-sm" onClick={() => applySwap(c, a.id)}>✓ Assign {a.name.split(' ')[0]}</button>
-                  ))}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-      {swapSuggestion && swapSuggestion.length === 0 && <Alert type="info" style={{ marginBottom: 16 }}>✅ No holiday conflicts found.</Alert>}
-      {isManager && pendingSwaps.length > 0 && (
-        <div className="card mb-16">
-          <div className="card-title">🔁 Pending Shift Swap Requests</div>
-          {pendingSwaps.map(s => {
-            const req = users.find(u => u.id === s.requesterId);
-            const tgt = users.find(u => u.id === s.targetId);
-            return (
-              <div key={s.id} className="flex-between row-item">
-                <div>
-                  <div className="name-sm">{req?.name} wants to swap {s.reqDate} with {tgt?.name}'s {s.tgtDate}</div>
-                  {s.reason && <div className="muted-xs">Reason: {s.reason}</div>}
-                </div>
-                <div style={{ display: 'flex', gap: 6 }}>
-                  <button className="btn btn-success btn-sm" onClick={() => approveSwap(s.id)}>✓ Approve</button>
-                  <button className="btn btn-danger btn-sm" onClick={() => setSwapRequests(swapRequests.map(x => x.id === s.id ? { ...x, status: 'rejected' } : x))}>✗ Reject</button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-      <ShiftLegend />
-      {/* View mode toggle */}
-      <div style={{ display: 'flex', gap: 8, marginBottom: 12, alignItems: 'center' }}>
-        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>View:</span>
-        <button className={`btn btn-sm ${viewMode === 'compact' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setViewMode('compact')}>
-          📋 Compact
-        </button>
-        <button className={`btn btn-sm ${viewMode === 'hours' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setViewMode('hours')}>
-          🕐 Hours / Timeline
-        </button>
-        {viewMode === 'hours' && (
-          <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 4 }}>
-            Daily: 10am–7pm · Evening OC: 7pm–7am · Weekend OC: 7pm–7am
-          </span>
-        )}
-      </div>
-      {weekStarts.map((ws, wi) => {
-        // Build 8 dates so overnight shifts from day 7 into day 8 can be detected
-        const wdates = Array.from({ length: 8 }, (_, d) => {
-          const dt = new Date(ws); dt.setDate(ws.getDate() + d); return dt;
-        });
-        const hourCols = Array.from({ length: 24 }, (_, h) => h);
-
-        // Returns true if this hour on this day is "active" for a given engineer,
-        // taking into account that overnight shifts (evening/weekend 19:00–07:00)
-        // started the PREVIOUS day and run until 07:00 on THIS day.
-        const getHourActive = (userId, dateStr, hour) => {
-          const hol  = holidays.find(h => h.userId === userId && dateStr >= h.start && dateStr <= h.end);
-          const bh   = UK_BANK_HOLIDAYS.find(b => b.date === dateStr);
-          const upg  = upgrades.find(up => up.date === dateStr && up.attendees?.includes(userId));
-          const thisShift = hol ? 'holiday' : bh ? 'bankholiday' : upg ? 'upgrade' : (rota[userId]?.[dateStr] || 'off');
-
-          // Hours from 07 onwards belong to THIS day's shift
-          if (hour >= 7) {
-            if (thisShift === 'daily')   return hour < 19 ? 'daily'   : null;
-            if (thisShift === 'evening') return hour >= 19 ? 'evening' : null;
-            if (thisShift === 'weekend') return hour >= 19 ? 'weekend' : null;
-            if (thisShift === 'upgrade' || thisShift === 'holiday' || thisShift === 'bankholiday') return thisShift;
-            return null;
-          }
-
-          // Hours 00–06 belong to an OVERNIGHT shift that started on the PREVIOUS day
-          const prevDate = new Date(dateStr);
-          prevDate.setDate(prevDate.getDate() - 1);
-          const prevDs = prevDate.toISOString().slice(0, 10);
-          const pHol = holidays.find(h => h.userId === userId && prevDs >= h.start && prevDs <= h.end);
-          const pBh  = UK_BANK_HOLIDAYS.find(b => b.date === prevDs);
-          const pUpg = upgrades.find(up => up.date === prevDs && up.attendees?.includes(userId));
-          const prevShift = pHol ? 'holiday' : pBh ? 'bankholiday' : pUpg ? 'upgrade' : (rota[userId]?.[prevDs] || 'off');
-          if (prevShift === 'evening') return 'evening';
-          if (prevShift === 'weekend') return 'weekend';
-          return null;
-        };
-
-        // ── Hours / Timeline view ──────────────────────────────────────────
-        if (viewMode === 'hours') {
-          return (
-            <div key={wi} className="card mb-12">
-              <div className="card-title" style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10 }}>
-                Week of {ws.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
-              </div>
-
-              {/* Hour axis header — shown once at top */}
-              <div style={{ display: 'flex', marginLeft: 100, marginBottom: 2 }}>
-                {hourCols.map(h => (
-                  <div key={h} style={{ flex: 1, textAlign: 'center', fontSize: 7, color: 'rgba(255,255,255,0.3)', fontFamily: 'DM Mono', borderRight: h < 23 ? '1px solid rgba(255,255,255,0.04)' : 'none' }}>
-                    {h % 3 === 0 ? String(h).padStart(2,'0') : ''}
-                  </div>
-                ))}
-              </div>
-
-              {wdates.slice(0, 7).map((d, di) => {
-                const ds    = d.toISOString().slice(0, 10);
-                const bh    = UK_BANK_HOLIDAYS.find(b => b.date === ds);
-                const dow   = d.getDay();
-                const isWkd = dow === 0 || dow === 6;
-                const DAY_NAMES = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-                const MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-                return (
-                  <div key={ds} style={{ marginBottom: 8 }}>
-                    {/* Day label row */}
-                    <div style={{ display: 'flex', alignItems: 'center', marginBottom: 3 }}>
-                      <div style={{
-                        width: 100, flexShrink: 0, paddingRight: 8,
-                        display: 'flex', flexDirection: 'column', alignItems: 'flex-start'
-                      }}>
-                        <span style={{ fontSize: 11, fontWeight: 700, color: bh ? '#fca5a5' : isWkd ? 'rgba(255,255,255,0.5)' : 'var(--text-secondary)' }}>
-                          {DAY_NAMES[dow]} {d.getDate()} {MONTH_NAMES[d.getMonth()]}
-                        </span>
-                        {bh && <span style={{ fontSize: 8, color: '#fca5a5' }}>🔴 Bank Holiday</span>}
-                      </div>
-                      {/* Thin midnight-divider bar */}
-                      <div style={{ flex: 1, height: 1, background: 'rgba(255,255,255,0.06)' }} />
-                    </div>
-
-                    {/* Per-engineer rows */}
-                    {users.map(u => {
-                      const hol   = holidays.find(h => h.userId === u.id && ds >= h.start && ds <= h.end);
-                      const upg   = upgrades.find(up => up.date === ds && up.attendees?.includes(u.id));
-                      const shift = hol ? 'holiday' : bh ? 'bankholiday' : upg ? 'upgrade' : (rota[u.id]?.[ds] || 'off');
-                      const col   = SHIFT_COLORS[shift] || {};
-                      const isEditing = editCell?.userId === u.id && editCell?.date === ds;
-                      return (
-                        <div key={u.id} style={{ display: 'flex', alignItems: 'center', marginBottom: 2 }}>
-                          <div style={{ width: 100, display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0, paddingRight: 8 }}>
-                            <Avatar user={u} size={16} />
-                            <span style={{ fontSize: 10, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 66 }}>{u.name.split(' ')[0]}</span>
-                          </div>
-                          <div
-                            style={{ flex: 1, height: 24, borderRadius: 4, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)', position: 'relative', display: 'flex', cursor: isManager ? 'pointer' : 'default', overflow: 'hidden' }}
-                            onDoubleClick={() => isManager && setEditCell({ userId: u.id, date: ds })}
-                            title={isManager ? 'Double-click to edit' : undefined}
-                          >
-                            {isEditing && isManager ? (
-                              <select autoFocus className="select" style={{ fontSize: 10, padding: '2px 4px', width: '100%', height: '100%', background: 'var(--bg-card2)', border: 'none', color: 'var(--text-primary)', zIndex: 2 }}
-                                defaultValue={shift}
-                                onBlur={e => setCell(u.id, ds, e.target.value)}
-                                onChange={e => { setCell(u.id, ds, e.target.value); }}>
-                                <option value="off">Off</option>
-                                {!isWkd && <option value="daily">Daily (10am–7pm)</option>}
-                                {(dow >= 1 && dow <= 4) && <option value="evening">Weekday OC (7pm–7am)</option>}
-                                <option value="weekend">Weekend OC (7pm–7am)</option>
-                              </select>
-                            ) : (
-                              <>
-                                {hourCols.map(h => {
-                                  const activeShift = getHourActive(u.id, ds, h);
-                                  const ac = activeShift ? (SHIFT_COLORS[activeShift] || col) : null;
-                                  return (
-                                    <div key={h}
-                                      title={`${String(h).padStart(2,'0')}:00${activeShift ? ' — ' + (SHIFT_COLORS[activeShift]?.label || activeShift) : ''}`}
-                                      style={{ flex: 1, background: ac ? (ac.bg || '#1e40af') + 'dd' : 'transparent', borderRight: h < 23 ? '1px solid rgba(0,0,0,0.12)' : 'none' }}
-                                    />
-                                  );
-                                })}
-                                {shift !== 'off' && (
-                                  <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
-                                    <span style={{ fontSize: 9, fontWeight: 700, color: col.text || '#fff', textShadow: '0 1px 3px rgba(0,0,0,0.8)', letterSpacing: 0.2 }}>
-                                      {hol ? '🌴 Holiday' : bh ? '🔴 Bank Hol' : upg ? '⬆ Upgrade' : col.label}
-                                    </span>
-                                  </div>
-                                )}
-                              </>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                );
-              })}
-
-              {/* Hour axis footer labels */}
-              <div style={{ display: 'flex', marginLeft: 100, marginTop: 4 }}>
-                {hourCols.map(h => (
-                  <div key={h} style={{ flex: 1, textAlign: 'center', fontSize: 7, color: 'rgba(255,255,255,0.2)', fontFamily: 'DM Mono' }}>
-                    {h % 6 === 0 ? String(h).padStart(2,'0') : ''}
-                  </div>
-                ))}
-              </div>
-              {isManager && <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 8 }}>💡 Double-click any row to edit that shift</div>}
-            </div>
-          );
-        }
-
-        // ── Compact view (default) ─────────────────────────────────────────
-        // Overnight shifts (evening/weekend 19:00–07:00) are shown with a "→" overflow
-        // indicator on the day they start, and a "←" carry-over on the next morning.
-        return (
-          <div key={wi} className="card mb-12" style={{ overflowX: 'auto' }}>
-            <div className="card-title" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-              Week of {ws.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
-            </div>
-            <table style={{ minWidth: 540, borderCollapse: 'separate', borderSpacing: 0 }}>
-              <thead>
-                <tr>
-                  <th style={{ minWidth: 130, paddingBottom: 6 }}>Engineer</th>
-                  {wdates.slice(0, 7).map((d, di) => {
-                    const ds    = d.toISOString().slice(0, 10);
-                    const bh    = UK_BANK_HOLIDAYS.find(b => b.date === ds);
-                    const dow   = d.getDay();
-                    const isWkd = dow === 0 || dow === 6;
-                    const DAY_FULL = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-                    const MON_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-                    return (
-                      <th key={di} style={{
-                        textAlign: 'center', fontSize: 10, paddingBottom: 6,
-                        color: bh ? '#fca5a5' : isWkd ? 'rgba(255,255,255,0.35)' : 'var(--text-secondary)',
-                        background: isWkd ? 'rgba(255,255,255,0.025)' : undefined,
-                        borderBottom: '1px solid rgba(255,255,255,0.08)',
-                        minWidth: 68,
-                      }}>
-                        <div style={{ fontWeight: 800, fontSize: 11 }}>{DAY_FULL[dow]}</div>
-                        <div style={{ fontFamily: 'DM Mono', fontSize: 10, opacity: 0.8 }}>
-                          {d.getDate()} {MON_SHORT[d.getMonth()]}{bh ? ' 🔴' : ''}
-                        </div>
-                        <div style={{ fontSize: 8, color: 'rgba(255,255,255,0.2)', fontFamily: 'DM Mono', marginTop: 1 }}>
-                          {bh ? '—' : isWkd ? '19:00–07:00' : dow === 5 ? '10:00 / 19:00→' : '10:00 / 19:00→'}
-                        </div>
-                      </th>
-                    );
-                  })}
-                </tr>
-              </thead>
-              <tbody>
-                {users.map(u => (
-                  <tr key={u.id}>
-                    <td style={{ paddingRight: 8, paddingTop: 3, paddingBottom: 3 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                        <Avatar user={u} size={24} />
-                        <span style={{ fontSize: 12 }}>{u.name.split(' ')[0]}</span>
-                      </div>
-                    </td>
-                    {wdates.slice(0, 7).map((d, di) => {
-                      const ds   = d.toISOString().slice(0, 10);
-                      const hol  = holidays.find(h => h.userId === u.id && ds >= h.start && ds <= h.end);
-                      const bh   = UK_BANK_HOLIDAYS.find(b => b.date === ds);
-                      const upg  = upgrades.find(up => up.date === ds && up.attendees?.includes(u.id));
-                      const s    = hol ? 'holiday' : bh ? 'bankholiday' : upg ? 'upgrade' : (rota[u.id]?.[ds] || 'off');
-                      const col  = SHIFT_COLORS[s] || {};
-                      const hrs  = SHIFT_HOURS[s];
-                      const key  = `${u.id}::${ds}`;
-                      const isBulkSel = bulkSelected.has(key);
-                      const isEditing = editCell?.userId === u.id && editCell?.date === ds;
-                      const dow  = d.getDay();
-                      const isWkd = dow === 0 || dow === 6;
-
-                      // Check if this cell's shift overflows into next day (overnight)
-                      const isOvernight = (s === 'evening' || s === 'weekend');
-
-                      // Check if previous day had an overnight shift that carries into this cell's morning
-                      const prevDate = new Date(d); prevDate.setDate(d.getDate() - 1);
-                      const prevDs = prevDate.toISOString().slice(0, 10);
-                      const prevHol = holidays.find(h => h.userId === u.id && prevDs >= h.start && prevDs <= h.end);
-                      const prevBh  = UK_BANK_HOLIDAYS.find(b => b.date === prevDs);
-                      const prevUpg = upgrades.find(up => up.date === prevDs && up.attendees?.includes(u.id));
-                      const prevS   = prevHol ? 'holiday' : prevBh ? 'bankholiday' : prevUpg ? 'upgrade' : (rota[u.id]?.[prevDs] || 'off');
-                      const hasCarryOver = (prevS === 'evening' || prevS === 'weekend') && s === 'off';
-                      const prevCol = SHIFT_COLORS[prevS] || {};
-
-                      return (
-                        <td key={ds} style={{
-                          textAlign: 'center', padding: '3px 2px',
-                          background: isWkd ? 'rgba(255,255,255,0.02)' : undefined,
-                          verticalAlign: 'top',
-                        }}>
-                          {isEditing && isManager ? (
-                            <select autoFocus className="select" style={{ fontSize: 10, padding: '2px 4px', width: 100 }}
-                              defaultValue={s} onBlur={e => setCell(u.id, ds, e.target.value)}
-                              onChange={e => setCell(u.id, ds, e.target.value)}>
-                              <option value="off">Off</option>
-                              {!isWkd && <option value="daily">Daily (10–19)</option>}
-                              {(dow >= 1 && dow <= 4) && <option value="evening">Eve OC (19→07)</option>}
-                              <option value="weekend">Wknd OC (19→07)</option>
-                            </select>
-                          ) : (
-                            <>
-                              {/* Main shift badge */}
-                              <div
-                                onClick={() => isManager && toggleBulk(u.id, ds)}
-                                onDoubleClick={() => isManager && setEditCell({ userId: u.id, date: ds })}
-                                title={s !== 'off' ? `${col.label || s}${hrs ? ' · ' + hrs.label : ''}` : (isManager ? 'Double-click to assign shift' : '')}
-                                style={{
-                                  background: col.bg ? col.bg + '55' : 'transparent',
-                                  color: col.text || 'var(--text-muted)',
-                                  border: isBulkSel ? '2px solid #3b82f6' : col.bg ? `1px solid ${col.bg}88` : '1px solid transparent',
-                                  borderRadius: 6, padding: '4px 4px', fontSize: 9, fontWeight: 600,
-                                  cursor: isManager ? 'pointer' : 'default', userSelect: 'none', lineHeight: 1.3, minWidth: 30,
-                                }}>
-                                {hol ? '🌴' : bh ? '🔴' : upg ? '⬆' : s === 'off' ? '—' : col.label?.slice(0,4) || s}
-                                {isOvernight && (
-                                  <div style={{ fontSize: 7, color: col.text, opacity: 0.8, marginTop: 1 }}>
-                                    →07:00
-                                  </div>
-                                )}
-                              </div>
-                              {/* Carry-over morning badge from previous day's overnight shift */}
-                              {hasCarryOver && (
-                                <div style={{
-                                  marginTop: 2,
-                                  background: (prevCol.bg || '#166534') + '33',
-                                  color: prevCol.text || '#bbf7d0',
-                                  border: `1px solid ${prevCol.bg || '#166534'}66`,
-                                  borderRadius: 6, padding: '2px 4px', fontSize: 8, fontWeight: 600,
-                                  lineHeight: 1.3,
-                                }}>
-                                  ←07:00
-                                  <div style={{ fontSize: 7, opacity: 0.8 }}>cont.</div>
-                                </div>
-                              )}
-                            </>
-                          )}
-                          {isManager && s !== 'off' && !isEditing && (
-                            <div style={{ display: 'flex', justifyContent: 'center', gap: 3, marginTop: 2 }}>
-                              {canEdit && (
-                                <button
-                                  onClick={e => { e.stopPropagation(); toggleLock(u.id, ds); }}
-                                  title={isLocked(u.id, ds) ? 'Unlock this cell' : 'Lock to protect from Clear/Generate'}
-                                  style={{ background: 'none', border: 'none', fontSize: 9, cursor: 'pointer', padding: 0, color: isLocked(u.id, ds) ? '#f59e0b' : 'rgba(255,255,255,0.25)', lineHeight: 1 }}>
-                                  {isLocked(u.id, ds) ? '🔒' : '🔓'}
-                                </button>
-                              )}
-                              {!canEdit && isLocked(u.id, ds) && (
-                                <span style={{ fontSize: 9, color: '#f59e0b', lineHeight: 1 }}>🔒</span>
-                              )}
-                              {canEdit && <button onClick={() => deleteCell(u.id, ds)} style={{ background: 'none', border: 'none', color: '#ef4444', fontSize: 8, cursor: 'pointer', padding: 0 }}>✕</button>}
-                            </div>
-                          )}
-                        </td>
-                      );
-                    })}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        );
-      })}
-      {isManager && <div className="muted-xs" style={{ marginTop: 8 }}>💡 Click a cell to select for bulk edit. Double-click to edit inline. Click ✕ to delete.</div>}
-    </div>
-  );
-}
+// RotaPage component moved to src/Rota.js — imported at top of file
 
 // ── Incident Tabs (Issue | Actions | Solution) ────────────────────────────
 function IncidentTabs({ form, setForm }) {
@@ -7689,7 +7087,7 @@ function PayConfig({ users, payconfig, setPayconfig, isManager, timesheets, over
 
 // ── Settings (Manager only, all settings here) ─────────────────────────────
 function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks, driveToken, profilePics, setProfilePicsState, rota, setRota, permissions, setPermissions }) {
-  const BLANK_FORM = { name: '', trigram: '', role: 'Engineer', employment_id: '', mobile_number: '', google_email: '', profile_picture: '', avatar: '', color: '' };
+  const BLANK_FORM = { name: '', trigram: '', role: 'Engineer', employment_id: '', mobile_number: '', google_email: '', profile_picture: '', avatar: '', color: '', start_date: '', oncall_start_date: '', termination_date: '' };
   const [showAdd, setShowAdd]         = useState(false);
   const [showLink, setShowLink]       = useState(false);
   const [editingUserId, setEditingUserId] = useState(null);
@@ -7803,6 +7201,9 @@ function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks, dri
     const newUser = { id, name: form.name, role: form.role, tri: id.slice(0,3), avatar, color,
       mobile_number: form.mobile_number || '', google_email: form.google_email || '',
       employment_id: form.employment_id || '',
+      start_date: form.start_date || '',
+      oncall_start_date: form.oncall_start_date || '',
+      termination_date: form.termination_date || '',
       profile_picture: form.profile_picture || '' };
     const updatedUsers = [...users, newUser];
     setUsers(updatedUsers);
@@ -7981,6 +7382,27 @@ function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks, dri
         <input className="input" placeholder="e.g. EMP-00123" value={fv.employment_id||''} onChange={e => setFv(f => ({...f, employment_id: e.target.value}))}
           style={{ fontFamily: 'DM Mono', letterSpacing: 1 }} />
       </div>
+      {/* On-call dates */}
+      <div style={{ background:'rgba(0,194,255,0.05)', border:'1px solid rgba(0,194,255,0.15)', borderRadius:8, padding:'12px 14px' }}>
+        <div style={{ fontSize:11, color:'#00c2ff', fontWeight:700, marginBottom:10, textTransform:'uppercase', letterSpacing:'0.5px' }}>📅 Employment & On-Call Dates</div>
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:10 }}>
+          <div>
+            <div style={{ fontSize:11, color:'var(--text-muted)', marginBottom:3 }}>Start Date</div>
+            <input className="input" type="date" value={fv.start_date||''} onChange={e => setFv(f => ({...f, start_date: e.target.value}))} />
+            <div style={{ fontSize:10, color:'#475569', marginTop:2 }}>When they join the company</div>
+          </div>
+          <div>
+            <div style={{ fontSize:11, color:'var(--text-muted)', marginBottom:3 }}>On-Call Start Date</div>
+            <input className="input" type="date" value={fv.oncall_start_date||''} onChange={e => setFv(f => ({...f, oncall_start_date: e.target.value}))} />
+            <div style={{ fontSize:10, color:'#f59e0b', marginTop:2 }}>⚠ Not in rota until this date</div>
+          </div>
+          <div>
+            <div style={{ fontSize:11, color:'var(--text-muted)', marginBottom:3 }}>Termination Date</div>
+            <input className="input" type="date" value={fv.termination_date||''} onChange={e => setFv(f => ({...f, termination_date: e.target.value}))} />
+            <div style={{ fontSize:10, color:'#ef4444', marginTop:2 }}>Removed from rota after this date</div>
+          </div>
+        </div>
+      </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <label style={{ fontSize: 12, color: 'var(--text-muted)', minWidth: 80 }}>Colour</label>
         <input type="color" value={fv.color||'#1d4ed8'} onChange={e => setFv(f => ({...f, color: e.target.value}))}
@@ -8071,7 +7493,7 @@ function Settings({ users, setUsers, isManager, secureLinks, setSecureLinks, dri
                 </div>
                 <Tag label={u.role} type={u.role === 'Manager' ? 'amber' : 'blue'} />
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                  <button className="btn btn-secondary btn-sm" onClick={() => { setEditForm({ name: u.name, trigram: u.id, role: u.role||'Engineer', employment_id: u.employment_id||'', mobile_number: u.mobile_number||'', google_email: u.google_email||'', profile_picture: u.profile_picture||'', avatar: u.avatar||'', color: u.color||'' }); setEditingUserId(u.id); }}>✎ Edit</button>
+                  <button className="btn btn-secondary btn-sm" onClick={() => { setEditForm({ name: u.name, trigram: u.id, role: u.role||'Engineer', employment_id: u.employment_id||'', start_date: u.start_date||'', oncall_start_date: u.oncall_start_date||'', termination_date: u.termination_date||'', mobile_number: u.mobile_number||'', google_email: u.google_email||'', profile_picture: u.profile_picture||'', avatar: u.avatar||'', color: u.color||'' }); setEditingUserId(u.id); }}>✎ Edit</button>
                   <button className="btn btn-secondary btn-sm" onClick={() => resetPassword(u.id)} title="Reset password to default (lowercase ID)">🔑 Reset PW</button>
                   <button className="btn btn-danger btn-sm" onClick={() => deleteUser(u.id)}>🗑</button>
                 </div>
@@ -8981,7 +8403,7 @@ export default function App() {
       case 'oncall':     return <OnCall {...props} />;
       case 'myshift':    return <MyShift {...props} />;
       case 'calendar':   return <CalendarView {...props} absences={absences} />;
-      case 'rota':       return <RotaPage {...props} />;
+      case 'rota':       return <RotaPage users={users} rota={rota} setRota={setRota} holidays={holidays} upgrades={upgrades} swapRequests={swapRequests} setSwapRequests={setSwapRequests} isManager={isManager} UK_BANK_HOLIDAYS={UK_BANK_HOLIDAYS} generateRota={generateRota} generateICalFeed={generateICalFeed} downloadIcal={downloadIcal} />;
       case 'incidents':  return <Incidents {...props} timesheets={timesheets} setTimesheets={setTimesheets} />;
       case 'timesheets': return <Timesheets {...props} />;
       case 'timekeeping': return <TimeKeeping users={users} holidays={holidays} currentUser={currentUser} isManager={isManager} bankHolidays={UK_BANK_HOLIDAYS} timekeeping={timekeeping} setTimekeeping={setTimekeeping} driveToken={driveToken} />;
