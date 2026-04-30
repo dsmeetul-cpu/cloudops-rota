@@ -74,17 +74,42 @@ function getAllWeekdays(weekStart) {
 }
 // Use London local time throughout (Europe/London handles GMT/BST automatically)
 function londonNow() {
-  return new Date(new Date().toLocaleString('en-GB', { timeZone: 'Europe/London' }));
+  // Use Intl to get London date parts, then reconstruct a plain Date object
+  const now = new Date();
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Europe/London',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: false,
+  }).formatToParts(now);
+  const p = {};
+  parts.forEach(({ type, value }) => { p[type] = value; });
+  // Reconstruct as a local Date (not UTC) purely for .getHours()/.getMinutes() use
+  return new Date(
+    `${p.year}-${p.month}-${p.day}T${p.hour === '24' ? '00' : p.hour}:${p.minute}:${p.second}`
+  );
 }
 function todayStr() {
-  const d = londonNow();
-  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Europe/London',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(new Date());
+  const p = {};
+  parts.forEach(({ type, value }) => { p[type] = value; });
+  return `${p.year}-${p.month}-${p.day}`;
 }
 function londonTimeStr() {
-  const d = londonNow();
-  return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Europe/London',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  }).format(new Date());
 }
-function londonHour() { return londonNow().getHours(); }
+function londonHour() {
+  const t = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Europe/London', hour: 'numeric', hour12: false,
+  }).format(new Date());
+  return parseInt(t, 10);
+}
 
 // ── MiniBar chart ─────────────────────────────────────────────────────────────
 function MiniBar({ value, max, color, height = 36, width = 22, label }) {
