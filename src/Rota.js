@@ -515,9 +515,11 @@ export default function RotaPage({
           if (!isOnCallActive(user, dateStr)) return null;
           const hol  = holidays.find(h=>h.userId===userId && dateStr>=h.start && dateStr<=h.end);
           const bh   = (UK_BANK_HOLIDAYS||[]).find(b=>b.date===dateStr);
-          const upg  = (upgrades||[]).find(up=>up.date===dateStr && up.attendees?.includes(userId));
-          // upgrade is an overlay — use on-call shift for timeline colour, not 'upgrade'
-          const thisShift = hol?'holiday':bh?'bankholiday':(rota[userId]?.[dateStr]||'off');
+          const rotaEntry = rota[userId]?.[dateStr] || 'off';
+          // BH overlays on-call — if engineer has a rota entry keep its colour, else show bankholiday
+          const thisShift = hol ? 'holiday'
+            : bh ? (rotaEntry !== 'off' ? rotaEntry : 'bankholiday')
+            : rotaEntry;
           if (hour>=7) {
             if (thisShift==='daily')   return hour<19?'daily':null;
             if (thisShift==='evening') return hour>=19?'evening':null;
@@ -525,14 +527,18 @@ export default function RotaPage({
             if (['upgrade','holiday','bankholiday'].includes(thisShift)) return thisShift;
             return null;
           }
-          const prevDate=new Date(dateStr); prevDate.setDate(prevDate.getDate()-1);
-          const prevDs=prevDate.toISOString().slice(0,10);
-          const pHol=holidays.find(h=>h.userId===userId && prevDs>=h.start && prevDs<=h.end);
-          const pBh=(UK_BANK_HOLIDAYS||[]).find(b=>b.date===prevDs);
-          const pUpg=(upgrades||[]).find(up=>up.date===prevDs && up.attendees?.includes(userId));
-          const prevShift=pHol?'holiday':pBh?'bankholiday':(rota[userId]?.[prevDs]||'off');
-          if (prevShift==='evening') return 'evening';
-          if (prevShift==='weekend') return 'weekend';
+          // Before 7am: check if yesterday's shift carries over (look back up to 3 days for weekend OC)
+          for (let back = 1; back <= 3; back++) {
+            const prev = new Date(dateStr + 'T12:00:00');
+            prev.setDate(prev.getDate() - back);
+            const prevDs = prev.toISOString().slice(0,10);
+            const pHol = holidays.find(h=>h.userId===userId && prevDs>=h.start && prevDs<=h.end);
+            if (pHol) continue; // skip holiday days in lookback
+            const prevEntry = rota[userId]?.[prevDs] || 'off';
+            if (prevEntry === 'evening') return back === 1 ? 'evening' : null;
+            if (prevEntry === 'weekend') return 'weekend'; // weekend spans multiple days
+            if (prevEntry !== 'off') break; // different shift, stop
+          }
           return null;
         };
 
@@ -672,22 +678,37 @@ export default function RotaPage({
                       const upg  = (upgrades||[]).find(up=>up.date===ds && up.attendees?.includes(u.id));
                       const active=isOnCallActive(u,ds);
                       const status=getOnCallStatus(u,ds);
-                      // On-call shift independent of upgrade — upgrade overlays on top
-                      const onCallShift = hol?'holiday':bh?'bankholiday':(rota[u.id]?.[ds]||'off');
-                      const s    = onCallShift; // used for colour/style
-                      const col  = active?SHIFT_COLORS[s]||{}:SHIFT_COLORS.inactive;
+
+                      // The actual on-call rota assignment (never overridden by BH/upgrade)
+                      const rotaShift = rota[u.id]?.[ds] || 'off';
+                      // Display shift: holiday beats everything, BH is an overlay over on-call
+                      const s    = hol ? 'holiday' : rotaShift;
+                      const col  = active ? (SHIFT_COLORS[s]||{}) : SHIFT_COLORS.inactive;
+                      // BH only acts as overlay badge when there is an on-call shift underneath
+                      const bhOverlay = bh && rotaShift !== 'off' && !hol;
+                      // When BH with no rota shift, show BH colour
+                      const displayCol = (bh && rotaShift === 'off' && !hol)
+                        ? SHIFT_COLORS.bankholiday
+                        : col;
+
                       const key  = `${u.id}::${ds}`;
                       const isBulkSel=bulkSelected.has(key);
                       const isEditing=editCell?.userId===u.id && editCell?.date===ds;
                       const dow=d.getDay(); const isWkd=dow===0||dow===6;
                       const isOvernight=(s==='evening'||s==='weekend');
+
+                      // Carry-over: check previous day's on-call shift
                       const prevDate=new Date(d); prevDate.setDate(d.getDate()-1);
                       const prevDs=prevDate.toISOString().slice(0,10);
                       const prevHol=holidays.find(h=>h.userId===u.id && prevDs>=h.start && prevDs<=h.end);
-                      const prevBh=(UK_BANK_HOLIDAYS||[]).find(b=>b.date===prevDs);
-                      const prevUpg=(upgrades||[]).find(up=>up.date===prevDs && up.attendees?.includes(u.id));
-                      const prevS=prevHol?'holiday':prevBh?'bankholiday':(rota[u.id]?.[prevDs]||'off');
-                      const hasCarryOver=(prevS==='evening'||prevS==='weekend') && s==='off' && isOnCallActive(u,prevDs);
+                      const prevRotaShift = rota[u.id]?.[prevDs] || 'off';
+                      // prevS for carry-over: use rota shift, not BH override
+                      const prevS = prevHol ? 'holiday' : prevRotaShift;
+                      // Carry-over shows when:
+                      // - previous shift was overnight (evening/weekend)
+                      // - current display is off OR bank holiday (not on-call) OR holiday
+                      const currentHasNoShift = (s==='off' || (bh && rotaShift==='off') || hol);
+                      const hasCarryOver = (prevS==='evening'||prevS==='weekend') && currentHasNoShift && isOnCallActive(u,prevDs);
                       const prevCol=SHIFT_COLORS[prevS]||{};
 
                       return (
@@ -703,24 +724,38 @@ export default function RotaPage({
                             <>
                               {isEditing&&canEdit ? (
                                 <select autoFocus className="select" style={{ fontSize:10, padding:'2px 4px', width:100 }}
-                                  defaultValue={s} onBlur={e=>setCell(u.id,ds,e.target.value)} onChange={e=>setCell(u.id,ds,e.target.value)}>
+                                  defaultValue={rotaShift} onBlur={e=>setCell(u.id,ds,e.target.value)} onChange={e=>setCell(u.id,ds,e.target.value)}>
                                   <option value="off">Off</option>
                                   {!isWkd&&<option value="daily">Daily (10–19)</option>}
-                                  {(dow>=1&&dow<=4)&&<option value="evening">Eve OC (19→07)</option>}
-                                  <option value="weekend">Wknd OC (19→07)</option>
+                                  {(dow>=1&&dow<=4)&&<option value="evening">WD OC (19→07)</option>}
+                                  <option value="weekend">WE OC (19→07)</option>
                                 </select>
                               ) : (
                                 <>
                                   <div onClick={()=>canEdit&&active&&toggleBulk(u.id,ds)}
                                     onDoubleClick={()=>canEdit&&active&&setEditCell({userId:u.id,date:ds})}
-                                    title={s!=='off'?`${col.label||s}${upg?' + Upgrade':''}`:canEdit?'Double-click to assign':''}
-                                    style={{ background:col.bg?col.bg+'55':'transparent', color:col.text||'#475569', border:isBulkSel?'2px solid #3b82f6':col.bg?`1px solid ${col.bg}88`:'1px solid transparent', borderRadius:6, padding:'4px 4px', fontSize:9, fontWeight:800, cursor:canEdit&&active?'pointer':'default', userSelect:'none', lineHeight:1.3, minWidth:30, position:'relative' }}>
-                                    {hol ? 'H' : bh ? 'BH' : (SHIFT_ABBR[s]||'—')}
+                                    title={`${displayCol.label||s}${bhOverlay?' + Bank Holiday':''}${upg&&!hol?' + Upgrade Day':''}${isOvernight?' →07:00':''}`}
+                                    style={{
+                                      background: displayCol.bg ? displayCol.bg+'55' : 'transparent',
+                                      color: displayCol.text||'#475569',
+                                      border: isBulkSel ? '2px solid #3b82f6' : displayCol.bg ? `1px solid ${displayCol.bg}88` : '1px solid transparent',
+                                      borderRadius:6, padding:'4px 4px', fontSize:9, fontWeight:800,
+                                      cursor:canEdit&&active?'pointer':'default', userSelect:'none',
+                                      lineHeight:1.3, minWidth:30, position:'relative',
+                                    }}>
+                                    {/* Main abbreviation — shows on-call shift, not BH */}
+                                    {hol ? 'H' : (SHIFT_ABBR[s]||'—')}
+                                    {/* BH badge when on-call runs through a bank holiday */}
+                                    {bhOverlay && (
+                                      <span style={{ position:'absolute', top:-4, right: upg&&!hol ? 12 : -4, background:'#7f1d1d', color:'#fca5a5', fontSize:7, fontWeight:800, padding:'1px 3px', borderRadius:3, lineHeight:1.2, border:'1px solid rgba(0,0,0,0.3)' }}>BH</span>
+                                    )}
+                                    {/* UD badge overlay */}
                                     {upg && !hol && (
                                       <span style={{ position:'absolute', top:-4, right:-4, background:'#991b1b', color:'#fecaca', fontSize:7, fontWeight:800, padding:'1px 3px', borderRadius:3, lineHeight:1.2, border:'1px solid rgba(0,0,0,0.3)' }}>UD</span>
                                     )}
-                                    {isOvernight&&<div style={{ fontSize:7, color:col.text, opacity:0.8, marginTop:1 }}>→07:00</div>}
+                                    {isOvernight&&<div style={{ fontSize:7, color:displayCol.text, opacity:0.8, marginTop:1 }}>→07:00</div>}
                                   </div>
+                                  {/* Carry-over: previous overnight shift continues into this day */}
                                   {hasCarryOver&&(
                                     <div style={{ marginTop:2, background:(prevCol.bg||'#166534')+'33', color:prevCol.text||'#bbf7d0', border:`1px solid ${prevCol.bg||'#166534'}66`, borderRadius:6, padding:'2px 4px', fontSize:8, fontWeight:600, lineHeight:1.3 }}>
                                       ←07:00<div style={{ fontSize:7, opacity:0.8 }}>cont.</div>
@@ -728,7 +763,7 @@ export default function RotaPage({
                                   )}
                                 </>
                               )}
-                              {canEdit&&s!=='off'&&!isEditing&&active&&(
+                              {canEdit&&rotaShift!=='off'&&!isEditing&&active&&(
                                 <div style={{ display:'flex', justifyContent:'center', gap:3, marginTop:2 }}>
                                   <button onClick={e=>{e.stopPropagation();toggleLock(u.id,ds);}} title={isLocked(u.id,ds)?'Unlock':'Lock from Clear/Generate'}
                                     style={{ background:'none', border:'none', fontSize:9, cursor:'pointer', padding:0, color:isLocked(u.id,ds)?'#f59e0b':'rgba(255,255,255,0.25)', lineHeight:1 }}>
