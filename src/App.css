@@ -603,6 +603,80 @@ h1, h2, h3 { font-family: 'Syne', sans-serif; }
   margin-bottom: 18px;
   flex-wrap: wrap;
 }
+.tab {
+  padding: 6px 16px;
+  font-size: 12px;
+  font-weight: 500;
+  font-family: 'DM Sans', sans-serif;
+  color: var(--text-muted);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  white-space: nowrap;
+  user-select: none;
+}
+.tab:hover { background: rgba(255,255,255,0.05); color: var(--text-secondary); }
+.tab.active {
+  background: var(--bg-card);
+  color: var(--accent);
+  border: 1px solid var(--border);
+  box-shadow: 0 1px 4px rgba(0,0,0,0.35);
+}
+
+/* ── Payroll pill-style tabs ─────────────────────────────────────────────── */
+.payroll-tab-bar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+.payroll-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 20px;
+  font-size: 12.5px;
+  font-weight: 600;
+  font-family: 'DM Sans', sans-serif;
+  color: var(--text-muted);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s, box-shadow 0.15s;
+  white-space: nowrap;
+  user-select: none;
+  position: relative;
+}
+.payroll-tab:hover {
+  background: var(--bg-card2);
+  color: var(--text-secondary);
+  border-color: rgba(0,194,255,0.18);
+}
+.payroll-tab.active {
+  background: rgba(0,194,255,0.08);
+  color: var(--accent);
+  border-color: rgba(0,194,255,0.4);
+  box-shadow: 0 0 0 1px rgba(0,194,255,0.12), 0 2px 8px rgba(0,0,0,0.3);
+}
+.payroll-tab .tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  background: rgba(0,194,255,0.15);
+  color: var(--accent);
+  font-size: 10px;
+  font-family: 'DM Mono', monospace;
+  font-weight: 700;
+  border-radius: 10px;
+}
+.payroll-tab:not(.active) .tab-badge {
+  background: rgba(255,255,255,0.07);
+  color: var(--text-muted);
+}
+
 .tab-bar .btn {
   background: transparent;
   border: none;
@@ -800,6 +874,35 @@ h1, h2, h3 { font-family: 'Syne', sans-serif; }
   font-family: 'DM Mono', monospace;
 }
 
+/* ── Global Table Baseline ───────────────────────────────────────────────── */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  color: var(--text-primary);
+}
+table th {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  font-size: 11px;
+  font-weight: 700;
+  font-family: 'DM Mono', monospace;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  background: var(--bg-card2);
+  white-space: nowrap;
+}
+table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+  font-size: 12.5px;
+}
+table tbody tr:last-child td { border-bottom: none; }
+table tbody tr:hover { background: var(--bg-card2); }
+
 /* ── Google Drive status ─────────────────────────────────────────────────── */
 .gd-status {
   display: flex;
@@ -876,4 +979,123 @@ kbd {
 @keyframes slideInToast {
   from { opacity: 0; transform: translateX(60px) scale(0.95); }
   to   { opacity: 1; transform: translateX(0) scale(1); }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Layout & Navigation — moved from App.js themeVars
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── App shell ───────────────────────────────────────────────────────────── */
+.app   { display: flex; height: 100vh; overflow: hidden; background: var(--bg); color: var(--text-primary); }
+.main  { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
+.content { flex: 1; overflow-y: auto; padding: 16px; background: var(--bg); }
+
+/* ── Top bar ─────────────────────────────────────────────────────────────── */
+.topbar {
+  height: 46px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 16px;
+  background: var(--topbar-bg);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  backdrop-filter: blur(8px);
+}
+.topbar-title  { font-size: 13px; font-weight: 600; color: var(--text-primary); flex: 1; }
+.topbar-search {
+  width: 160px;
+  font-size: 11px;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  color: var(--text-primary);
+  outline: none;
+}
+.topbar-search::placeholder { color: var(--text-muted); }
+
+/* ── Sidebar nav items ───────────────────────────────────────────────────── */
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 7px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--nav-text);
+  transition: background 0.12s, color 0.12s;
+}
+.nav-item:hover  { background: var(--nav-active-bg); color: var(--nav-text-hover); }
+.nav-item.active { background: var(--nav-active-bg); color: var(--nav-text-active); font-weight: 600; }
+
+.section-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--nav-section);
+  padding: 12px 10px 4px;
+}
+
+/* ── Badge ───────────────────────────────────────────────────────────────── */
+.badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+/* ── Alert variants (success / warning / error already covered, add info) ── */
+.alert-info {
+  background: rgba(59,130,246,0.10);
+  border: 1px solid rgba(59,130,246,0.28);
+  color: #60a5fa;
+}
+
+/* ── HR rule ─────────────────────────────────────────────────────────────── */
+hr { border: none; border-top: 1px solid var(--border); margin: 12px 0; }
+
+/* ── Loading progress bar (login overlay) ────────────────────────────────── */
+.login-loading-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(10,14,26,0.92);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  gap: 24px;
+}
+.login-loading-bar {
+  width: 360px;
+  background: rgba(255,255,255,0.1);
+  border-radius: 12px;
+  overflow: hidden;
+  height: 14px;
+}
+.login-loading-fill {
+  height: 100%;
+  border-radius: 12px;
+  background: linear-gradient(90deg, #3b82f6, #06b6d4);
+  transition: width 0.4s ease;
+}
+
+/* ── Timesheets table header style ───────────────────────────────────────── */
+.th-mono {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  font-size: 11px;
+  font-weight: 700;
+  font-family: 'DM Mono', monospace;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
 }
