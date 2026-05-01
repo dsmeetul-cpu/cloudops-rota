@@ -5941,15 +5941,39 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
       bhList.forEach(bh => {
         if (startDs && bh.date < startDs) return;
         if (endDs   && bh.date > endDs)   return;
-        const s = safeRota[u.id]?.[bh.date];
+        const dow = new Date(bh.date + 'T12:00:00').getDay();
+
+        // Check if the engineer has a rota shift directly on this BH date
+        let s = safeRota[u.id]?.[bh.date];
+
+        // If no direct entry, check if a weekend on-call started earlier and still runs
+        // Weekend OC: Fri 7pm → Mon/Tue 7am — so Mon BH inside a Fri WE shift counts
+        if (!s || s === 'off') {
+          // Look back up to 3 days for a 'weekend' shift that would still be active
+          for (let back = 1; back <= 3; back++) {
+            const prev = new Date(bh.date + 'T12:00:00');
+            prev.setDate(prev.getDate() - back);
+            const prevDs = prev.toISOString().slice(0,10);
+            const prevShift = safeRota[u.id]?.[prevDs];
+            if (prevShift === 'weekend' || prevShift === 'evening') {
+              s = prevShift; // carry the shift type for hours calculation
+              break;
+            }
+          }
+        }
+
         if (!s || s === 'off') return;
-        const dow = new Date(bh.date).getDay();
+
         const isWeekendOC = s === 'weekend' || s === 'bankholiday';
         if (isWeekendOC) {
+          // Mon BH = full 24h continuation of weekend OC (Fri 7pm → Tue 7am)
           if (dow === 1) total += 24;
+          // Fri BH = 12h (7pm start only)
           else if (dow === 5) total += 12;
           else total += 22;
-        } else { total += 22; }
+        } else {
+          total += 22; // evening / daily on-call on bank holiday
+        }
       });
       return total;
     })();
