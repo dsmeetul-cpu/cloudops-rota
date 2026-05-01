@@ -16,6 +16,17 @@ const SHIFT_COLORS = {
   inactive:    { bg: '#1e293b', label: 'Not on-call yet',  text: '#475569' },
 };
 
+// Short abbreviations for compact cell display
+const SHIFT_ABBR = {
+  daily:       'D',
+  evening:     'WD',
+  weekend:     'WE',
+  upgrade:     'UD',
+  holiday:     'H',
+  bankholiday: 'BH',
+  off:         '—',
+};
+
 const SHIFT_HOURS = {
   daily:       { start: '10:00', end: '19:00', label: '10am – 7pm',   desc: 'Daily Shift (Mon–Fri)',             standbyHrs: 0,  workedHrs: 9  },
   evening:     { start: '19:00', end: '07:00', label: '7pm – 7am',    desc: 'Weekday On-Call (Mon–Thu)',         standbyHrs: 12, workedHrs: 0  },
@@ -72,16 +83,17 @@ function ShiftLegend() {
   return (
     <div style={{ display:'flex', flexWrap:'wrap', gap:8, marginBottom:12 }}>
       {[
-        ['#1e40af','Daily Shift (9am–6pm)'],
-        ['#166534','Weekday On-Call'],
-        ['#854d0e','Weekend On-Call'],
-        ['#991b1b','Upgrade Day'],
-        ['#92400e','Holiday'],
-        ['#7f1d1d','Bank Holiday'],
-        ['#1e293b','Not on-call yet'],
-      ].map(([bg, label]) => (
+        ['#1e40af', 'D',  'Daily Shift (9am–6pm)'],
+        ['#166534', 'WD', 'Weekday On-Call (19:00–07:00)'],
+        ['#854d0e', 'WE', 'Weekend On-Call (19:00–07:00)'],
+        ['#991b1b', 'UD', 'Upgrade Day'],
+        ['#92400e', 'H',  'Holiday'],
+        ['#1e293b', '—',  'Not on-call yet'],
+      ].map(([bg, abbr, label]) => (
         <div key={label} style={{ display:'flex', alignItems:'center', gap:5, fontSize:11, color:'var(--text-secondary)' }}>
-          <div style={{ width:10, height:10, borderRadius:'50%', background:bg, flexShrink:0 }} />
+          <div style={{ width:20, height:18, borderRadius:4, background:bg, display:'flex', alignItems:'center', justifyContent:'center', fontSize:9, fontWeight:800, color:'#fff', flexShrink:0 }}>
+            {abbr}
+          </div>
           {label}
         </div>
       ))}
@@ -504,7 +516,8 @@ export default function RotaPage({
           const hol  = holidays.find(h=>h.userId===userId && dateStr>=h.start && dateStr<=h.end);
           const bh   = (UK_BANK_HOLIDAYS||[]).find(b=>b.date===dateStr);
           const upg  = (upgrades||[]).find(up=>up.date===dateStr && up.attendees?.includes(userId));
-          const thisShift = hol?'holiday':bh?'bankholiday':upg?'upgrade':(rota[userId]?.[dateStr]||'off');
+          // upgrade is an overlay — use on-call shift for timeline colour, not 'upgrade'
+          const thisShift = hol?'holiday':bh?'bankholiday':(rota[userId]?.[dateStr]||'off');
           if (hour>=7) {
             if (thisShift==='daily')   return hour<19?'daily':null;
             if (thisShift==='evening') return hour>=19?'evening':null;
@@ -517,7 +530,7 @@ export default function RotaPage({
           const pHol=holidays.find(h=>h.userId===userId && prevDs>=h.start && prevDs<=h.end);
           const pBh=(UK_BANK_HOLIDAYS||[]).find(b=>b.date===prevDs);
           const pUpg=(upgrades||[]).find(up=>up.date===prevDs && up.attendees?.includes(userId));
-          const prevShift=pHol?'holiday':pBh?'bankholiday':pUpg?'upgrade':(rota[userId]?.[prevDs]||'off');
+          const prevShift=pHol?'holiday':pBh?'bankholiday':(rota[userId]?.[prevDs]||'off');
           if (prevShift==='evening') return 'evening';
           if (prevShift==='weekend') return 'weekend';
           return null;
@@ -546,7 +559,7 @@ export default function RotaPage({
                         <span style={{ fontSize:11, fontWeight:700, color:bh?'#fca5a5':isWkd?'rgba(255,255,255,0.5)':'#94a3b8' }}>
                           {DAY_NAMES[dow]} {d.getDate()} {MON_SHORT[d.getMonth()]}
                         </span>
-                        {bh && <span style={{ fontSize:8, color:'#fca5a5', display:'block' }}>🔴 {bh.title||'Bank Holiday'}</span>}
+                        {bh && <span style={{ fontSize:8, color:'#fca5a5', display:'block' }}>{bh.title||'Bank Holiday'}</span>}
                       </div>
                       <div style={{ flex:1, height:1, background:'rgba(255,255,255,0.06)' }} />
                     </div>
@@ -555,7 +568,8 @@ export default function RotaPage({
                       const upg   = (upgrades||[]).find(up=>up.date===ds && up.attendees?.includes(u.id));
                       const active= isOnCallActive(u, ds);
                       const status= getOnCallStatus(u, ds);
-                      const shift = hol?'holiday':bh?'bankholiday':upg?'upgrade':(rota[u.id]?.[ds]||'off');
+                      // Upgrade overlays on-call — don't replace it
+                      const shift = hol?'holiday':bh?'bankholiday':(rota[u.id]?.[ds]||'off');
                       const col   = active?SHIFT_COLORS[shift]||{}:SHIFT_COLORS.inactive;
                       const isEditing=editCell?.userId===u.id && editCell?.date===ds;
                       return (
@@ -588,10 +602,13 @@ export default function RotaPage({
                                   return <div key={h} title={`${String(h).padStart(2,'0')}:00${as?' — '+(SHIFT_COLORS[as]?.label||as):''}`}
                                     style={{ flex:1, background:ac?(ac.bg||'#1e40af')+'dd':'transparent', borderRight:h<23?'1px solid rgba(0,0,0,0.12)':'none' }} />;
                                 })}
-                                {shift!=='off'&&<div style={{ position:'absolute', inset:0, display:'flex', alignItems:'center', justifyContent:'center', pointerEvents:'none' }}>
+                                {shift!=='off'&&<div style={{ position:'absolute', inset:0, display:'flex', alignItems:'center', justifyContent:'center', pointerEvents:'none', gap:4 }}>
                                   <span style={{ fontSize:9, fontWeight:700, color:col.text||'#fff', textShadow:'0 1px 3px rgba(0,0,0,0.8)' }}>
-                                    {hol?'🌴 Holiday':bh?'🔴 Bank Hol':upg?'⬆ Upgrade':col.label}
+                                    {hol ? 'H — Holiday' : bh ? 'BH — Bank Hol' : SHIFT_ABBR[shift] || shift}
                                   </span>
+                                  {upg && !hol && (
+                                    <span style={{ fontSize:8, fontWeight:800, color:'#fecaca', background:'rgba(153,27,27,0.85)', padding:'1px 4px', borderRadius:3, textShadow:'none' }}>UD</span>
+                                  )}
                                 </div>}
                               </>
                             )}
@@ -625,9 +642,9 @@ export default function RotaPage({
                     return (
                       <th key={di} style={{ textAlign:'center', fontSize:10, paddingBottom:6, color:bh?'#fca5a5':isWkd?'rgba(255,255,255,0.35)':'#94a3b8', background:isWkd?'rgba(255,255,255,0.025)':undefined, borderBottom:'1px solid rgba(255,255,255,0.08)', minWidth:68 }}>
                         <div style={{ fontWeight:800, fontSize:11 }}>{DAY_NAMES[dow]}</div>
-                        <div style={{ fontFamily:'DM Mono', fontSize:10, opacity:0.8 }}>{d.getDate()} {MON_SHORT[d.getMonth()]}{bh?' 🔴':''}</div>
+                        <div style={{ fontFamily:'DM Mono', fontSize:10, opacity:0.8 }}>{d.getDate()} {MON_SHORT[d.getMonth()]}</div>
                         <div style={{ fontSize:8, color:'rgba(255,255,255,0.2)', fontFamily:'DM Mono', marginTop:1 }}>
-                          {bh?bh.title?.slice(0,8)||'Bank Hol':isWkd?'19:00–07:00':'10:00 / 19:00→'}
+                          {bh?bh.title?.slice(0,10)||'Bank Hol':isWkd?'19:00–07:00':'09:00 / 19:00→'}
                         </div>
                       </th>
                     );
@@ -655,7 +672,9 @@ export default function RotaPage({
                       const upg  = (upgrades||[]).find(up=>up.date===ds && up.attendees?.includes(u.id));
                       const active=isOnCallActive(u,ds);
                       const status=getOnCallStatus(u,ds);
-                      const s    = hol?'holiday':bh?'bankholiday':upg?'upgrade':(rota[u.id]?.[ds]||'off');
+                      // On-call shift independent of upgrade — upgrade overlays on top
+                      const onCallShift = hol?'holiday':bh?'bankholiday':(rota[u.id]?.[ds]||'off');
+                      const s    = onCallShift; // used for colour/style
                       const col  = active?SHIFT_COLORS[s]||{}:SHIFT_COLORS.inactive;
                       const key  = `${u.id}::${ds}`;
                       const isBulkSel=bulkSelected.has(key);
@@ -667,7 +686,7 @@ export default function RotaPage({
                       const prevHol=holidays.find(h=>h.userId===u.id && prevDs>=h.start && prevDs<=h.end);
                       const prevBh=(UK_BANK_HOLIDAYS||[]).find(b=>b.date===prevDs);
                       const prevUpg=(upgrades||[]).find(up=>up.date===prevDs && up.attendees?.includes(u.id));
-                      const prevS=prevHol?'holiday':prevBh?'bankholiday':prevUpg?'upgrade':(rota[u.id]?.[prevDs]||'off');
+                      const prevS=prevHol?'holiday':prevBh?'bankholiday':(rota[u.id]?.[prevDs]||'off');
                       const hasCarryOver=(prevS==='evening'||prevS==='weekend') && s==='off' && isOnCallActive(u,prevDs);
                       const prevCol=SHIFT_COLORS[prevS]||{};
 
@@ -694,9 +713,12 @@ export default function RotaPage({
                                 <>
                                   <div onClick={()=>canEdit&&active&&toggleBulk(u.id,ds)}
                                     onDoubleClick={()=>canEdit&&active&&setEditCell({userId:u.id,date:ds})}
-                                    title={s!=='off'?`${col.label||s}`:canEdit?'Double-click to assign':''}
-                                    style={{ background:col.bg?col.bg+'55':'transparent', color:col.text||'#475569', border:isBulkSel?'2px solid #3b82f6':col.bg?`1px solid ${col.bg}88`:'1px solid transparent', borderRadius:6, padding:'4px 4px', fontSize:9, fontWeight:600, cursor:canEdit&&active?'pointer':'default', userSelect:'none', lineHeight:1.3, minWidth:30 }}>
-                                    {hol?'🌴':bh?'🔴':upg?'⬆':s==='off'?'—':col.label?.slice(0,4)||s}
+                                    title={s!=='off'?`${col.label||s}${upg?' + Upgrade':''}`:canEdit?'Double-click to assign':''}
+                                    style={{ background:col.bg?col.bg+'55':'transparent', color:col.text||'#475569', border:isBulkSel?'2px solid #3b82f6':col.bg?`1px solid ${col.bg}88`:'1px solid transparent', borderRadius:6, padding:'4px 4px', fontSize:9, fontWeight:800, cursor:canEdit&&active?'pointer':'default', userSelect:'none', lineHeight:1.3, minWidth:30, position:'relative' }}>
+                                    {hol ? 'H' : bh ? 'BH' : (SHIFT_ABBR[s]||'—')}
+                                    {upg && !hol && (
+                                      <span style={{ position:'absolute', top:-4, right:-4, background:'#991b1b', color:'#fecaca', fontSize:7, fontWeight:800, padding:'1px 3px', borderRadius:3, lineHeight:1.2, border:'1px solid rgba(0,0,0,0.3)' }}>UD</span>
+                                    )}
                                     {isOvernight&&<div style={{ fontSize:7, color:col.text, opacity:0.8, marginTop:1 }}>→07:00</div>}
                                   </div>
                                   {hasCarryOver&&(
