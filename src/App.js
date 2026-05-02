@@ -1,6 +1,6 @@
 // src/App.js
 // CloudOps Rota — Full Production Build v2
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 1st May 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 2nd May 2026
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
@@ -7695,8 +7695,44 @@ export default function App() {
 
   // ── Theme CSS injection ─────────────────────────────────────────────────
   const isDark = theme === 'dark';
-  // Only the dynamic :root variable swap stays here — all static CSS is in App.css
-  const themeVars = isDark ? `
+  const isV2   = theme === 'v2';
+
+  // Only :root variable swaps stay in JS — all static CSS is in App.css
+  const themeVars = isV2 ? `
+    :root {
+      /* ── New GUI 2026v2 — Neumorphic Minimalism ── */
+      --bg:              #e8ecf0;
+      --bg-card:         #edf0f4;
+      --bg-card2:        #e2e6ea;
+      --border:          rgba(255,255,255,0.85);
+      --border-inner:    rgba(163,177,198,0.45);
+      --accent:          #5b6af0;
+      --accent-dim:      rgba(91,106,240,0.12);
+      --accent-glow:     rgba(91,106,240,0.28);
+      --accent2:         #06c9a0;
+      --accent3:         #f97316;
+      --text-primary:    #1e2533;
+      --text-secondary:  #4a5568;
+      --text-muted:      #8896a8;
+      --input-bg:        #e8ecf0;
+      --sidebar-bg:      #dde1e7;
+      --sidebar-border:  rgba(163,177,198,0.3);
+      --topbar-bg:       rgba(232,236,240,0.94);
+      --shadow-card:     6px 6px 14px rgba(163,177,198,0.6), -6px -6px 14px rgba(255,255,255,0.9);
+      --shadow-inset:    inset 3px 3px 7px rgba(163,177,198,0.5), inset -3px -3px 7px rgba(255,255,255,0.8);
+      --shadow-btn:      4px 4px 10px rgba(163,177,198,0.5), -3px -3px 8px rgba(255,255,255,0.85);
+      --shadow-btn-pressed: inset 2px 2px 5px rgba(163,177,198,0.5), inset -2px -2px 5px rgba(255,255,255,0.8);
+      --nav-text:        #7a8899;
+      --nav-text-hover:  #4a5568;
+      --nav-text-active: #5b6af0;
+      --nav-active-bg:   rgba(91,106,240,0.1);
+      --nav-section:     #8896a8;
+      --radius-card:     18px;
+      --radius-btn:      12px;
+      --radius-input:    10px;
+      --font-body:       'Plus Jakarta Sans', 'DM Sans', system-ui, sans-serif;
+    }
+  ` : isDark ? `
     :root {
       --bg: #080d17; --bg-card: #0e1525; --bg-card2: #131c2e;
       --border: #1e2d45; --accent: #00c2ff;
@@ -7706,9 +7742,10 @@ export default function App() {
       --topbar-bg: rgba(8,13,23,0.92); --shadow-card: 0 2px 12px rgba(0,0,0,0.4);
       --nav-text: #4a6080; --nav-text-hover: #8fa8c8; --nav-text-active: #00c2ff;
       --nav-active-bg: rgba(0,194,255,0.08); --nav-section: #2a3d55;
+      --radius-card: 10px; --radius-btn: 7px; --radius-input: 6px;
+      --font-body: 'DM Sans', system-ui, sans-serif;
     }
   ` : `
-    body { background: var(--bg); }
     :root {
       --bg: #f1f5f9; --bg-card: #ffffff; --bg-card2: #f8fafc;
       --border: rgba(148,163,184,0.35); --accent: #2563eb;
@@ -7718,11 +7755,13 @@ export default function App() {
       --topbar-bg: rgba(255,255,255,0.97); --shadow-card: 0 2px 12px rgba(0,0,0,0.08);
       --nav-text: #94a3b8; --nav-text-hover: #cbd5e1; --nav-text-active: #f1f5f9;
       --nav-active-bg: rgba(59,130,246,0.2); --nav-section: #475569;
+      --radius-card: 10px; --radius-btn: 7px; --radius-input: 6px;
+      --font-body: 'DM Sans', system-ui, sans-serif;
     }
   `;
 
   const toggleTheme = () => {
-    const next = theme === 'dark' ? 'light' : 'dark';
+    const next = theme === 'dark' ? 'light' : theme === 'light' ? 'v2' : 'dark';
     setTheme(next);
     try { localStorage.setItem('cr_theme', next); } catch (_) {}
   };
@@ -7862,11 +7901,13 @@ export default function App() {
   return (
     <>
       <style>{themeVars}</style>
+      {isV2 && <link rel="preconnect" href="https://fonts.googleapis.com" />}
+      {isV2 && <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet" />}
       {/* Root shell — explicit inline flex, no dependency on App.css */}
-      <div data-theme={theme} style={{
+      <div data-theme={theme} className={isV2 ? 'theme-v2' : ''} style={{
         display: 'flex', flexDirection: 'row', width: '100vw', height: '100vh',
         overflow: 'hidden', background: 'var(--bg)', color: 'var(--text-primary)',
-        fontFamily: "'Inter', system-ui, sans-serif", fontSize: 13,
+        fontFamily: isV2 ? 'var(--font-body)' : "'DM Sans', system-ui, sans-serif", fontSize: 13,
       }}>
 
         {/* ── SIDEBAR ───────────────────────────────────────────────── */}
@@ -8042,9 +8083,13 @@ export default function App() {
                   {manualSyncing ? '⏳' : '☁'}
                 </button>
               )}
-              <button onClick={toggleTheme} title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
-                style={{ padding:'3px 8px', background:'rgba(148,163,184,0.1)', border:'1px solid var(--border)', borderRadius:6, cursor:'pointer', fontSize:13, lineHeight:1 }}>
-                {isDark ? '☀️' : '🌙'}
+              <button onClick={toggleTheme}
+                title={theme === 'dark' ? 'Switch to Light' : theme === 'light' ? 'Switch to New GUI 2026v2' : 'Switch to Dark'}
+                style={{ display:'flex', alignItems:'center', gap:5, padding:'4px 10px', background: isV2 ? 'rgba(91,106,240,0.12)' : 'rgba(148,163,184,0.1)', border: `1px solid ${isV2 ? 'rgba(91,106,240,0.35)' : 'var(--border)'}`, borderRadius: isV2 ? 10 : 6, cursor:'pointer', fontSize:11, fontWeight:600, color: isV2 ? '#5b6af0' : 'var(--text-secondary)', transition:'all 0.2s', boxShadow: isV2 ? 'var(--shadow-btn)' : 'none' }}>
+                {theme === 'dark' ? '☀️' : theme === 'light' ? '✦' : '🌙'}
+                <span style={{ fontSize:10, letterSpacing:'-0.2px' }}>
+                  {theme === 'dark' ? 'Light' : theme === 'light' ? 'New GUI 2026v2' : 'Dark'}
+                </span>
               </button>
               {openInc > 0 && <div style={{ background:'#ef4444', color:'#fff', borderRadius:12, padding:'2px 8px', fontSize:10, fontWeight:600 }}>🚨 {openInc}</div>}
               <Avatar user={user || { avatar:'?', color:'#475569' }} size={26} />
