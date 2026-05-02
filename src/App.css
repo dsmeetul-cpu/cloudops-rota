@@ -1099,3 +1099,274 @@ hr { border: none; border-top: 1px solid var(--border); margin: 12px 0; }
   letter-spacing: 0.5px;
   white-space: nowrap;
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   NEW GUI 2026v2 — Neumorphic Minimalism Theme
+   Toggle: "New GUI 2026v2" button in topbar
+   Palette: Soft grey clay (#e8ecf0) · Indigo accent (#5b6af0) · Teal (#06c9a0)
+   Principles: 60-30-10 colour rule · neumorphic depth · subtle motion · clean hierarchy
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── v2 font ────────────────────────────────────────────────────────────── */
+[data-theme="v2"] body,
+.theme-v2 body,
+:root:has([data-theme="v2"]) body { font-family: var(--font-body); }
+
+/* ── v2 base ────────────────────────────────────────────────────────────── */
+.app.theme-v2,
+body.theme-v2 {
+  font-family: var(--font-body);
+  background: var(--bg);
+  color: var(--text-primary);
+}
+
+/* ── v2 card — neumorphic lift ──────────────────────────────────────────── */
+.theme-v2 .card,
+.theme-v2 .stat-card,
+.theme-v2 .card-sm {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  padding: 20px 22px;
+  transition: box-shadow 0.2s ease, transform 0.15s ease;
+}
+.theme-v2 .card:hover,
+.theme-v2 .stat-card:hover {
+  box-shadow: 8px 8px 18px rgba(163,177,198,0.65), -8px -8px 18px rgba(255,255,255,0.95);
+  transform: translateY(-1px);
+}
+
+/* ── v2 buttons ─────────────────────────────────────────────────────────── */
+.theme-v2 .btn {
+  border-radius: var(--radius-btn);
+  border: none;
+  box-shadow: var(--shadow-btn);
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  transition: box-shadow 0.15s, transform 0.1s;
+}
+.theme-v2 .btn:hover {
+  box-shadow: 5px 5px 12px rgba(163,177,198,0.6), -4px -4px 10px rgba(255,255,255,0.9);
+  transform: translateY(-1px);
+}
+.theme-v2 .btn:active {
+  box-shadow: var(--shadow-btn-pressed);
+  transform: translateY(0);
+}
+.theme-v2 .btn-primary {
+  background: linear-gradient(135deg, #5b6af0, #7c88f4);
+  color: #fff;
+  box-shadow: 3px 3px 10px rgba(91,106,240,0.4), -2px -2px 6px rgba(255,255,255,0.6);
+}
+.theme-v2 .btn-primary:hover {
+  box-shadow: 4px 4px 14px rgba(91,106,240,0.5), -3px -3px 8px rgba(255,255,255,0.7);
+}
+.theme-v2 .btn-secondary {
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  box-shadow: var(--shadow-btn);
+}
+.theme-v2 .btn-danger {
+  background: linear-gradient(135deg, #ef4444, #f87171);
+  color: #fff;
+  box-shadow: 3px 3px 10px rgba(239,68,68,0.35), -2px -2px 6px rgba(255,255,255,0.6);
+}
+
+/* ── v2 inputs — inset neumorphism ──────────────────────────────────────── */
+.theme-v2 .input,
+.theme-v2 .select,
+.theme-v2 input[type=text],
+.theme-v2 input[type=password],
+.theme-v2 input[type=email],
+.theme-v2 input[type=date],
+.theme-v2 input[type=number],
+.theme-v2 input[type=time],
+.theme-v2 input[type=month],
+.theme-v2 select,
+.theme-v2 textarea {
+  background: var(--bg);
+  border: 1px solid rgba(255,255,255,0.7);
+  border-radius: var(--radius-input);
+  box-shadow: var(--shadow-inset);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  padding: 8px 12px;
+  transition: box-shadow 0.2s, border-color 0.2s;
+}
+.theme-v2 .input:focus,
+.theme-v2 .select:focus,
+.theme-v2 input:focus,
+.theme-v2 select:focus,
+.theme-v2 textarea:focus {
+  outline: none;
+  border-color: rgba(91,106,240,0.6);
+  box-shadow: var(--shadow-inset), 0 0 0 3px rgba(91,106,240,0.1);
+}
+
+/* ── v2 sidebar ─────────────────────────────────────────────────────────── */
+.theme-v2 .sidebar {
+  background: var(--sidebar-bg);
+  box-shadow: 4px 0 20px rgba(163,177,198,0.25);
+  border-right: none;
+}
+.theme-v2 .nav-item {
+  border-radius: 12px;
+  margin: 1px 6px;
+  font-weight: 500;
+  color: var(--nav-text);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.theme-v2 .nav-item:hover {
+  background: rgba(91,106,240,0.08);
+  color: var(--nav-text-hover);
+  transform: translateX(2px);
+}
+.theme-v2 .nav-item.active {
+  background: linear-gradient(135deg, rgba(91,106,240,0.15), rgba(91,106,240,0.08));
+  color: var(--accent);
+  font-weight: 700;
+  box-shadow: inset 2px 2px 5px rgba(163,177,198,0.2), inset -2px -2px 5px rgba(255,255,255,0.6);
+}
+
+/* ── v2 topbar ──────────────────────────────────────────────────────────── */
+.theme-v2 .topbar {
+  background: rgba(232,236,240,0.92);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid rgba(255,255,255,0.7);
+  box-shadow: 0 2px 12px rgba(163,177,198,0.2);
+}
+
+/* ── v2 tables ──────────────────────────────────────────────────────────── */
+.theme-v2 table {
+  border-spacing: 0 4px;
+  border-collapse: separate;
+}
+.theme-v2 thead tr {
+  background: transparent;
+}
+.theme-v2 th {
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  font-weight: 700;
+  border-bottom: 2px solid var(--border-inner);
+  padding: 6px 14px;
+}
+.theme-v2 tbody tr {
+  background: var(--bg-card);
+  box-shadow: var(--shadow-card);
+  border-radius: 12px;
+  transition: box-shadow 0.15s, transform 0.1s;
+}
+.theme-v2 tbody tr:hover {
+  box-shadow: 6px 6px 14px rgba(163,177,198,0.55), -4px -4px 10px rgba(255,255,255,0.85);
+  transform: translateY(-1px);
+}
+.theme-v2 td {
+  border-bottom: none;
+  padding: 12px 14px;
+}
+.theme-v2 td:first-child { border-radius: 12px 0 0 12px; }
+.theme-v2 td:last-child  { border-radius: 0 12px 12px 0; }
+
+/* ── v2 modals ──────────────────────────────────────────────────────────── */
+.theme-v2 .modal,
+.theme-v2 [style*="background:#0f172a"],
+.theme-v2 [style*="background: #0f172a"] {
+  background: var(--bg-card) !important;
+  border-radius: 20px !important;
+  box-shadow: 10px 10px 30px rgba(163,177,198,0.6), -10px -10px 30px rgba(255,255,255,0.95) !important;
+  border: 1px solid rgba(255,255,255,0.85) !important;
+}
+
+/* ── v2 stat cards — coloured accent strip ──────────────────────────────── */
+.theme-v2 .stat-card {
+  border-top: 3px solid var(--accent);
+}
+
+/* ── v2 badges / tags ───────────────────────────────────────────────────── */
+.theme-v2 .badge {
+  border-radius: 8px;
+  box-shadow: 2px 2px 5px rgba(163,177,198,0.4), -1px -1px 3px rgba(255,255,255,0.8);
+}
+
+/* ── v2 section titles ──────────────────────────────────────────────────── */
+.theme-v2 .section-title {
+  color: var(--text-muted);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 1.2px;
+}
+
+/* ── v2 scrollbar ───────────────────────────────────────────────────────── */
+.theme-v2 ::-webkit-scrollbar-thumb {
+  background: rgba(163,177,198,0.5);
+}
+.theme-v2 ::-webkit-scrollbar-thumb:hover {
+  background: rgba(91,106,240,0.4);
+}
+
+/* ── v2 tab bar ─────────────────────────────────────────────────────────── */
+.theme-v2 .tab-bar,
+.theme-v2 .payroll-tab-bar {
+  background: var(--bg);
+  box-shadow: var(--shadow-inset);
+  border: 1px solid rgba(255,255,255,0.7);
+  border-radius: 14px;
+  padding: 5px;
+}
+.theme-v2 .tab,
+.theme-v2 .payroll-tab {
+  border-radius: 10px;
+  font-weight: 600;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.theme-v2 .tab.active,
+.theme-v2 .payroll-tab.active {
+  background: var(--bg-card);
+  box-shadow: var(--shadow-btn);
+  color: var(--accent);
+  border: none;
+}
+
+/* ── v2 dot-live pulse ──────────────────────────────────────────────────── */
+.theme-v2 .dot-live {
+  background: #06c9a0;
+  box-shadow: 0 0 8px rgba(6,201,160,0.6);
+}
+
+/* ── v2 micro-animation utilities ───────────────────────────────────────── */
+.theme-v2 .card,
+.theme-v2 .btn,
+.theme-v2 .nav-item,
+.theme-v2 .tab,
+.theme-v2 .payroll-tab {
+  will-change: transform;
+}
+
+/* ── v2 card-title ──────────────────────────────────────────────────────── */
+.theme-v2 .card-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: -0.3px;
+}
+
+/* ── v2 alert ───────────────────────────────────────────────────────────── */
+.theme-v2 .alert,
+.theme-v2 .alert-warning,
+.theme-v2 .alert-danger,
+.theme-v2 .alert-success,
+.theme-v2 .alert-info {
+  border-radius: 14px;
+  box-shadow: 3px 3px 8px rgba(163,177,198,0.35), -2px -2px 6px rgba(255,255,255,0.7);
+  border: 1px solid rgba(255,255,255,0.7);
+}
+
+/* ── v2 grid spacing ─────────────────────────────────────────────────────── */
+.theme-v2 .grid-2 { gap: 18px; }
+.theme-v2 .grid-3 { gap: 18px; }
+.theme-v2 .grid-4 { gap: 18px; }
