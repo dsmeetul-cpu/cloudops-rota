@@ -1,6 +1,6 @@
 // src/App.js
 // CloudOps Rota — Full Production Build v2
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 2nd May 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 26th April 2026
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
@@ -668,7 +668,7 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDri
       if (id === 'MBA47') { setPending2FA(id); setShow2FA(true); }
       else onLogin(id);
     } else {
-      setErr('Incorrect password. Default is your username in lowercase (e.g. mva28).');
+      setErr('Incorrect password. Please try again or use Forgot Password to reset.');
     }
   };
 
@@ -682,7 +682,7 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDri
     if (!users.find(u => u.id === id)) { setForgotMsg('Username not found. Contact your manager.'); return; }
     const reg = updatePasswordInRegistry(id, id.toLowerCase());
     if (driveToken) syncRegistryToDrive(driveToken, reg, users).catch(() => {});
-    setForgotMsg('Password reset. Sign in with your username in lowercase.');
+    setForgotMsg('Password has been reset. Please contact your manager for your new password.');
   };
 
   if (showForgot) return (
@@ -694,8 +694,8 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDri
           <div className="login-sub">CloudOps Rota</div>
         </div>
         {forgotMsg
-          ? <Alert type="info">✅ {forgotMsg}</Alert>
-          : <Alert type="info">ℹ Your password resets to your username in lowercase.</Alert>}
+          ? <Alert type="success">✅ {forgotMsg}</Alert>
+          : <Alert type="info">ℹ Enter your username and your password will be reset. Contact your manager to receive the new one.</Alert>}
         <FormGroup label="Your Username">
           <input className="input" placeholder="e.g. MVA28" value={forgotUid}
             onChange={e => setForgotUid(e.target.value.toUpperCase())}
@@ -784,10 +784,6 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDri
                 <span style={{ fontSize: 11, color: '#6ee7b7' }}>Team data loaded — ready to sign in</span>
               </div>
             )}
-            <div style={{ marginTop: 14, fontSize: 11, color: 'var(--text-muted)', textAlign: 'center', lineHeight: 1.7 }}>
-              Default password is your username in lowercase.<br />
-              e.g. <strong style={{ color: 'var(--text-primary)' }}>MVA28</strong> → <strong style={{ color: 'var(--text-primary)' }}>mva28</strong>
-            </div>
           </>
         )}
       </div>
