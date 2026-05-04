@@ -1,6 +1,6 @@
 // src/App.js
 // CloudOps Rota — Full Production Build v2
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 03rd May 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 04th May 2026
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
@@ -18,6 +18,8 @@ import TimeKeeping from './TimeKeeping';
 import TOIL from './TOIL';
 import RotaPage from './Rota';
 import SettingsPage from './Settings';
+import Announcements, { AnnouncementBanners } from './Announcements';
+import ShiftReminders, { ShiftReminderBanner } from './ShiftReminders';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Google Drive auto-connects on page load using the OAuth Client ID below.
@@ -824,7 +826,9 @@ const NAV = [
     { id: 'docs',      icon: '📁', label: 'Documents'       },
   ]},
   { section: 'Communication', items: [
-    { id: 'whatsapp',  icon: '💬', label: 'Team Chat'      },
+    { id: 'whatsapp',       icon: '💬', label: 'Team Chat'         },
+    { id: 'announcements',  icon: '📢', label: 'Announcements'     },
+    { id: 'shiftreminders', icon: '🔔', label: 'Shift Reminders'   },
   ]},
   { section: 'Reporting', items: [
     { id: 'insights',  icon: '💡', label: 'Insights',       managerOnly: true },
@@ -7222,6 +7226,11 @@ export default function App() {
   const [logbook, setLogbook]         = useState([]);
   const [documents, setDocuments]     = useState([]);
   const [timekeeping, setTimekeeping] = useState({});
+  const [announcements, setAnnouncements] = useState([]);
+  const [handoverNotes, setHandoverNotes] = useState([]);
+  const [dismissedReminders, setDismissedReminders] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('cr_dismissed_reminders') || '[]'); } catch (_) { return []; }
+  });
   const [obsidianNotes, setObsidianNotes] = useState([]);
   const [whatsappChats, setWhatsappChats] = useState([]);
   const [secureLinks, setSecureLinks] = useState([]);
@@ -7367,6 +7376,8 @@ export default function App() {
       if (data.logbook      != null) setLogbook(data.logbook);
       if (data.documents    != null) setDocuments(data.documents);
       if (data.timekeeping  != null) setTimekeeping(data.timekeeping);
+      if (data.announcements!= null) setAnnouncements(data.announcements);
+      if (data.handoverNotes!= null) setHandoverNotes(data.handoverNotes);
       if (data.obsidianNotes   != null) {
         // Guard: recover from old engineer-keyed bug where it was saved as {uid:[…]}
         const rawNotes = data.obsidianNotes;
@@ -7481,6 +7492,11 @@ export default function App() {
   useEffect(() => { save('logbook', logbook); },           [logbook]);
   useEffect(() => { save('documents', documents); },       [documents]);
   useEffect(() => { save('timekeeping', timekeeping); },   [timekeeping]);
+  useEffect(() => { save('announcements', announcements); }, [announcements]);
+  useEffect(() => { save('handoverNotes', handoverNotes); }, [handoverNotes]);
+  useEffect(() => {
+    try { localStorage.setItem('cr_dismissed_reminders', JSON.stringify(dismissedReminders)); } catch (_) {}
+  }, [dismissedReminders]);
   useEffect(() => { save('obsidianNotes', obsidianNotes); },[obsidianNotes]);
   useEffect(() => { save('whatsappChats', whatsappChats); },[whatsappChats]);
   useEffect(() => { save('permissions',   permissions);   },[permissions]);
@@ -7659,6 +7675,8 @@ export default function App() {
         if (data.logbook != null) setLogbook(data.logbook);
         if (data.documents != null) setDocuments(data.documents);
         if (data.timekeeping != null) setTimekeeping(data.timekeeping);
+        if (data.announcements != null) setAnnouncements(data.announcements);
+        if (data.handoverNotes != null) setHandoverNotes(data.handoverNotes);
         if (data.obsidianNotes != null) setObsidianNotes(data.obsidianNotes);
         if (data.whatsappChats != null) { const wc = data.whatsappChats; setWhatsappChats(wc?.chats ?? (Array.isArray(wc) ? wc : [])); }
         if (data.permissions   != null) setPermissions(data.permissions);
@@ -7834,6 +7852,8 @@ export default function App() {
       case 'contacts':   return <Contacts {...props} />;
       case 'notes':      return <Notes {...props} />;
       case 'docs':       return <Documents {...props} />;
+      case 'announcements':  return <Announcements announcements={announcements} setAnnouncements={setAnnouncements} currentUser={currentUser} isManager={isManager} users={users} />;
+      case 'shiftreminders': return <ShiftReminders rota={rota} users={users} incidents={incidents} currentUser={currentUser} isManager={isManager} handoverNotes={handoverNotes} setHandoverNotes={setHandoverNotes} />;
       case 'whatsapp':   return <WhatsAppChat {...props} />;
       case 'insights':   return <Insights {...props} />;
       case 'capacity':   return <Capacity {...props} incidents={incidents} />;
@@ -7960,7 +7980,15 @@ export default function App() {
                 }
                 {sec.items.filter(i => !i.managerOnly || isManager).map(item => {
                   const isActive = page === item.id;
-                  const badge = (item.badge && openInc > 0) ? openInc : (item.id === 'swaps' && pendingSwaps > 0) ? pendingSwaps : 0;
+                  const annUnread = item.id === 'announcements'
+                    ? (announcements || []).filter(a => {
+                        const today = new Date().toISOString().slice(0,10);
+                        if (a.expiresAt && today > a.expiresAt) return false;
+                        if (a.targetRole === 'manager') return false;
+                        return !(a.readBy || []).includes(currentUser);
+                      }).length
+                    : 0;
+                  const badge = (item.badge && openInc > 0) ? openInc : (item.id === 'swaps' && pendingSwaps > 0) ? pendingSwaps : annUnread > 0 ? annUnread : 0;
                   return (
                     <div key={item.id}
                       onClick={() => setPage(item.id)}
@@ -8105,6 +8133,19 @@ export default function App() {
 
           {/* Page content */}
           <div style={{ flex:1, overflowY:'auto', padding:'16px', background:'var(--bg)' }}>
+            {/* ── Global banners: announcements + shift reminders ── */}
+            <AnnouncementBanners
+              announcements={announcements}
+              currentUser={currentUser}
+              onDismiss={(id) => setAnnouncements(prev => prev.map(a => a.id===id ? {...a, readBy:[...(a.readBy||[]),currentUser]} : a))}
+            />
+            <ShiftReminderBanner
+              rota={rota}
+              currentUser={currentUser}
+              incidents={incidents}
+              dismissed={dismissedReminders}
+              onDismiss={(key) => setDismissedReminders(prev => [...prev, key])}
+            />
             {renderPage()}
           </div>
         </div>
