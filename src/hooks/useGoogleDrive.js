@@ -27,6 +27,8 @@ const FILES = {
   // ── Permissions (added) ──────────────────────────────────────────────────
   permissions:   'permissions.json',
   timekeeping:   'timekeeping.json',
+  announcements: 'announcements.json',
+  handoverNotes: 'handoverNotes.json',
 };
 
 let folderId = null;
