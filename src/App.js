@@ -1,6 +1,6 @@
 // src/App.js
 // CloudOps Rota — Full Production Build v2
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 04th May 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 5th May 2026
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
@@ -20,6 +20,7 @@ import RotaPage from './Rota';
 import SettingsPage from './Settings';
 import Announcements, { AnnouncementBanners } from './Announcements';
 import ShiftReminders, { ShiftReminderBanner } from './ShiftReminders';
+import CalendarPage from './Calendar';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Google Drive auto-connects on page load using the OAuth Client ID below.
@@ -1481,69 +1482,7 @@ function MyShift({ currentUser, rota, users, swapRequests, setSwapRequests }) {
   );
 }
 
-// ── Calendar ───────────────────────────────────────────────────────────────
-function CalendarView({ users, rota, holidays, upgrades, absences }) {
-  const [cur, setCur] = useState(new Date());
-  const yr = cur.getFullYear(), mo = cur.getMonth();
-  const first    = new Date(yr, mo, 1);
-  const startDow = (first.getDay() + 6) % 7;
-  const daysInMo = new Date(yr, mo + 1, 0).getDate();
-  const cells    = [...Array(startDow).fill(null), ...Array.from({ length: daysInMo }, (_, i) => i + 1)];
-  const MONTHS   = ['January','February','March','April','May','June','July','August','September','October','November','December'];
-
-  return (
-    <div>
-      <PageHeader title="Calendar" sub="Rota, upgrades, holidays &amp; absences"
-        actions={<>
-          <button className="btn btn-secondary btn-sm" onClick={() => setCur(new Date(yr, mo - 1, 1))}>← Prev</button>
-          <div className="month-label">{MONTHS[mo]} {yr}</div>
-          <button className="btn btn-secondary btn-sm" onClick={() => setCur(new Date())}>Today</button>
-          <button className="btn btn-secondary btn-sm" onClick={() => setCur(new Date(yr, mo + 1, 1))}>Next →</button>
-        </>} />
-      <ShiftLegend />
-      {/* Extra legend for holidays/absences */}
-      <div style={{ display:'flex', gap:12, marginBottom:10, flexWrap:'wrap', fontSize:11, color:'var(--text-muted)' }}>
-        <span><span style={{ background:'#16534233', border:'1px solid #166534', display:'inline-block', width:10, height:10, borderRadius:2, marginRight:4 }} />Holiday</span>
-        <span><span style={{ background:'#dc267733', border:'1px solid #dc2677', display:'inline-block', width:10, height:10, borderRadius:2, marginRight:4 }} />Sick/Absence</span>
-      </div>
-      <div className="cal-grid">
-        {['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(d => <div key={d} className="cal-header">{d}</div>)}
-        {cells.map((day, i) => {
-          if (!day) return <div key={'e' + i} />;
-          const ds  = `${yr}-${String(mo + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-          const bh  = UK_BANK_HOLIDAYS.find(b => b.date === ds);
-          const upgs = upgrades.filter(u => u.date === ds);
-          const oncalls = users.filter(u => rota[u.id]?.[ds] && rota[u.id][ds] !== 'off');
-          const holsToday = (holidays||[]).filter(h => ds >= h.start && ds <= (h.end||h.start));
-          const absToday  = (absences||[]).filter(a => ds >= a.start && ds <= (a.end||a.start));
-          const isToday = ds === new Date().toISOString().slice(0, 10);
-          return (
-            <div key={ds} className={`cal-day${isToday ? ' today' : ''}`}>
-              <div className="cal-day-num" style={{ color: bh ? '#fca5a5' : undefined }}>{day}{bh && ' 🔴'}</div>
-              {bh && <div className="cal-event ev-red" style={{ fontSize:9 }}>{bh.name}</div>}
-              {upgs.map(u => <div key={u.id} className="cal-event" style={{ background:'#991b1b55', color:'#fecaca', border:'1px solid #991b1b88', fontSize:9, padding:'1px 3px', borderRadius:3 }}>⬆ {u.name.slice(0,12)}</div>)}
-              {holsToday.map(h => {
-                const u = users.find(x => x.id === h.userId);
-                return <div key={h.id} style={{ background:'#16534233', color:'#6ee7b7', border:'1px solid #166534', fontSize:9, padding:'1px 3px', borderRadius:3, marginTop:1 }}>🌴 {u?.name?.split(' ')[0]||h.userId}</div>;
-              })}
-              {absToday.map(a => {
-                const u = users.find(x => x.id === a.userId);
-                return <div key={a.id} style={{ background:'#dc267733', color:'#f9a8d4', border:'1px solid #dc2677', fontSize:9, padding:'1px 3px', borderRadius:3, marginTop:1 }}>🏥 {u?.name?.split(' ')[0]||a.userId}</div>;
-              })}
-              {oncalls.slice(0, 2).map(u => {
-                const s = rota[u.id][ds];
-                const c = SHIFT_COLORS[s] || {};
-                return <div key={u.id} style={{ background:(c.bg||'#1e40af')+'55', color:c.text||'#bfdbfe', border:`1px solid ${(c.bg||'#1e40af')}88`, fontSize:9, padding:'1px 3px', borderRadius:3, marginTop:1 }}>{u.name.split(' ')[0]}</div>;
-              })}
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-// RotaPage component moved to src/Rota.js — imported at top of file
+// CalendarView moved to src/Calendar.js
 
 // ── Incident Tabs (Issue | Actions | Solution) ────────────────────────────
 function IncidentTabs({ form, setForm }) {
@@ -7228,6 +7167,7 @@ export default function App() {
   const [timekeeping, setTimekeeping] = useState({});
   const [announcements, setAnnouncements] = useState([]);
   const [handoverNotes, setHandoverNotes] = useState([]);
+  const [calendarEvents, setCalendarEvents] = useState([]);
   const [dismissedReminders, setDismissedReminders] = useState(() => {
     try { return JSON.parse(localStorage.getItem('cr_dismissed_reminders') || '[]'); } catch (_) { return []; }
   });
@@ -7378,6 +7318,7 @@ export default function App() {
       if (data.timekeeping  != null) setTimekeeping(data.timekeeping);
       if (data.announcements!= null) setAnnouncements(data.announcements);
       if (data.handoverNotes!= null) setHandoverNotes(data.handoverNotes);
+      if (data.calendarEvents!= null) setCalendarEvents(data.calendarEvents);
       if (data.obsidianNotes   != null) {
         // Guard: recover from old engineer-keyed bug where it was saved as {uid:[…]}
         const rawNotes = data.obsidianNotes;
@@ -7494,6 +7435,7 @@ export default function App() {
   useEffect(() => { save('timekeeping', timekeeping); },   [timekeeping]);
   useEffect(() => { save('announcements', announcements); }, [announcements]);
   useEffect(() => { save('handoverNotes', handoverNotes); }, [handoverNotes]);
+  useEffect(() => { save('calendarEvents', calendarEvents); }, [calendarEvents]);
   useEffect(() => {
     try { localStorage.setItem('cr_dismissed_reminders', JSON.stringify(dismissedReminders)); } catch (_) {}
   }, [dismissedReminders]);
@@ -7677,6 +7619,7 @@ export default function App() {
         if (data.timekeeping != null) setTimekeeping(data.timekeeping);
         if (data.announcements != null) setAnnouncements(data.announcements);
         if (data.handoverNotes != null) setHandoverNotes(data.handoverNotes);
+        if (data.calendarEvents!= null) setCalendarEvents(data.calendarEvents);
         if (data.obsidianNotes != null) setObsidianNotes(data.obsidianNotes);
         if (data.whatsappChats != null) { const wc = data.whatsappChats; setWhatsappChats(wc?.chats ?? (Array.isArray(wc) ? wc : [])); }
         if (data.permissions   != null) setPermissions(data.permissions);
@@ -7834,7 +7777,7 @@ export default function App() {
       case 'dashboard':  return isManager ? <Dashboard {...props} /> : <Alert type="warning">⚠ Dashboard restricted to managers.</Alert>;
       case 'oncall':     return <OnCall {...props} />;
       case 'myshift':    return <MyShift {...props} />;
-      case 'calendar':   return <CalendarView {...props} absences={absences} />;
+      case 'calendar':   return <CalendarPage users={users} rota={rota} holidays={holidays} upgrades={upgrades} absences={absences} incidents={incidents} UK_BANK_HOLIDAYS={UK_BANK_HOLIDAYS} currentUser={currentUser} isManager={isManager} calendarEvents={calendarEvents} setCalendarEvents={setCalendarEvents} />;
       case 'rota':       return <RotaPage users={users} rota={rota} setRota={setRota} holidays={holidays} upgrades={upgrades} swapRequests={swapRequests} setSwapRequests={setSwapRequests} isManager={isManager} UK_BANK_HOLIDAYS={UK_BANK_HOLIDAYS} generateRota={generateRota} generateICalFeed={generateICalFeed} downloadIcal={downloadIcal} />;
       case 'incidents':  return <Incidents {...props} timesheets={timesheets} setTimesheets={setTimesheets} />;
       case 'timesheets': return <Timesheets {...props} />;
