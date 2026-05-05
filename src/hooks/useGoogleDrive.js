@@ -29,6 +29,7 @@ const FILES = {
   timekeeping:   'timekeeping.json',
   announcements: 'announcements.json',
   handoverNotes: 'handoverNotes.json',
+  calendarEvents:'calendarEvents.json',
 };
 
 let folderId = null;
