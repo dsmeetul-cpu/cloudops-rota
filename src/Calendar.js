@@ -1,4 +1,4 @@
-// src/Calendar.js
+// src/Calendar.js 06th May 2026
 // CloudOps Rota — Outlook-style Calendar
 // Views: Month · Week · Day · Agenda
 // Named calendars: create, colour-code, share or keep private
