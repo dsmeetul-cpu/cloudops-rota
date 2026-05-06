@@ -1,6 +1,6 @@
 // src/App.js
 // CloudOps Rota — Full Production Build v2
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 05th May 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 06th May 2026
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
@@ -7168,6 +7168,7 @@ export default function App() {
   const [announcements, setAnnouncements] = useState([]);
   const [handoverNotes, setHandoverNotes] = useState([]);
   const [calendarEvents, setCalendarEvents] = useState([]);
+  const [userCalendars,  setUserCalendars]  = useState([]);
   const [dismissedReminders, setDismissedReminders] = useState(() => {
     try { return JSON.parse(localStorage.getItem('cr_dismissed_reminders') || '[]'); } catch (_) { return []; }
   });
@@ -7318,7 +7319,8 @@ export default function App() {
       if (data.timekeeping  != null) setTimekeeping(data.timekeeping);
       if (data.announcements!= null) setAnnouncements(data.announcements);
       if (data.handoverNotes!= null) setHandoverNotes(data.handoverNotes);
-      if (data.calendarEvents!= null) setCalendarEvents(data.calendarEvents);
+      if (data.calendarEvents != null) setCalendarEvents(data.calendarEvents);
+      if (data.userCalendars  != null) setUserCalendars(data.userCalendars);
       if (data.obsidianNotes   != null) {
         // Guard: recover from old engineer-keyed bug where it was saved as {uid:[…]}
         const rawNotes = data.obsidianNotes;
@@ -7436,6 +7438,7 @@ export default function App() {
   useEffect(() => { save('announcements', announcements); }, [announcements]);
   useEffect(() => { save('handoverNotes', handoverNotes); }, [handoverNotes]);
   useEffect(() => { save('calendarEvents', calendarEvents); }, [calendarEvents]);
+  useEffect(() => { save('userCalendars',  userCalendars);  }, [userCalendars]);
   useEffect(() => {
     try { localStorage.setItem('cr_dismissed_reminders', JSON.stringify(dismissedReminders)); } catch (_) {}
   }, [dismissedReminders]);
@@ -7619,7 +7622,8 @@ export default function App() {
         if (data.timekeeping != null) setTimekeeping(data.timekeeping);
         if (data.announcements != null) setAnnouncements(data.announcements);
         if (data.handoverNotes != null) setHandoverNotes(data.handoverNotes);
-        if (data.calendarEvents!= null) setCalendarEvents(data.calendarEvents);
+        if (data.calendarEvents != null) setCalendarEvents(data.calendarEvents);
+      if (data.userCalendars  != null) setUserCalendars(data.userCalendars);
         if (data.obsidianNotes != null) setObsidianNotes(data.obsidianNotes);
         if (data.whatsappChats != null) { const wc = data.whatsappChats; setWhatsappChats(wc?.chats ?? (Array.isArray(wc) ? wc : [])); }
         if (data.permissions   != null) setPermissions(data.permissions);
@@ -7777,7 +7781,7 @@ export default function App() {
       case 'dashboard':  return isManager ? <Dashboard {...props} /> : <Alert type="warning">⚠ Dashboard restricted to managers.</Alert>;
       case 'oncall':     return <OnCall {...props} />;
       case 'myshift':    return <MyShift {...props} />;
-      case 'calendar':   return <CalendarPage users={users} rota={rota} holidays={holidays} upgrades={upgrades} absences={absences} incidents={incidents} UK_BANK_HOLIDAYS={UK_BANK_HOLIDAYS} currentUser={currentUser} isManager={isManager} calendarEvents={calendarEvents} setCalendarEvents={setCalendarEvents} />;
+      case 'calendar':   return <CalendarPage users={users} rota={rota} holidays={holidays} upgrades={upgrades} absences={absences} incidents={incidents} UK_BANK_HOLIDAYS={UK_BANK_HOLIDAYS} currentUser={currentUser} isManager={isManager} calendarEvents={calendarEvents} setCalendarEvents={setCalendarEvents} userCalendars={userCalendars} setUserCalendars={setUserCalendars} />;
       case 'rota':       return <RotaPage users={users} rota={rota} setRota={setRota} holidays={holidays} upgrades={upgrades} swapRequests={swapRequests} setSwapRequests={setSwapRequests} isManager={isManager} UK_BANK_HOLIDAYS={UK_BANK_HOLIDAYS} generateRota={generateRota} generateICalFeed={generateICalFeed} downloadIcal={downloadIcal} />;
       case 'incidents':  return <Incidents {...props} timesheets={timesheets} setTimesheets={setTimesheets} />;
       case 'timesheets': return <Timesheets {...props} />;
