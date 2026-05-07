@@ -1,6 +1,6 @@
 // src/App.js
 // CloudOps Rota — Full Production Build v2
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 6th May 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 07th May 2026
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
@@ -6230,85 +6230,63 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
       }
 
       // ─────────────────────────────────────────────────────────────────────
-      // SHEET 4 — Standby & Worked Hours Pay Breakdown
-      // Standby WD + Standby WE + Bank Hol = Standby Shifts @ £5/hr  <1164>
-      // Incidents + Overtime                = Worked on Standby @ 1.5x <2011>
+      // SHEET 4 — Standby & Worked Hours for Payroll
+      // Standby WD + Standby WE + Bank Hol = Hours on Standby Shifts @ £5/hr <1164>
+      // Incidents + Overtime                = Hours Worked on Standby @ 1.5× <2011>
       // ─────────────────────────────────────────────────────────────────────
-      const STANDBY_RATE = 5;    // £5 per standby hour (pay code 1164)
+      const STANDBY_RATE = 5;    // £5 per standby hour  (pay code 1164)
       const WORKED_MULT  = 1.5;  // 1.5× basic hourly rate (pay code 2011)
 
       const s4Hdrs = [
-        'Employment ID', 'Trigram', 'Full Name', 'Period',
-        'Standby WD (h)', 'Standby WE (h)', 'Bank Hol (h)',
-        'Hours on Standby Shifts @ £5/hr <1164>',
-        'Standby Shift Pay (£)',
-        'Incident Hrs', 'Overtime Hrs',
-        'Hours Worked while on Standby Shift @ 1.5× Basic <2011>',
-        'Basic Hourly Rate (£)', '1.5× Rate (£)', 'Worked Shift Pay (£)',
-        'Total Additional Pay (£)',
+        'Employment ID',
+        'Trigram',
+        'Full Name',
+        'Period',
+        'Hours on Standby Shifts @ £5 per hour <1164>',
+        'Hours Worked while on Standby Shift @ 1.5 times Basic hourly rate <2011>',
       ];
 
       const s4Rows = safeUsers.map(u => {
         const { oc, incHrs, upgradeHrs, bankHolHrs, overtimeHrs } = getUserData(u, exportStart, exportEnd);
-        const p = (payconfig || {})[u.id] || {};
-        const basicHourly = p.rate || 0;
         const standbyTotal = (oc.standbyWD || 0) + (oc.standbyWE || 0) + (bankHolHrs || 0);
         const workedTotal  = (incHrs || 0) + (overtimeHrs || 0);
-        const standbyPay   = standbyTotal * STANDBY_RATE;
-        const workedPay    = workedTotal  * basicHourly * WORKED_MULT;
         return [
-          u.employment_id || '—', u.id, u.name, rangeLabel,
-          oc.standbyWD || 0, oc.standbyWE || 0, bankHolHrs || 0,
+          u.employment_id || '—',
+          u.id,
+          u.name,
+          rangeLabel,
           standbyTotal,
-          +standbyPay.toFixed(2),
-          incHrs || 0, overtimeHrs || 0,
           workedTotal,
-          +basicHourly.toFixed(2),
-          +(basicHourly * WORKED_MULT).toFixed(2),
-          +workedPay.toFixed(2),
-          +(standbyPay + workedPay).toFixed(2),
         ];
       });
 
       // Totals row
       const s4TotRow = ['', 'TOTAL', `${safeUsers.length} engineers`, rangeLabel,
-        ...Array.from({length:12}, (_,i) => {
-          const col = 4 + i;
-          return s4Rows.reduce((a,r) => a + (parseFloat(r[col]) || 0), 0).toFixed(2);
-        }),
+        +s4Rows.reduce((a,r) => a + (parseFloat(r[4]) || 0), 0).toFixed(1),
+        +s4Rows.reduce((a,r) => a + (parseFloat(r[5]) || 0), 0).toFixed(1),
       ];
 
       const ws4Data = [s4Hdrs, ...s4Rows, s4TotRow];
-      const ws4 = XLSX.utils.aoa_to_sheet(ws4Data);
-      ws4['!cols'] = [14,8,22,18,13,13,12,32,16,13,13,36,16,14,16,18].map(w=>({wch:w}));
-      ws4['!freeze'] = { xSplit: 3, ySplit: 1 };
+      const ws4     = XLSX.utils.aoa_to_sheet(ws4Data);
+      ws4['!cols']  = [14, 8, 22, 20, 46, 52].map(w => ({wch:w}));
+      ws4['!freeze']= { xSplit: 3, ySplit: 1 };
 
       const H4 = { font:{bold:true,color:{rgb:'FFFFFF'}}, fill:{fgColor:{rgb:'0F1629'}}, alignment:{horizontal:'center',wrapText:true}, border:{bottom:{style:'medium',color:{rgb:'10B981'}}} };
       styleRow(ws4, 0, s4Hdrs.length, H4);
 
-      // Column group headers: Standby section (cols 7) = green, Worked section (col 11) = amber, totals = teal
       const standbyColour = { fill:{fgColor:{rgb:'064E3B'}}, font:{color:{rgb:'6EE7B7'},bold:true} };
       const workedColour  = { fill:{fgColor:{rgb:'78350F'}}, font:{color:{rgb:'FCD34D'},bold:true} };
-      const totalColour   = { fill:{fgColor:{rgb:'1E3A5F'}}, font:{color:{rgb:'34D399'},bold:true} };
 
       s4Rows.forEach((_, i) => {
         const bg = i % 2 === 0 ? '0F1629' : '111827';
         styleRow(ws4, i+1, s4Hdrs.length, { fill:{fgColor:{rgb:bg}}, font:{color:{rgb:'E2E8F0'}} });
-        // Standby total (col 7) and pay (col 8)
-        [7,8].forEach(c => {
-          const addr = XLSX.utils.encode_cell({r:i+1,c});
-          if (ws4[addr]) ws4[addr].s = standbyColour;
-        });
-        // Worked total (col 11) and pay cols (cols 14,15)
-        [11,14,15].forEach(c => {
-          const addr = XLSX.utils.encode_cell({r:i+1,c});
-          if (ws4[addr]) ws4[addr].s = workedColour;
-        });
-        // Grand total (col 15)
-        const tAddr = XLSX.utils.encode_cell({r:i+1,c:15});
-        if (ws4[tAddr]) ws4[tAddr].s = totalColour;
+        // Standby hours — col 4
+        const sAddr = XLSX.utils.encode_cell({r:i+1, c:4});
+        if (ws4[sAddr]) ws4[sAddr].s = standbyColour;
+        // Worked hours — col 5
+        const wAddr = XLSX.utils.encode_cell({r:i+1, c:5});
+        if (ws4[wAddr]) ws4[wAddr].s = workedColour;
       });
-      // Style totals row
       styleRow(ws4, s4Rows.length+1, s4Hdrs.length, { fill:{fgColor:{rgb:'1E3A5F'}}, font:{bold:true,color:{rgb:'6EE7B7'}}, border:{top:{style:'medium',color:{rgb:'10B981'}}} });
 
       // ─────────────────────────────────────────────────────────────────────
@@ -6317,7 +6295,7 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws3, '📊 Dashboard');
       XLSX.utils.book_append_sheet(wb, ws1, '📋 Hours Summary');
-      XLSX.utils.book_append_sheet(wb, ws4, '💷 Standby & Worked Pay');
+      XLSX.utils.book_append_sheet(wb, ws4, '💷 Standby & Worked Hours for Payroll');
       XLSX.utils.book_append_sheet(wb, ws2, '📅 Daily Detail');
 
       const fname = `CloudOps-Hours-${(exportStart||'all').replace(/-/g,'')}-${(exportEnd||'time').replace(/-/g,'')}.xlsx`;
@@ -7387,7 +7365,8 @@ export default function App() {
         glossary:'shared', contacts:'shared', swapRequests:'shared', absences:'shared',
         logbook:'shared', documents:'shared', whatsappChats:'shared',
         obsidianNotes:'shared',   // ← was 'engineer': notes is a flat array not keyed by uid
-        timesheets:'engineer', toil:'engineer', overtime:'engineer',
+        timesheets:'engineer', overtime:'engineer',
+        toil:'shared',   // ← flat array keyed by record id, NOT by uid
       }[key] || 'shared';
 
       if (own === 'manager' && !isManager) { setSyncing(false); return; }
@@ -7471,8 +7450,8 @@ export default function App() {
     documents:     'shared',
     whatsappChats: 'shared',
     timesheets:    'engineer',
-    toil:          'engineer',
     overtime:      'engineer',
+    toil:          'shared',   // flat array keyed by record id — NOT by uid
     obsidianNotes: 'shared',   // flat array keyed by note id — NOT by uid
   };
 
