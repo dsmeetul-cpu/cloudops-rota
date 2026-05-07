@@ -1,4 +1,4 @@
-// src/Calendar.js 06th May 2026
+// src/Calendar.js
 // CloudOps Rota — Outlook-style Calendar
 // Views: Month · Week · Day · Agenda
 // Named calendars: create, colour-code, share or keep private
@@ -16,10 +16,10 @@ const MONTHS_SHORT= ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct'
 // Default system calendars — always present
 const DEFAULT_CALENDARS = [
   { id:'sys-rota',     name:'On-Call Rota',   color:'#166534', visibility:'team',    editable:false, icon:'📡' },
-  { id:'sys-holidays', name:'Holidays',        color:'#92400e', visibility:'team',    editable:false, icon:'🌴' },
-  { id:'sys-bh',       name:'Bank Holidays',   color:'#7f1d1d', visibility:'team',    editable:false, icon:'🏛' },
-  { id:'sys-absences', name:'Absences',        color:'#0e7490', visibility:'team',    editable:false, icon:'🏥' },
-  { id:'sys-upgrades', name:'Upgrades',        color:'#991b1b', visibility:'team',    editable:false, icon:'⬆' },
+  { id:'sys-holidays', name:'Holidays',        color:'#92400e', visibility:'private', editable:false, icon:'🌴' },
+  { id:'sys-bh',       name:'Bank Holidays',   color:'#7f1d1d', visibility:'private', editable:false, icon:'🏛' },
+  { id:'sys-absences', name:'Absences',        color:'#0e7490', visibility:'private', editable:false, icon:'🏥' },
+  { id:'sys-upgrades', name:'Upgrades',        color:'#991b1b', visibility:'private', editable:false, icon:'⬆' },
 ];
 
 const CALENDAR_COLORS = [
@@ -70,7 +70,7 @@ function fmtDateLong(ds) { const d=new Date(ds+'T12:00:00'); return d.toLocaleDa
 function fmtDateShort(ds) { const d=new Date(ds+'T12:00:00'); return d.toLocaleDateString('en-GB',{day:'2-digit',month:'short'}); }
 
 const HOURS = Array.from({length:24},(_,i)=>i);
-const BLANK_EVENT = { title:'', calendarId:'', category:'meeting', date:todayStr(), startTime:'09:00', endTime:'10:00', allDay:false, notes:'', isPrivate:false, targetUser:'' };
+const BLANK_EVENT = { title:'', calendarId:'', category:'meeting', date:todayStr(), startTime:'09:00', endTime:'10:00', allDay:false, notes:'', isPrivate:false, targetUser:'', taggedEngineer:'' };
 const BLANK_CAL   = { name:'', color:'#3b82f6', visibility:'team', description:'' };
 
 // ── Inline Modal ──────────────────────────────────────────────────────────────
@@ -127,8 +127,9 @@ function EventPill({ event, onClick, compact, calColor }) {
 function CalendarSidebar({ allCals, enabledCals, setEnabledCals, isManager, onAddCal, onEditCal, onDeleteCal }) {
   const [collapsed, setCollapsed] = useState({ system:false, custom:false });
 
-  const sysCals    = DEFAULT_CALENDARS;
-  const customCals = allCals.filter(c=>!c.isSystem);
+  // Engineers only see sys-rota; managers see everything
+  const sysCals    = isManager ? DEFAULT_CALENDARS : DEFAULT_CALENDARS.filter(c=>c.id==='sys-rota');
+  const customCals = isManager ? allCals.filter(c=>!c.isSystem) : [];
 
   const toggle = (id) => setEnabledCals(prev =>
     prev.includes(id) ? prev.filter(x=>x!==id) : [...prev, id]
@@ -263,11 +264,7 @@ export default function Calendar({
   const getEventsForDate = useCallback((ds, userId) => {
     const events = [];
 
-    if (calVisible('sys-bh')) {
-      const bhEntry = (UK_BANK_HOLIDAYS||[]).find(b=>(b.date||b)===ds);
-      if (bhEntry) events.push({ id:'bh-'+ds, title:bhEntry.name||bhEntry.title||'Bank Holiday', type:'bankholiday', date:ds, allDay:true, shiftType:'bankholiday', isSystem:true, calendarId:'sys-bh' });
-    }
-
+    // On-Call Rota — visible to EVERYONE (only team-visible system calendar)
     if (calVisible('sys-rota')) {
       const targets = userId ? [users.find(u=>u.id===userId)].filter(Boolean) : users;
       targets.forEach(u => {
@@ -279,35 +276,40 @@ export default function Calendar({
       });
     }
 
-    if (calVisible('sys-holidays')) {
-      (holidays||[]).filter(h=>ds>=h.start&&ds<=(h.end||h.start)&&(userId?h.userId===userId:true)).forEach(h=>{
-        const u=users.find(x=>x.id===h.userId);
-        events.push({ id:'hol-'+h.id+'-'+ds, title:`🌴 ${u?.name?.split(' ')[0]||h.userId} — Holiday`, type:'holiday', date:ds, allDay:true, isSystem:true, calendarId:'sys-holidays' });
-      });
+    // ALL other system calendars — manager only
+    if (isManager) {
+      if (calVisible('sys-bh')) {
+        const bhEntry = (UK_BANK_HOLIDAYS||[]).find(b=>(b.date||b)===ds);
+        if (bhEntry) events.push({ id:'bh-'+ds, title:bhEntry.name||bhEntry.title||'Bank Holiday', type:'bankholiday', date:ds, allDay:true, shiftType:'bankholiday', isSystem:true, calendarId:'sys-bh' });
+      }
+      if (calVisible('sys-holidays')) {
+        (holidays||[]).filter(h=>ds>=h.start&&ds<=(h.end||h.start)&&(userId?h.userId===userId:true)).forEach(h=>{
+          const u=users.find(x=>x.id===h.userId);
+          events.push({ id:'hol-'+h.id+'-'+ds, title:`🌴 ${u?.name?.split(' ')[0]||h.userId} — Holiday`, type:'holiday', date:ds, allDay:true, isSystem:true, calendarId:'sys-holidays' });
+        });
+      }
+      if (calVisible('sys-absences')) {
+        (absences||[]).filter(a=>ds>=a.start&&ds<=(a.end||a.start)&&(userId?a.userId===userId:true)).forEach(a=>{
+          const u=users.find(x=>x.id===a.userId);
+          events.push({ id:'abs-'+a.id+'-'+ds, title:`🏥 ${u?.name?.split(' ')[0]||a.userId} — Absent`, type:'absence', date:ds, allDay:true, isSystem:true, calendarId:'sys-absences' });
+        });
+      }
+      if (calVisible('sys-upgrades')) {
+        (upgrades||[]).filter(u=>u.date===ds).forEach(u=>{
+          events.push({ id:'upg-'+u.id, title:`⬆ ${u.name||u.title||'Upgrade'}`, type:'upgrade', date:ds, allDay:false, shiftType:'upgrade', isSystem:true, calendarId:'sys-upgrades', startTime:'22:00', endTime:'06:00' });
+        });
+      }
     }
 
-    if (calVisible('sys-absences')) {
-      (absences||[]).filter(a=>ds>=a.start&&ds<=(a.end||a.start)&&(userId?a.userId===userId:true)).forEach(a=>{
-        const u=users.find(x=>x.id===a.userId);
-        events.push({ id:'abs-'+a.id+'-'+ds, title:`🏥 ${u?.name?.split(' ')[0]||a.userId} — Absent`, type:'absence', date:ds, allDay:true, isSystem:true, calendarId:'sys-absences' });
-      });
-    }
-
-    if (calVisible('sys-upgrades')) {
-      (upgrades||[]).filter(u=>u.date===ds).forEach(u=>{
-        events.push({ id:'upg-'+u.id, title:`⬆ ${u.name||u.title||'Upgrade'}`, type:'upgrade', date:ds, allDay:false, shiftType:'upgrade', isSystem:true, calendarId:'sys-upgrades', startTime:'22:00', endTime:'06:00' });
-      });
-    }
-
-    // Custom events
+    // Custom events — engineers NEVER see manager's events (all private to manager)
     safe.filter(e=>e.date===ds).forEach(e=>{
-      if (e.isPrivate && !isManager) return;
+      // Engineers cannot see ANY custom events — all belong to manager's private calendars
+      if (!isManager) return;
       if (filterUser !== 'all' && e.targetUser && e.targetUser !== filterUser) return;
-      // Check calendar visibility
+      // Check calendar visibility toggle
       if (e.calendarId) {
         const cal = allCustomCals.find(c=>c.id===e.calendarId);
         if (cal && !calVisible(cal.id)) return;
-        if (cal && cal.visibility==='private' && !isManager) return;
       }
       events.push(e);
     });
@@ -646,6 +648,17 @@ export default function Calendar({
                   {selected.allDay&&<div style={{display:'flex',gap:8}}><span style={{color:'var(--text-muted)',minWidth:70}}>⏰ Time</span><span>All day</span></div>}
                   {cat&&<div style={{display:'flex',gap:8}}><span style={{color:'var(--text-muted)',minWidth:70}}>🏷 Type</span><span style={{color:col}}>{cat.icon} {cat.label}</span></div>}
                   {calEntry&&<div style={{display:'flex',gap:8}}><span style={{color:'var(--text-muted)',minWidth:70}}>📅 Calendar</span><span style={{color:calEntry.color,display:'flex',alignItems:'center',gap:4}}><span style={{width:8,height:8,borderRadius:'50%',background:calEntry.color,display:'inline-block'}} />{calEntry.name} · {VIS_META[calEntry.visibility]?.icon} {VIS_META[calEntry.visibility]?.label}</span></div>}
+                  {isManager && selected.taggedEngineer && (() => {
+                    const taggedU = users.find(u=>u.id===selected.taggedEngineer);
+                    return taggedU ? (
+                      <div style={{display:'flex',gap:8,alignItems:'center'}}>
+                        <span style={{color:'var(--text-muted)',minWidth:70}}>🔒 Tagged</span>
+                        <span style={{color:'#f59e0b',background:'rgba(245,158,11,0.08)',padding:'2px 8px',borderRadius:5,fontSize:11,border:'1px solid rgba(245,158,11,0.2)'}}>
+                          {taggedU.name} <span style={{opacity:0.6,fontFamily:'DM Mono',fontSize:10}}>({taggedU.id}) · private</span>
+                        </span>
+                      </div>
+                    ) : null;
+                  })()}
                   {selected.notes&&<div style={{display:'flex',gap:8,alignItems:'flex-start'}}><span style={{color:'var(--text-muted)',minWidth:70}}>📝 Notes</span><span style={{color:'var(--text-secondary)',lineHeight:1.5}}>{selected.notes}</span></div>}
                 </div>
                 {isManager&&!selected.isSystem&&(
@@ -714,6 +727,16 @@ export default function Calendar({
                   <option value="">All team</option>
                   {users.map(u=><option key={u.id} value={u.id}>{u.name}</option>)}
                 </select>
+              </div>
+            )}
+            {isManager && (
+              <div style={{background:'rgba(245,158,11,0.06)',border:'1px solid rgba(245,158,11,0.18)',borderRadius:8,padding:'10px 12px'}}>
+                <label style={{...LBL,color:'#f59e0b'}}>🔒 Tag an Engineer (private — manager reference only)</label>
+                <select style={IS} value={form.taggedEngineer||''} onChange={e=>setForm(f=>({...f,taggedEngineer:e.target.value}))}>
+                  <option value="">No engineer tagged</option>
+                  {users.filter(u=>!u.isManager).map(u=><option key={u.id} value={u.id}>{u.name} ({u.id})</option>)}
+                </select>
+                <div style={{fontSize:10,color:'#64748b',marginTop:4}}>This tag is visible only to you and is never shared with the engineer.</div>
               </div>
             )}
             <div><label style={LBL}>Notes</label><textarea style={{...IS,resize:'vertical'}} rows={3} placeholder="Additional details…" value={form.notes} onChange={e=>setForm(f=>({...f,notes:e.target.value}))} /></div>
