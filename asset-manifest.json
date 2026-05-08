@@ -1,13 +1,13 @@
 {
   "files": {
     "main.css": "/cloudops-rota/static/css/main.55590273.css",
-    "main.js": "/cloudops-rota/static/js/main.2a169a0c.js",
+    "main.js": "/cloudops-rota/static/js/main.d45ab7d5.js",
     "index.html": "/cloudops-rota/index.html",
     "main.55590273.css.map": "/cloudops-rota/static/css/main.55590273.css.map",
-    "main.2a169a0c.js.map": "/cloudops-rota/static/js/main.2a169a0c.js.map"
+    "main.d45ab7d5.js.map": "/cloudops-rota/static/js/main.d45ab7d5.js.map"
   },
   "entrypoints": [
     "static/css/main.55590273.css",
-    "static/js/main.2a169a0c.js"
+    "static/js/main.d45ab7d5.js"
   ]
 }
