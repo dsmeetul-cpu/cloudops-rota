@@ -1,6 +1,6 @@
 // src/App.js
 // CloudOps Rota — Full Production Build v2
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 07th May 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 09th May 2026
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
@@ -5795,6 +5795,7 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
   const safeOT        = Array.isArray(overtimeArr) ? overtimeArr : [];
   const safeRota      = rota      || {};
   const safeHolidays  = Array.isArray(holidays) ? holidays : [];
+  const safeInc       = Array.isArray(incidents) ? incidents : [];
   const bhList        = (typeof UK_BANK_HOLIDAYS !== 'undefined') ? UK_BANK_HOLIDAYS : [];
 
   // Load export logs from Drive on mount — MUST be before early return
@@ -6046,7 +6047,7 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
 
       // Sort by date then name
       s2Rows.sort((a,b) => {
-        const [da,db] = [a[2],b[2]].map(s => s.split('/').reverse().join(''));
+        const [da,db] = [a[3],b[3]].map(s => s.split('/').reverse().join(''));
         return da.localeCompare(db) || a[1].localeCompare(b[1]);
       });
 
@@ -6068,15 +6069,18 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
       // ─────────────────────────────────────────────────────────────────────
       // SHEET 3 — Dashboard & Analysis (visual summary)
       // ─────────────────────────────────────────────────────────────────────
+      // s1Rows layout: [employment_id(0), trigram(1), name(2), exportDate(3), period(4),
+      //   standbyWD(5), workedWD(6), standbyWE(7), workedWE(8),
+      //   incHrs(9), upgradeHrs(10), bankHolHrs(11), overtimeHrs(12), toilBal(13)]
       const gt = {
-        standbyWD: s1Rows.reduce((s,r)=>s+(r[4]||0),0),
-        workedWD:  s1Rows.reduce((s,r)=>s+(r[5]||0),0),
-        standbyWE: s1Rows.reduce((s,r)=>s+(r[6]||0),0),
-        workedWE:  s1Rows.reduce((s,r)=>s+(r[7]||0),0),
-        incidents: s1Rows.reduce((s,r)=>s+(r[8]||0),0),
-        upgrades:  s1Rows.reduce((s,r)=>s+(r[9]||0),0),
-        bankHols:  s1Rows.reduce((s,r)=>s+(r[10]||0),0),
-        overtime:  s1Rows.reduce((s,r)=>s+(r[11]||0),0),
+        standbyWD: s1Rows.reduce((s,r)=>s+(r[5]||0),0),
+        workedWD:  s1Rows.reduce((s,r)=>s+(r[6]||0),0),
+        standbyWE: s1Rows.reduce((s,r)=>s+(r[7]||0),0),
+        workedWE:  s1Rows.reduce((s,r)=>s+(r[8]||0),0),
+        incidents: s1Rows.reduce((s,r)=>s+(r[9]||0),0),
+        upgrades:  s1Rows.reduce((s,r)=>s+(r[10]||0),0),
+        bankHols:  s1Rows.reduce((s,r)=>s+(r[11]||0),0),
+        overtime:  s1Rows.reduce((s,r)=>s+(r[12]||0),0),
       };
       const totalHrs = Object.values(gt).reduce((a,b)=>a+b,0);
       const pct = v => totalHrs > 0 ? ((v/totalHrs)*100).toFixed(1)+'%' : '0%';
@@ -6087,16 +6091,18 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
       };
 
       // Collect monthly data
+      // s2Rows layout: [employment_id(0), trigram(1), name(2), date(3), day(4),
+      //                 shiftType(5), hours(6), category(7), notes(8)]
       const monthlyMap = {};
       s2Rows.forEach(row => {
-        const rawDate = row[2]; // dd/mm/yyyy
+        const rawDate = row[3]; // dd/mm/yyyy  ← Date is at index 3
         if (!rawDate) return;
         const [d,m,y] = rawDate.split('/');
         const mo = `${y}-${m}`;
         if (!monthlyMap[mo]) monthlyMap[mo] = { standby:0, worked:0, upgrade:0, overtime:0, incident:0, bankHol:0 };
-        const hrs = parseFloat(row[5])||0;
-        const cat = row[6]||'';
-        if (cat==='On-Call/Shift') { const sc=row[4]||''; if (sc.includes('Standby')||sc.includes('On-Call')||sc.includes('Bank Hol')) monthlyMap[mo].standby+=hrs; else monthlyMap[mo].worked+=hrs; }
+        const hrs = parseFloat(row[6])||0;  // Hours at index 6
+        const cat = row[7]||'';             // Category at index 7
+        if (cat==='On-Call/Shift') { const sc=row[5]||''; if (sc.includes('Standby')||sc.includes('On-Call')||sc.includes('Bank Hol')) monthlyMap[mo].standby+=hrs; else monthlyMap[mo].worked+=hrs; }
         else if (cat==='Upgrade') monthlyMap[mo].upgrade+=hrs;
         else if (cat==='Overtime') monthlyMap[mo].overtime+=hrs;
         else if (cat==='Incident') monthlyMap[mo].incident+=hrs;
@@ -6313,7 +6319,7 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
         rangeStart:   exportStart || 'all',
         rangeEnd:     exportEnd   || 'all',
         engineerCount: safeUsers.length,
-        totalHrs:     s1Rows.reduce((a,r)=>a+(parseFloat(r[4])||0)+(parseFloat(r[5])||0)+(parseFloat(r[6])||0)+(parseFloat(r[7])||0),0),
+        totalHrs:     s1Rows.reduce((a,r)=>a+(parseFloat(r[5])||0)+(parseFloat(r[6])||0)+(parseFloat(r[7])||0)+(parseFloat(r[8])||0),0),
         driveFileId:  null, // filled in below if Drive upload succeeds
       };
 
