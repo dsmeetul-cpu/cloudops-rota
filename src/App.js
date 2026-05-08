@@ -6301,7 +6301,7 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws3, '📊 Dashboard');
       XLSX.utils.book_append_sheet(wb, ws1, '📋 Hours Summary');
-      XLSX.utils.book_append_sheet(wb, ws4, '💷 Standby & Worked Hours for Payroll');
+      XLSX.utils.book_append_sheet(wb, ws4, '💷 Standby & Worked Hrs');
       XLSX.utils.book_append_sheet(wb, ws2, '📅 Daily Detail');
 
       const fname = `CloudOps-Hours-${(exportStart||'all').replace(/-/g,'')}-${(exportEnd||'time').replace(/-/g,'')}.xlsx`;
