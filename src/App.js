@@ -6237,8 +6237,8 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
 
       // ─────────────────────────────────────────────────────────────────────
       // SHEET 4 — Standby & Worked Hours for Payroll
-      // Standby WD + Standby WE + Bank Hol = Hours on Standby Shifts @ £5/hr <1164>
-      // Incidents + Overtime                = Hours Worked on Standby @ 1.5× <2011>
+      // Standby WD + Standby WE + Bank Hol     = Hours on Standby Shifts @ £5/hr <1164>
+      // Incidents + Overtime + Upgrade day hrs  = Hours Worked on Standby @ 1.5× <2011>
       // ─────────────────────────────────────────────────────────────────────
       const STANDBY_RATE = 5;    // £5 per standby hour  (pay code 1164)
       const WORKED_MULT  = 1.5;  // 1.5× basic hourly rate (pay code 2011)
@@ -6255,7 +6255,7 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
       const s4Rows = safeUsers.map(u => {
         const { oc, incHrs, upgradeHrs, bankHolHrs, overtimeHrs } = getUserData(u, exportStart, exportEnd);
         const standbyTotal = (oc.standbyWD || 0) + (oc.standbyWE || 0) + (bankHolHrs || 0);
-        const workedTotal  = (incHrs || 0) + (overtimeHrs || 0);
+        const workedTotal  = (incHrs || 0) + (overtimeHrs || 0) + (upgradeHrs || 0);
         return [
           u.employment_id || '—',
           u.id,
@@ -6301,7 +6301,7 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws3, '📊 Dashboard');
       XLSX.utils.book_append_sheet(wb, ws1, '📋 Hours Summary');
-      XLSX.utils.book_append_sheet(wb, ws4, '💷 Standby & Worked Hrs');
+      XLSX.utils.book_append_sheet(wb, ws4, 'Standby & Worked Hours Payroll');
       XLSX.utils.book_append_sheet(wb, ws2, '📅 Daily Detail');
 
       const fname = `CloudOps-Hours-${(exportStart||'all').replace(/-/g,'')}-${(exportEnd||'time').replace(/-/g,'')}.xlsx`;
