@@ -155,7 +155,7 @@ function RichEditor({ value, onChange, placeholder = 'Start typing…', rows = 8
     if (ref.current && ref.current.innerHTML !== value) {
       ref.current.innerHTML = value || '';
     }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []); // eslint-disable-line
 
   const insertTable = () => {
     const html = `<table border="1" style="border-collapse:collapse;width:100%;margin:8px 0"><tr><th style="padding:6px 10px;background:#1e3a5f">Header 1</th><th style="padding:6px 10px;background:#1e3a5f">Header 2</th></tr><tr><td style="padding:6px 10px">Cell 1</td><td style="padding:6px 10px">Cell 2</td></tr></table><p></p>`;
