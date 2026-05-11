@@ -6123,7 +6123,7 @@ export default function App() {
       if (reg) setRegistry(reg);
       if (pics) { setProfilePics(pics); setProfilePicsState(pics); }
 
-      const defaults = { users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, overtime, logbook, documents, obsidianNotes, whatsappChats };
+      const defaults = { users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, overtime, logbook, documents, obsidianNotes, whatsappChats, timekeeping };
       const data = await loadAllFromDrive(token, defaults);
 
       // Only mark driveReady if users actually loaded from Drive
@@ -6223,7 +6223,7 @@ export default function App() {
         glossary:'shared', contacts:'shared', swapRequests:'shared', absences:'shared',
         logbook:'shared', documents:'shared', whatsappChats:'shared',
         obsidianNotes:'shared',   // ← was 'engineer': notes is a flat array not keyed by uid
-        timesheets:'engineer', overtime:'engineer',
+        timesheets:'engineer', overtime:'engineer', timekeeping:'engineer',
         toil:'shared',   // ← flat array keyed by record id, NOT by uid
       }[key] || 'shared';
 
@@ -6436,7 +6436,7 @@ export default function App() {
         if (pics) { setProfilePics(pics); setProfilePicsState(pics); }
 
         setLoadProgress(40); setLoadStatus('Loading rota & schedules…');
-        const defaults = { users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, overtime, logbook, documents, obsidianNotes, whatsappChats };
+        const defaults = { users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, overtime, logbook, documents, obsidianNotes, whatsappChats, timekeeping };
         const data = await loadAllFromDrive(token, defaults);
 
         setLoadProgress(75); setLoadStatus('Applying team data…');
@@ -6854,7 +6854,7 @@ export default function App() {
                   onClick={async () => {
                     try {
                       setSyncing(true);
-                      const defaults = { users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, overtime, logbook, documents, obsidianNotes, whatsappChats };
+                      const defaults = { users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, overtime, logbook, documents, obsidianNotes, whatsappChats, timekeeping };
                       const data = await loadAllFromDrive(driveToken, defaults);
                       const has = v => v !== null && v !== undefined;
                       if (has(data.users))         setUsers(data.users);
