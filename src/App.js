@@ -813,7 +813,7 @@ const NAV = [
   ]},
   { section: 'People', items: [
     { id: 'timesheets',   icon: '⏱', label: 'Timesheets'                      },
-    { id: 'timekeeping',  icon: '🕒', label: 'Time Keeping', managerOnly: true },
+    { id: 'timekeeping',  icon: '🕒', label: 'Time Keeping' },
     { id: 'holidays',     icon: '🌴', label: 'Holidays',      managerOnly: true },
     { id: 'swaps',      icon: '🔁', label: 'Shift Swaps'    },
     { id: 'upgrades',   icon: '⬆', label: 'Upgrade Days'   },
