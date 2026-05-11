@@ -1,1862 +1,1037 @@
 // src/TimeKeeping.js
-// CloudOps Rota — Time Keeping / RTO Compliance Tracker
-// Manager: full dashboard, confirm check-ins, export to Excel
-// Engineer: check in (office/WFH), see own week view only
+// CloudOps Rota — Time Keeping & Attendance
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 09th May 2026
 
-import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 
-// ── Constants ────────────────────────────────────────────────────────────────
-const RTO_DAYS_REQUIRED = 3;
-const START_TIME        = '09:00';
-const END_TIME          = '18:00';
-const GRACE_LATE_WARN   = 15; // mins: amber
-const GRACE_LATE_LATE   = 20; // mins: red
-const STREAK_THRESHOLD  = 3;  // consecutive late arrivals = pattern alert
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
-function parseTime(str) {
-  if (!str) return null;
-  const [h, m] = str.split(':').map(Number);
-  return h * 60 + m;
-}
-function minsToStr(mins) {
-  if (mins == null) return '—';
-  const h = Math.floor(Math.abs(mins) / 60);
-  const m = Math.abs(mins) % 60;
-  return h > 0 ? `${h}h ${m}m` : `${m}m`;
-}
-function lateStatus(arrivalStr) {
-  const arr = parseTime(arrivalStr);
-  const start = parseTime(START_TIME);
-  if (arr == null) return null;
-  const diff = arr - start;
-  if (diff <= 0)                 return { status: 'ontime',  label: 'On Time',    color: '#22c55e', diff };
-  if (diff <= GRACE_LATE_WARN)   return { status: 'early',   label: `+${diff}m`,  color: '#22c55e', diff }; // within grace
-  if (diff <= GRACE_LATE_LATE)   return { status: 'warn',    label: `+${diff}m`,  color: '#f59e0b', diff }; // amber grace
-  return                                { status: 'late',    label: `+${diff}m`,  color: '#ef4444', diff }; // over grace
-}
-function isWeekday(dateStr) {
-  const d = new Date(dateStr + 'T12:00:00');
-  return d.getDay() >= 1 && d.getDay() <= 5;
-}
-function isBankHoliday(dateStr, bankHolidays) {
-  return (bankHolidays || []).some(bh => (bh.date || bh) === dateStr);
-}
-function isOnHoliday(dateStr, userId, holidays) {
-  return (holidays || []).some(h => h.userId === userId && h.status === 'approved' && dateStr >= h.startDate && dateStr <= h.endDate);
-}
-function getWeekStart(dateStr) {
-  const d = new Date(dateStr + 'T12:00:00');
-  const day = d.getDay();
-  const diff = day === 0 ? -6 : 1 - day;
-  d.setDate(d.getDate() + diff);
-  return d.toISOString().slice(0, 10);
-}
-function addDays(dateStr, n) {
-  const d = new Date(dateStr + 'T12:00:00');
-  d.setDate(d.getDate() + n);
-  return d.toISOString().slice(0, 10);
-}
-function formatDate(dateStr) {
-  if (!dateStr) return '—';
-  return new Date(dateStr + 'T12:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' });
-}
-function shortDate(dateStr) {
-  return new Date(dateStr + 'T12:00:00').toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
-}
-function getWeeksFrom(startDate, count = 13) {
-  // Get 'count' weeks starting from the Monday of startDate's week
-  const ws = getWeekStart(startDate);
-  return Array.from({ length: count }, (_, i) => addDays(ws, i * 7));
-}
-function getAllWeekdays(weekStart) {
-  return Array.from({ length: 5 }, (_, i) => addDays(weekStart, i));
-}
-// Use London local time throughout (Europe/London handles GMT/BST automatically)
-function londonNow() {
-  // Use Intl to get London date parts, then reconstruct a plain Date object
-  const now = new Date();
-  const parts = new Intl.DateTimeFormat('en-GB', {
-    timeZone: 'Europe/London',
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit',
-    hour12: false,
-  }).formatToParts(now);
-  const p = {};
-  parts.forEach(({ type, value }) => { p[type] = value; });
-  // Reconstruct as a local Date (not UTC) purely for .getHours()/.getMinutes() use
-  return new Date(
-    `${p.year}-${p.month}-${p.day}T${p.hour === '24' ? '00' : p.hour}:${p.minute}:${p.second}`
-  );
-}
-function todayStr() {
-  const parts = new Intl.DateTimeFormat('en-GB', {
-    timeZone: 'Europe/London',
-    year: 'numeric', month: '2-digit', day: '2-digit',
-  }).formatToParts(new Date());
-  const p = {};
-  parts.forEach(({ type, value }) => { p[type] = value; });
-  return `${p.year}-${p.month}-${p.day}`;
-}
-function londonTimeStr() {
-  return new Intl.DateTimeFormat('en-GB', {
-    timeZone: 'Europe/London',
-    hour: '2-digit', minute: '2-digit', hour12: false,
-  }).format(new Date());
-}
-function londonHour() {
-  const t = new Intl.DateTimeFormat('en-GB', {
-    timeZone: 'Europe/London', hour: 'numeric', hour12: false,
-  }).format(new Date());
-  return parseInt(t, 10);
-}
-
-// ── MiniBar chart ─────────────────────────────────────────────────────────────
-function MiniBar({ value, max, color, height = 36, width = 22, label }) {
-  const pct = max > 0 ? Math.min(value / max, 1) : 0;
+// ─────────────────────────────────────────────────────────────────────────────
+// Shared UI primitives
+// ─────────────────────────────────────────────────────────────────────────────
+function Avatar({ user, size = 32 }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
-      <div style={{ fontSize: 10, color: '#94a3b8', fontFamily: 'DM Mono', fontWeight: 600 }}>{label}</div>
-      <div style={{ width, height, background: 'rgba(255,255,255,0.05)', borderRadius: 4, display: 'flex', alignItems: 'flex-end', overflow: 'hidden', border: '1px solid rgba(255,255,255,0.06)' }}>
-        <div style={{ width: '100%', height: `${pct * 100}%`, background: color, borderRadius: '3px 3px 0 0', transition: 'height 0.4s ease' }} />
-      </div>
-      <div style={{ fontSize: 11, fontWeight: 700, color, fontFamily: 'DM Mono' }}>{value}</div>
-    </div>
+    <div style={{
+      width: size, height: size, borderRadius: size > 40 ? 12 : 8,
+      background: user?.color || '#1d4ed8', display: 'flex', alignItems: 'center',
+      justifyContent: 'center', fontSize: size > 40 ? 14 : 11,
+      fontWeight: 700, color: '#fff', flexShrink: 0, letterSpacing: 0.5,
+    }}>{user?.avatar || '?'}</div>
   );
 }
 
-// ── Donut chart ───────────────────────────────────────────────────────────────
-function Donut({ pct, color, size = 64, label, sub }) {
-  const r = (size - 10) / 2;
-  const circ = 2 * Math.PI * r;
-  const dash = circ * Math.min(pct / 100, 1);
+function Tag({ label, type = 'blue' }) {
+  return <span className={`tag tag-${type}`}>{label}</span>;
+}
+
+function Modal({ title, onClose, children, wide }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
-      <div style={{ position: 'relative', width: size, height: size }}>
-        <svg width={size} height={size} style={{ transform: 'rotate(-90deg)' }}>
-          <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth={6} />
-          <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={color} strokeWidth={6}
-            strokeDasharray={`${dash} ${circ}`} strokeLinecap="round"
-            style={{ transition: 'stroke-dasharray 0.5s ease' }} />
-        </svg>
-        <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: size < 70 ? 12 : 15, fontWeight: 700, color, fontFamily: 'DM Mono' }}>
-          {Math.round(pct)}%
+    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal" style={wide ? { width: 680 } : {}}>
+        <div className="modal-header">
+          <div className="modal-title">{title}</div>
+          <button className="modal-close" onClick={onClose}>✕</button>
         </div>
+        <div style={{ padding: '0 20px 20px' }}>{children}</div>
       </div>
-      {label && <div style={{ fontSize: 11, color: '#94a3b8', textAlign: 'center', maxWidth: size + 20 }}>{label}</div>}
-      {sub   && <div style={{ fontSize: 10, color: '#64748b', textAlign: 'center' }}>{sub}</div>}
     </div>
   );
 }
 
-// ── HeatMap cell ──────────────────────────────────────────────────────────────
-function HeatCell({ record, bankHol, holiday, isToday, isFuture }) {
-  let bg = 'rgba(255,255,255,0.03)';
-  let title = 'No data';
-  if (holiday)   { bg = 'rgba(139,92,246,0.18)'; title = 'Holiday'; }
-  else if (bankHol) { bg = 'rgba(99,102,241,0.25)'; title = 'Bank Holiday'; }
-  else if (isFuture) { bg = 'rgba(255,255,255,0.02)'; title = 'Future'; }
-  else if (record) {
-    if (record.type === 'office') {
-      const s = lateStatus(record.arrival);
-      if (!s || s.status === 'ontime' || s.status === 'early') { bg = 'rgba(34,197,94,0.25)'; title = `In: ${record.arrival}`; }
-      else if (s.status === 'warn')  { bg = 'rgba(245,158,11,0.3)'; title = `Late: ${record.arrival}`; }
-      else                           { bg = 'rgba(239,68,68,0.3)';  title = `Late: ${record.arrival}`; }
-    } else if (record.type === 'wfh')    { bg = 'rgba(59,130,246,0.2)'; title = 'WFH'; }
-    else if (record.type === 'absent')   { bg = 'rgba(239,68,68,0.15)'; title = 'Absent/Sick'; }
-  }
+function FormGroup({ label, children, hint }) {
   return (
-    <div title={title} style={{
-      width: 18, height: 18, borderRadius: 3, background: bg,
-      border: isToday ? '1.5px solid #00c2ff' : '1px solid rgba(255,255,255,0.05)',
-      cursor: 'pointer', transition: 'transform 0.1s',
-    }} />
+    <div className="form-group">
+      <label className="form-label">
+        {label}
+        {hint && <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 6 }}>({hint})</span>}
+      </label>
+      {children}
+    </div>
   );
 }
 
-// ── Excel export helper (manager only) ───────────────────────────────────────
-async function exportAttendanceExcel(engineers, timekeeping, bankHolidays, holidays, exportFrom, exportTo) {
-  const XLSX = window.XLSX;
-  if (!XLSX) { alert('XLSX library not loaded'); return; }
+function PageHeader({ title, sub, actions }) {
+  return (
+    <div className="page-header">
+      <div className="flex-between">
+        <div>
+          <div className="page-title">{title}</div>
+          {sub && <div className="page-sub">{sub}</div>}
+        </div>
+        {actions && <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>{actions}</div>}
+      </div>
+    </div>
+  );
+}
 
-  const bh = (bankHolidays || []).map(b => b.date || b);
-  const fmtDate = ds => new Date(ds+'T12:00:00').toLocaleDateString('en-GB');
-  const rangeLabel = exportFrom || exportTo
-    ? `${exportFrom ? fmtDate(exportFrom) : 'Start'} – ${exportTo ? fmtDate(exportTo) : 'End'}`
-    : 'All dates';
+function StatCard({ label, value, sub, accent, icon }) {
+  return (
+    <div className="stat-card">
+      <div className="stat-accent" style={{ background: accent }} />
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+        <div className="stat-label">{label}</div>
+        {icon && <span style={{ fontSize: 20 }}>{icon}</span>}
+      </div>
+      <div className="stat-value">{value}</div>
+      {sub && <div className="stat-sub">{sub}</div>}
+    </div>
+  );
+}
 
-  const hdrs = ['Employment ID','Trigram','Full Name','Date','Day','Type','Arrival','Departure','Hours Worked','Late Status','Confirmed by Manager','Notes'];
-  const rows = [];
-  engineers.forEach(u => {
-    const recs = (timekeeping || {})[u.id] || {};
-    Object.keys(recs).sort().forEach(d => {
-      if (exportFrom && d < exportFrom) return;
-      if (exportTo   && d > exportTo)   return;
-      const rec = recs[d];
-      const day = new Date(d+'T12:00:00').toLocaleDateString('en-GB',{weekday:'long'});
-      const isBH = isBankHoliday(d, bh);
-      const isHol= isOnHoliday(d, u.id, holidays);
-      const ls   = rec.type === 'office' ? lateStatus(rec.arrival) : null;
-      const hrs  = rec.type === 'office' && rec.arrival && rec.departure
-        ? ((parseTime(rec.departure) - parseTime(rec.arrival)) / 60).toFixed(1)
-        : '';
-      rows.push([
-        u.employment_id || '—', u.id, u.name, fmtDate(d), day,
-        isBH ? 'Bank Holiday' : isHol ? 'Holiday' : rec.type || '—',
-        rec.arrival || '—', rec.departure || '—', hrs ? `${hrs}h` : '—',
-        ls ? ls.label : rec.type === 'wfh' ? 'WFH' : rec.type === 'absent' ? 'Absent' : '—',
-        rec.confirmedBy ? `✓ ${rec.confirmedBy}` : '—',
-        rec.note || '',
-      ]);
-    });
+// ─────────────────────────────────────────────────────────────────────────────
+// Status config
+// ─────────────────────────────────────────────────────────────────────────────
+const STATUS_OPTIONS = [
+  { value: 'present',  label: 'Present',   icon: '✅', color: '#10b981', bg: 'rgba(16,185,129,0.12)',  border: 'rgba(16,185,129,0.35)'  },
+  { value: 'late',     label: 'Late',      icon: '🟡', color: '#f59e0b', bg: 'rgba(245,158,11,0.12)',  border: 'rgba(245,158,11,0.35)'  },
+  { value: 'wfh',      label: 'WFH',       icon: '🏠', color: '#818cf8', bg: 'rgba(129,140,248,0.12)', border: 'rgba(129,140,248,0.35)' },
+  { value: 'half-day', label: 'Half Day',  icon: '🌗', color: '#38bdf8', bg: 'rgba(56,189,248,0.12)',  border: 'rgba(56,189,248,0.35)'  },
+  { value: 'absent',   label: 'Absent',    icon: '❌', color: '#ef4444', bg: 'rgba(239,68,68,0.12)',   border: 'rgba(239,68,68,0.35)'   },
+];
+
+function statusCfg(val) {
+  return STATUS_OPTIONS.find(s => s.value === val) || STATUS_OPTIONS[0];
+}
+
+function StatusPill({ status, small }) {
+  const s = statusCfg(status);
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', gap: small ? 3 : 4,
+      padding: small ? '2px 7px' : '4px 10px',
+      borderRadius: 20, fontSize: small ? 10 : 11, fontWeight: 600,
+      background: s.bg, color: s.color, border: `1px solid ${s.border}`,
+    }}>
+      {s.icon} {s.label}
+    </span>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+const todayStr  = () => new Date().toISOString().slice(0, 10);
+const nowStr    = () => new Date().toTimeString().slice(0, 5);
+const fmtDate   = (d) => new Date(d + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+const fmtHours  = (ci, co) => {
+  if (!ci || !co) return null;
+  const [h1, m1] = ci.split(':').map(Number);
+  const [h2, m2] = co.split(':').map(Number);
+  let m = (h2 * 60 + m2) - (h1 * 60 + m1);
+  if (m < 0) m += 1440;
+  return `${Math.floor(m / 60)}h ${m % 60 > 0 ? `${m % 60}m` : ''}`.trim();
+};
+
+// Week helpers — Mon–Sun
+function getWeekDates(offset = 0) {
+  const base = new Date();
+  const dow  = (base.getDay() + 6) % 7; // 0=Mon
+  base.setDate(base.getDate() - dow + offset * 7);
+  return Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(base); d.setDate(base.getDate() + i);
+    return d.toISOString().slice(0, 10);
+  });
+}
+
+// Month helpers
+function getMonthDates(year, month) {
+  const first    = new Date(year, month, 1);
+  const last     = new Date(year, month + 1, 0);
+  const startDow = (first.getDay() + 6) % 7;
+  const days     = [];
+  for (let pre = startDow - 1; pre >= 0; pre--) {
+    const d = new Date(first); d.setDate(1 - pre);
+    days.push({ date: d.toISOString().slice(0, 10), isCurrentMonth: false });
+  }
+  for (let d = 1; d <= last.getDate(); d++) {
+    days.push({ date: new Date(year, month, d).toISOString().slice(0, 10), isCurrentMonth: true });
+  }
+  while (days.length % 7 !== 0) {
+    const prev = new Date(days[days.length - 1].date + 'T00:00:00');
+    prev.setDate(prev.getDate() + 1);
+    days.push({ date: prev.toISOString().slice(0, 10), isCurrentMonth: false });
+  }
+  return days;
+}
+
+function isWeekend(dateStr) {
+  const d = new Date(dateStr + 'T00:00:00').getDay();
+  return d === 0 || d === 6;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sub-component: Engineer weekly table
+// ─────────────────────────────────────────────────────────────────────────────
+function WeekView({ entries, weekDates, bankHolidays = [] }) {
+  const today = todayStr();
+  const DAYS  = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <table>
+        <thead>
+          <tr>
+            {weekDates.map((d, i) => {
+              const bh      = bankHolidays.find(b => b.date === d);
+              const isToday = d === today;
+              const isSat   = i === 5;
+              const isSun   = i === 6;
+              return (
+                <th key={d} style={{
+                  textAlign: 'center', fontSize: 11,
+                  color: isToday ? 'var(--accent)' : bh ? '#fca5a5' : (isSat || isSun) ? '#818cf8' : undefined,
+                  minWidth: 100,
+                }}>
+                  {DAYS[i]}<br />
+                  <span style={{ fontFamily: 'DM Mono', fontSize: 10 }}>
+                    {new Date(d + 'T00:00:00').getDate()} {bh ? '🔴' : ''}
+                  </span>
+                </th>
+              );
+            })}
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            {weekDates.map((d) => {
+              const entry   = entries.find(e => e.date === d);
+              const isToday = d === today;
+              const isBH    = bankHolidays.some(b => b.date === d);
+              const isWE    = isWeekend(d);
+              const hrs     = entry ? fmtHours(entry.checkIn, entry.checkOut) : null;
+
+              if (isBH) {
+                return (
+                  <td key={d} style={{ textAlign: 'center', background: 'rgba(127,29,29,0.15)' }}>
+                    <div style={{ fontSize: 10, color: '#fca5a5' }}>Bank Holiday</div>
+                  </td>
+                );
+              }
+
+              return (
+                <td key={d} style={{
+                  textAlign: 'center', verticalAlign: 'top', padding: '10px 8px',
+                  background: isToday ? 'rgba(59,130,246,0.07)' : isWE ? 'rgba(129,140,248,0.04)' : undefined,
+                }}>
+                  {entry ? (
+                    <div>
+                      <StatusPill status={entry.status} small />
+                      <div style={{ fontFamily: 'DM Mono', fontSize: 11, marginTop: 5, color: 'var(--text-secondary)' }}>
+                        {entry.checkIn || '—'} → {entry.checkOut || '…'}
+                      </div>
+                      {hrs && <div style={{ fontSize: 10, color: '#6ee7b7', marginTop: 3 }}>{hrs}</div>}
+                      {entry.confirmedByManager && (
+                        <div style={{ fontSize: 9, color: '#10b981', marginTop: 3 }}>✓ Confirmed</div>
+                      )}
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 10, color: isWE ? 'var(--border)' : 'var(--text-muted)' }}>
+                      {isWE ? 'Weekend' : d <= today ? '—' : ''}
+                    </div>
+                  )}
+                </td>
+              );
+            })}
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sub-component: Monthly calendar grid
+// ─────────────────────────────────────────────────────────────────────────────
+function MonthView({ entries, year, month, bankHolidays = [] }) {
+  const today = todayStr();
+  const days  = getMonthDates(year, month);
+  const DAYS  = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+  return (
+    <div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 1, marginBottom: 2 }}>
+        {DAYS.map(d => (
+          <div key={d} style={{ textAlign: 'center', fontSize: 10, fontWeight: 600, color: 'var(--text-muted)', padding: '4px 0' }}>{d}</div>
+        ))}
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 3 }}>
+        {days.map(({ date, isCurrentMonth }) => {
+          const entry   = entries.find(e => e.date === date);
+          const isToday = date === today;
+          const isBH    = bankHolidays.some(b => b.date === date);
+          const isWE    = isWeekend(date);
+          const s       = entry ? statusCfg(entry.status) : null;
+          const isPast  = date < today;
+          const hrs     = entry ? fmtHours(entry.checkIn, entry.checkOut) : null;
+
+          return (
+            <div key={date} style={{
+              minHeight: 64, borderRadius: 8, padding: '6px 7px', position: 'relative',
+              background: isBH ? 'rgba(127,29,29,0.2)' : isToday ? 'rgba(59,130,246,0.12)' : isWE ? 'rgba(129,140,248,0.05)' : 'var(--bg-card2)',
+              border: isToday ? '1.5px solid var(--accent)' : '1px solid var(--border)',
+              opacity: isCurrentMonth ? 1 : 0.35,
+            }}>
+              <div style={{
+                fontSize: 11, fontWeight: isToday ? 700 : 400,
+                color: isToday ? 'var(--accent)' : isBH ? '#fca5a5' : isWE ? '#818cf8' : 'var(--text-muted)',
+                marginBottom: 3,
+              }}>
+                {new Date(date + 'T00:00:00').getDate()}
+                {isBH && <span style={{ fontSize: 8, marginLeft: 3 }}>BH</span>}
+              </div>
+              {entry && s && (
+                <div>
+                  <div style={{
+                    fontSize: 9, fontWeight: 700, color: s.color,
+                    background: s.bg, borderRadius: 4, padding: '1px 4px',
+                    display: 'inline-block', marginBottom: 2,
+                  }}>
+                    {s.icon} {s.label}
+                  </div>
+                  <div style={{ fontSize: 9, color: 'var(--text-muted)', fontFamily: 'DM Mono' }}>
+                    {entry.checkIn} {entry.checkOut ? `→ ${entry.checkOut}` : ''}
+                  </div>
+                  {hrs && <div style={{ fontSize: 8, color: '#6ee7b7' }}>{hrs}</div>}
+                </div>
+              )}
+              {!entry && isPast && isCurrentMonth && !isWE && !isBH && (
+                <div style={{ fontSize: 9, color: 'var(--border)' }}>—</div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Main Component
+// ─────────────────────────────────────────────────────────────────────────────
+export default function TimeKeeping({ users, currentUser, isManager, bankHolidays = [], timekeeping, setTimekeeping }) {
+  const today = todayStr();
+  const now   = new Date();
+
+  // ── View state ─────────────────────────────────────────────────────────
+  const [tab,         setTab]         = useState('today');       // today | week | month
+  const [weekOffset,  setWeekOffset]  = useState(0);
+  const [monthOffset, setMonthOffset] = useState(0);
+  const [filterUser,  setFilterUser]  = useState('all');         // manager: filter by engineer
+  const [statusFilter, setStatusFilter] = useState('all');
+
+  // ── Log modal state ────────────────────────────────────────────────────
+  const [logModal,  setLogModal]  = useState(false);
+  const [editEntry, setEditEntry] = useState(null);             // entry being edited
+  const [logForm,   setLogForm]   = useState({
+    userId: currentUser, date: today, checkIn: '', checkOut: '', status: 'present', notes: '',
   });
 
-  const ws = XLSX.utils.aoa_to_sheet([hdrs, ...rows]);
-  ws['!cols'] = [14,8,22,12,12,10,8,10,10,14,18,24].map(w=>({wch:w}));
-  ws['!freeze'] = { xSplit: 3, ySplit: 1 };
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, '📋 Attendance');
-  const fname = `CloudOps-Attendance-${(exportFrom||'all').replace(/-/g,'')}-${(exportTo||'now').replace(/-/g,'')}.xlsx`;
-  XLSX.writeFile(wb, fname);
-}
+  // ── Confirm modal (manager) ─────────────────────────────────────────────
+  const [confirmModal, setConfirmModal] = useState(null);       // { userId, entryId }
 
-// ── Main Component ────────────────────────────────────────────────────────────
-export default function TimeKeeping({
-  users, holidays, currentUser, isManager,
-  bankHolidays,
-  timekeeping, setTimekeeping,
-  driveToken,
-}) {
-  const [tab,           setTab]           = useState(isManager ? 'dashboard' : 'checkin');
-  const [selectedUser,  setSelectedUser]  = useState(null);
-  const [selectedWeek,  setSelectedWeek]  = useState(getWeekStart(todayStr()));
-  const [showLogModal,  setShowLogModal]  = useState(false);
-  const [logDate,       setLogDate]       = useState(todayStr());
-  const [logUser,       setLogUser]       = useState('');
-  const [logType,       setLogType]       = useState('office');
-  const [logArrival,    setLogArrival]    = useState('09:00');
-  const [logDeparture,  setLogDeparture]  = useState('18:00');
-  const [logNote,       setLogNote]       = useState('');
-  const [saving,        setSaving]        = useState(false);
-  const [filterUser,    setFilterUser]    = useState('all');
-  const [alertFilter,   setAlertFilter]   = useState('all');
-  const [viewMonth,     setViewMonth]     = useState(todayStr().slice(0,7));
-  // Export modal state
-  const [showExport,    setShowExport]    = useState(false);
-  const [exportFrom,    setExportFrom]    = useState('');
-  const [exportTo,      setExportTo]      = useState('');
-  const [exporting,     setExporting]     = useState(false);
-  // Engineer check-in state
-  const [checkInType,   setCheckInType]   = useState('office');
-  const [checkInNote,   setCheckInNote]   = useState('');
-  const [checkInReason, setCheckInReason] = useState('');  // required when late
-  const [checkInSaving, setCheckInSaving] = useState(false);
-  const [checkInMsg,    setCheckInMsg]    = useState('');
-  // Show full-screen check-in prompt for engineers on weekdays until they check in
-  const [showCheckInPrompt, setShowCheckInPrompt] = useState(false);
+  // ── Live clock tick for "currently checked in" display ──────────────────
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setTick(x => x + 1), 30000);
+    return () => clearInterval(t);
+  }, []);
 
-  const engineers = useMemo(() => (users || []).filter(u => !u.isManager), [users]);
-  const me = useMemo(() => (users || []).find(u => u.id === currentUser), [users, currentUser]);
-  const bh = useMemo(() => (bankHolidays || []).map(b => b.date || b), [bankHolidays]);
-  const tk = timekeeping || {};
+  // ─────────────────────────────────────────────────────────────────────
+  // Data helpers
+  // ─────────────────────────────────────────────────────────────────────
+  const userEntries = (uid) => (timekeeping[uid] || []);
 
-  // ── Today's check-in status ──────────────────────────────────────────────────
-  const myTodayRec   = tk[currentUser]?.[todayStr()];
-  const hasCheckedIn = !!myTodayRec;
+  const todayEntry = (uid) => userEntries(uid).find(e => e.date === today);
 
-  // Is today a working weekday?
-  const isWorkday = isWeekday(todayStr()) && !isBankHoliday(todayStr(), bh) && !isOnHoliday(todayStr(), currentUser, holidays);
+  const isCheckedIn  = (uid) => { const e = todayEntry(uid); return e && e.checkIn && !e.checkOut; };
+  const isCheckedOut = (uid) => { const e = todayEntry(uid); return e && e.checkIn && e.checkOut; };
 
-  // Late check — after 9:20am (beyond grace)
-  const londonH = londonNow().getHours();
-  const londonM = londonNow().getMinutes();
-  const currentMins = londonH * 60 + londonM;
-  const isLateNow = currentMins > (9 * 60 + GRACE_LATE_LATE); // past 9:20am
-  const pastWarningTime = londonH > 9 || (londonH === 9 && londonM >= 30);
-  const showLateWarning = isWorkday && pastWarningTime && !hasCheckedIn;
+  // Week dates for current view
+  const weekDates = getWeekDates(weekOffset);
 
-  // Show full-screen check-in prompt for engineers on workdays until they check in
-  React.useEffect(() => {
-    if (!isManager && isWorkday && !hasCheckedIn) {
-      setShowCheckInPrompt(true);
+  // Month for current view
+  const viewDate    = new Date(now.getFullYear(), now.getMonth() + monthOffset, 1);
+  const viewYear    = viewDate.getFullYear();
+  const viewMonth   = viewDate.getMonth();
+  const monthLabel  = viewDate.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
+
+  // Week label
+  const weekStart = weekDates[0];
+  const weekEnd   = weekDates[6];
+  const weekLabel = `${fmtDate(weekStart)} – ${fmtDate(weekEnd)}`;
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Mutations
+  // ─────────────────────────────────────────────────────────────────────
+  const upsertEntry = (uid, entry) => {
+    setTimekeeping(prev => {
+      const existing = (prev[uid] || []).filter(e => e.id !== entry.id);
+      return { ...prev, [uid]: [...existing, entry].sort((a, b) => b.date.localeCompare(a.date)) };
+    });
+  };
+
+  // Quick check-in
+  const handleCheckIn = () => {
+    const entry = todayEntry(currentUser);
+    if (entry) {
+      // Update existing
+      upsertEntry(currentUser, { ...entry, checkIn: nowStr(), status: 'present' });
     } else {
-      setShowCheckInPrompt(false);
-    }
-  }, [isManager, isWorkday, hasCheckedIn]);
-
-  const doCheckIn = async () => {
-    // If late and no reason provided for office check-in, require one
-    if (isLateNow && checkInType === 'office' && !checkInReason.trim()) {
-      alert('You are checking in late — please provide a reason before submitting.');
-      return;
-    }
-    if (hasCheckedIn && !window.confirm('You already checked in today — overwrite?')) return;
-    setCheckInSaving(true);
-    const arrival = londonTimeStr();
-    const ls = lateStatus(arrival);
-    const updated = {
-      ...tk,
-      [currentUser]: {
-        ...(tk[currentUser] || {}),
-        [todayStr()]: {
-          type: checkInType,
-          arrival: arrival,
-          note: checkInNote || undefined,
-          lateReason: (ls?.status === 'late' || ls?.status === 'warn') ? (checkInReason || undefined) : undefined,
-          checkedInAt: new Date().toISOString(),
-          checkedInBy: currentUser,
-          confirmedBy: isManager ? currentUser : null,
-          confirmedAt: isManager ? new Date().toISOString() : null,
-        },
-      },
-    };
-    setTimekeeping(updated);
-    setCheckInMsg(`✅ Checked in at ${arrival} London time — ${checkInType === 'office' ? '🏢 In Office' : '🏠 WFH'}`);
-    setCheckInReason('');
-    setCheckInNote('');
-    setCheckInSaving(false);
-    setShowCheckInPrompt(false);
-    setTimeout(() => setCheckInMsg(''), 8000);
-  };
-
-  const confirmCheckIn = (userId, date) => {
-    const rec = (tk[userId] || {})[date];
-    if (!rec) return;
-    const updated = { ...tk, [userId]: { ...(tk[userId] || {}), [date]: { ...rec, confirmedBy: currentUser, confirmedAt: new Date().toISOString() } } };
-    setTimekeeping(updated);
-  };
-
-  const unconfirmCheckIn = (userId, date) => {
-    const rec = (tk[userId] || {})[date];
-    if (!rec) return;
-    const { confirmedBy, confirmedAt, ...rest } = rec;
-    const updated = { ...tk, [userId]: { ...(tk[userId] || {}), [date]: rest } };
-    setTimekeeping(updated);
-  };
-
-  // ── Derive stats per user for date range ────────────────────────────────────
-  const getUserStats = useCallback((userId, startDate, endDate) => {
-    const records = tk[userId] || {};
-    let officeDays = 0, wfhDays = 0, absentDays = 0, bankHolCount = 0, holidayCount = 0;
-    let lateArrivals = [], onTimeDays = 0, totalWorkdays = 0;
-    let lateStreak = 0, maxLateStreak = 0;
-    const daily = [];
-
-    let cur = startDate;
-    while (cur <= endDate) {
-      if (isWeekday(cur)) {
-        const isBH  = isBankHoliday(cur, bh);
-        const isHol = isOnHoliday(cur, userId, holidays);
-        const isFut = cur > todayStr();
-        if (isBH)        { bankHolCount++; officeDays++; daily.push({ date: cur, type: 'bankHoliday' }); }
-        else if (isHol)  { holidayCount++; daily.push({ date: cur, type: 'holiday' }); }
-        else if (isFut)  { daily.push({ date: cur, type: 'future' }); }
-        else {
-          totalWorkdays++;
-          const rec = records[cur];
-          if (rec) {
-            if (rec.type === 'office') {
-              officeDays++;
-              const ls = lateStatus(rec.arrival);
-              if (ls && ls.status === 'late') {
-                lateArrivals.push({ date: cur, ...ls, arrival: rec.arrival });
-                lateStreak++;
-                if (lateStreak > maxLateStreak) maxLateStreak = lateStreak;
-              } else { onTimeDays++; lateStreak = 0; }
-              daily.push({ date: cur, type: 'office', arrival: rec.arrival, departure: rec.departure, lateStatus: ls });
-            } else if (rec.type === 'wfh')    { wfhDays++;    lateStreak = 0; daily.push({ date: cur, type: 'wfh' }); }
-            else if (rec.type === 'absent')   { absentDays++; lateStreak = 0; daily.push({ date: cur, type: 'absent', note: rec.note }); }
-          } else { daily.push({ date: cur, type: 'missing' }); lateStreak = 0; }
-        }
-      }
-      cur = addDays(cur, 1);
-    }
-
-    const rtoCompliance = totalWorkdays > 0
-      ? Math.round((officeDays / (totalWorkdays + bankHolCount - holidayCount)) * 100)
-      : 0;
-
-    return { officeDays, wfhDays, absentDays, bankHolCount, holidayCount, totalWorkdays,
-      lateArrivals, onTimeDays, maxLateStreak, rtoCompliance, daily };
-  }, [tk, bh, holidays]);
-
-  // ── Current week stats per user ─────────────────────────────────────────────
-  const weekEnd = addDays(selectedWeek, 4);
-  const allStats = useMemo(() =>
-    engineers.map(u => ({ user: u, stats: getUserStats(u.id, selectedWeek, weekEnd) })),
-    [engineers, getUserStats, selectedWeek, weekEnd]);
-
-  // ── Month stats ─────────────────────────────────────────────────────────────
-  const monthStats = useMemo(() => {
-    const [y, m] = viewMonth.split('-').map(Number);
-    const start = `${y}-${String(m).padStart(2,'0')}-01`;
-    const end   = new Date(y, m, 0).toISOString().slice(0,10);
-    return engineers.map(u => ({ user: u, stats: getUserStats(u.id, start, end) }));
-  }, [engineers, getUserStats, viewMonth]);
-
-  // ── Late-arrival pattern alerts ─────────────────────────────────────────────
-  const patternAlerts = useMemo(() => {
-    const thirtyDaysAgo = addDays(todayStr(), -30);
-    return engineers.map(u => {
-      const s = getUserStats(u.id, thirtyDaysAgo, todayStr());
-      // Look for consecutive late runs
-      const recs = (tk[u.id] || {});
-      let streak = 0, maxStreak = 0, lastDate = null;
-      Object.keys(recs).sort().forEach(d => {
-        if (d < thirtyDaysAgo) return;
-        const r = recs[d];
-        if (r?.type === 'office') {
-          const ls = lateStatus(r.arrival);
-          if (ls?.status === 'late') { streak++; if (streak > maxStreak) { maxStreak = streak; lastDate = d; } }
-          else streak = 0;
-        }
+      upsertEntry(currentUser, {
+        id: `ck-${currentUser}-${Date.now()}`,
+        date: today, checkIn: nowStr(), checkOut: null,
+        status: 'present', notes: '', confirmedByManager: false,
       });
-      return { user: u, lateCount: s.lateArrivals.length, maxStreak, lastDate,
-        rtoCompliance: s.rtoCompliance,
-        hasPattern: maxStreak >= STREAK_THRESHOLD || s.lateArrivals.length >= 5 };
-    }).filter(a => a.lateCount > 0 || a.maxStreak > 0);
-  }, [engineers, getUserStats, tk]);
-
-  // ── Save a record ────────────────────────────────────────────────────────────
-  const saveRecord = async () => {
-    if (!logUser || !logDate) return;
-    setSaving(true);
-    const updated = {
-      ...tk,
-      [logUser]: {
-        ...(tk[logUser] || {}),
-        [logDate]: {
-          type: logType,
-          arrival:   logType === 'office' ? logArrival   : undefined,
-          departure: logType === 'office' ? logDeparture : undefined,
-          note:      logNote || undefined,
-          loggedBy:  currentUser,
-          loggedAt:  new Date().toISOString(),
-        },
-      },
-    };
-    setTimekeeping(updated);
-    setShowLogModal(false);
-    setLogNote('');
-    setSaving(false);
+    }
   };
 
-  const deleteRecord = (userId, date) => {
-    if (!window.confirm(`Delete record for ${formatDate(date)}?`)) return;
-    const updated = { ...tk, [userId]: { ...(tk[userId] || {}) } };
-    delete updated[userId][date];
-    setTimekeeping(updated);
+  // Quick check-out
+  const handleCheckOut = () => {
+    const entry = todayEntry(currentUser);
+    if (!entry) return;
+    upsertEntry(currentUser, { ...entry, checkOut: nowStr() });
   };
 
-  const openLog = (userId, date) => {
-    const rec = (tk[userId] || {})[date];
-    setLogUser(userId);
-    setLogDate(date);
-    setLogType(rec?.type || 'office');
-    setLogArrival(rec?.arrival || '09:00');
-    setLogDeparture(rec?.departure || '18:00');
-    setLogNote(rec?.note || '');
-    setShowLogModal(true);
+  // Save log modal
+  const saveLogEntry = () => {
+    if (!logForm.date || !logForm.checkIn) return;
+    const uid = isManager ? logForm.userId : currentUser;
+    const id  = editEntry?.id || `ck-${uid}-${Date.now()}`;
+    upsertEntry(uid, {
+      id, date: logForm.date, checkIn: logForm.checkIn, checkOut: logForm.checkOut || null,
+      status: logForm.status, notes: logForm.notes || '',
+      confirmedByManager: editEntry?.confirmedByManager || false,
+    });
+    setLogModal(false);
+    setEditEntry(null);
   };
 
-  // ── 13-week heat map data ────────────────────────────────────────────────────
-  const heatWeeks = useMemo(() => getWeeksFrom(addDays(todayStr(), -77), 14), []);
+  const openEditEntry = (uid, entry) => {
+    setLogForm({
+      userId: uid, date: entry.date,
+      checkIn: entry.checkIn || '', checkOut: entry.checkOut || '',
+      status: entry.status, notes: entry.notes || '',
+    });
+    setEditEntry(entry);
+    setLogModal(true);
+  };
 
-  // ── Colours ──────────────────────────────────────────────────────────────────
-  const ACCENT   = '#00c2ff';
-  const GREEN    = '#22c55e';
-  const AMBER    = '#f59e0b';
-  const RED      = '#ef4444';
-  const PURPLE   = '#a78bfa';
-  const BLUE     = '#60a5fa';
-  const MUTED    = '#475569';
+  const openNewLog = () => {
+    setLogForm({ userId: currentUser, date: today, checkIn: '', checkOut: '', status: 'present', notes: '' });
+    setEditEntry(null);
+    setLogModal(true);
+  };
 
-  const tabCfg = isManager
-    ? [
-        { id: 'dashboard', icon: '◈',  label: 'Dashboard' },
-        { id: 'checkins',  icon: '✅',  label: `Check-Ins${Object.values(tk).flatMap(u=>Object.entries(u)).filter(([d,r])=>d===todayStr()&&!r.confirmedBy).length > 0 ? ` (${Object.values(tk).flatMap(u=>Object.entries(u)).filter(([d,r])=>d===todayStr()&&!r.confirmedBy).length})` : ''}` },
-        { id: 'weekly',    icon: '📅',  label: 'Weekly View' },
-        { id: 'monthly',   icon: '📆',  label: 'Monthly' },
-        { id: 'heatmap',   icon: '🔥',  label: 'Heat Map' },
-        { id: 'alerts',    icon: '🚨',  label: `Alerts${patternAlerts.filter(a=>a.hasPattern).length > 0 ? ` (${patternAlerts.filter(a=>a.hasPattern).length})` : ''}` },
-        { id: 'log',       icon: '📋',  label: 'Attendance Log' },
-      ]
-    : [
-        { id: 'checkin',   icon: '✅',  label: 'Check In' },
-        { id: 'myweek',    icon: '📅',  label: 'My Week' },
-      ];
+  const deleteEntry = (uid, entryId) => {
+    if (!window.confirm('Delete this entry?')) return;
+    setTimekeeping(prev => ({ ...prev, [uid]: (prev[uid] || []).filter(e => e.id !== entryId) }));
+  };
 
-  return (
-    <div style={{ maxWidth: 1200 }}>
+  // Manager: confirm entry
+  const confirmEntry = (uid, entryId) => {
+    setTimekeeping(prev => ({
+      ...prev,
+      [uid]: (prev[uid] || []).map(e => e.id === entryId
+        ? { ...e, confirmedByManager: true, confirmedAt: new Date().toISOString() }
+        : e),
+    }));
+    setConfirmModal(null);
+  };
 
-      {/* ══════════════════════════════════════════════════════════════════════ */}
-      {/* ENGINEER CHECK-IN PROMPT — full-screen overlay on weekdays until done */}
-      {/* ══════════════════════════════════════════════════════════════════════ */}
-      {showCheckInPrompt && !isManager && (
-        <div style={{
-          position: 'fixed', inset: 0, zIndex: 9998,
-          background: 'rgba(4,8,18,0.88)', backdropFilter: 'blur(6px)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24,
+  // ─────────────────────────────────────────────────────────────────────
+  // Derived data for stats
+  // ─────────────────────────────────────────────────────────────────────
+  const myEntries        = userEntries(currentUser);
+  const myTodayEntry     = todayEntry(currentUser);
+  const amCheckedIn      = isCheckedIn(currentUser);
+  const amCheckedOut     = isCheckedOut(currentUser);
+
+  // Manager stats
+  const presentToday     = users.filter(u => todayEntry(u.id)?.status === 'present' || isCheckedIn(u.id)).length;
+  const wfhToday         = users.filter(u => todayEntry(u.id)?.status === 'wfh').length;
+  const absentToday      = users.filter(u => todayEntry(u.id)?.status === 'absent').length;
+  const pendingConfirm   = users.flatMap(u => userEntries(u.id).filter(e => !e.confirmedByManager)).length;
+
+  // My monthly hours
+  const myMonthEntries   = myEntries.filter(e => e.date.startsWith(`${viewYear}-${String(viewMonth + 1).padStart(2, '0')}`));
+  const myMonthHrs       = myMonthEntries.reduce((a, e) => {
+    const h = fmtHours(e.checkIn, e.checkOut);
+    if (!h) return a;
+    const [hrs] = h.split('h');
+    return a + parseFloat(hrs || 0);
+  }, 0);
+
+  // Week entries filter
+  const displayedUsers = isManager
+    ? (filterUser === 'all' ? users : users.filter(u => u.id === filterUser))
+    : users.filter(u => u.id === currentUser);
+
+  const allTodayEntries = users.map(u => ({ user: u, entry: todayEntry(u.id) }));
+
+  // Status filter for manager today view
+  const filteredToday = allTodayEntries.filter(({ entry }) => {
+    if (statusFilter === 'all')           return true;
+    if (statusFilter === 'in')            return entry && entry.checkIn && !entry.checkOut;
+    if (statusFilter === 'out')           return entry && entry.checkIn && entry.checkOut;
+    if (statusFilter === 'not-logged')    return !entry;
+    return entry?.status === statusFilter;
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Render helpers
+  // ─────────────────────────────────────────────────────────────────────
+  const SectionTitle = ({ children }) => (
+    <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 10 }}>
+      {children}
+    </div>
+  );
+
+  // ─────────────────────────────────────────────────────────────────────
+  // ── ENGINEER VIEW ────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────
+  if (!isManager) {
+    return (
+      <div>
+        <PageHeader
+          title="Time Keeping"
+          sub="Log your attendance — check in, check out, and view your history"
+          actions={
+            <button className="btn btn-secondary btn-sm" onClick={openNewLog}>✏ Log Manually</button>
+          }
+        />
+
+        {/* ── Today's card ── */}
+        <div className="card mb-16" style={{
+          borderLeft: `4px solid ${amCheckedOut ? '#10b981' : amCheckedIn ? '#f59e0b' : 'var(--border)'}`,
         }}>
-          <div style={{
-            background: '#0f172a', border: '1px solid rgba(0,194,255,0.25)', borderRadius: 18,
-            padding: 36, width: '100%', maxWidth: 440,
-            boxShadow: '0 30px 80px rgba(0,0,0,0.7), 0 0 40px rgba(0,194,255,0.08)',
-          }}>
-            {/* Header */}
-            <div style={{ textAlign: 'center', marginBottom: 28 }}>
-              <div style={{ fontSize: 44, marginBottom: 8 }}>
-                {isLateNow ? '⚠️' : '👋'}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 12 }}>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 4 }}>
+                {new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
               </div>
-              <div style={{ fontSize: 20, fontWeight: 800, letterSpacing: '-0.5px', marginBottom: 4 }}>
-                {isLateNow
-                  ? 'You\'re checking in late'
-                  : `Good ${londonH < 12 ? 'morning' : 'afternoon'}, ${me?.name?.split(' ')[0] || 'there'}`}
-              </div>
-              <div style={{ fontSize: 12, color: '#64748b', fontFamily: 'DM Mono' }}>
-                {londonNow().toLocaleDateString('en-GB',{weekday:'long',day:'2-digit',month:'long',year:'numeric'})}
-                &nbsp;·&nbsp;{londonTimeStr()} London
-              </div>
-              {isLateNow && (
-                <div style={{ marginTop: 8, display: 'inline-flex', alignItems: 'center', gap: 6, background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 8, padding: '4px 12px', fontSize: 12, color: '#fca5a5', fontFamily: 'DM Mono' }}>
-                  Office start was 09:00 · Now {londonTimeStr()}
+              {myTodayEntry ? (
+                <div>
+                  <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 8 }}>
+                    <StatusPill status={myTodayEntry.status} />
+                    {myTodayEntry.confirmedByManager && (
+                      <span style={{ fontSize: 11, color: '#10b981', display: 'flex', alignItems: 'center', gap: 3 }}>✓ Manager confirmed</span>
+                    )}
+                  </div>
+                  <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
+                    <div>
+                      <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 1 }}>CHECK IN</div>
+                      <div style={{ fontFamily: 'DM Mono', fontSize: 18, fontWeight: 700, color: '#6ee7b7' }}>
+                        {myTodayEntry.checkIn || '—'}
+                      </div>
+                    </div>
+                    {myTodayEntry.checkOut && (
+                      <div>
+                        <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 1 }}>CHECK OUT</div>
+                        <div style={{ fontFamily: 'DM Mono', fontSize: 18, fontWeight: 700, color: '#fcd34d' }}>
+                          {myTodayEntry.checkOut}
+                        </div>
+                      </div>
+                    )}
+                    {fmtHours(myTodayEntry.checkIn, myTodayEntry.checkOut) && (
+                      <div>
+                        <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 1 }}>DURATION</div>
+                        <div style={{ fontFamily: 'DM Mono', fontSize: 18, fontWeight: 700, color: '#a78bfa' }}>
+                          {fmtHours(myTodayEntry.checkIn, myTodayEntry.checkOut)}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  {myTodayEntry.notes && (
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 8 }}>📝 {myTodayEntry.notes}</div>
+                  )}
                 </div>
+              ) : (
+                <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>You haven't checked in today yet.</div>
               )}
             </div>
 
-            {/* Location toggle */}
-            <div style={{ marginBottom: 16 }}>
-              <div style={{ fontSize: 11, color: '#64748b', marginBottom: 8, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                Where are you working today?
-              </div>
-              <div style={{ display: 'flex', gap: 10 }}>
-                {[['office','🏢 In Office','#22c55e'],['wfh','🏠 Working from Home','#60a5fa']].map(([v,l,c]) => (
-                  <div key={v} onClick={() => setCheckInType(v)}
-                    style={{ flex: 1, padding: '14px 8px', textAlign: 'center', borderRadius: 10, cursor: 'pointer',
-                      fontSize: 13, fontWeight: 700,
-                      background: checkInType === v ? `rgba(${v==='office'?'34,197,94':'96,165,250'},0.15)` : 'rgba(255,255,255,0.03)',
-                      border: `2px solid ${checkInType === v ? c : 'rgba(255,255,255,0.07)'}`,
-                      color: checkInType === v ? c : '#475569', transition: 'all 0.15s' }}>
-                    {l}
+            {/* Check-in / Check-out buttons */}
+            <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+              {!amCheckedIn && !amCheckedOut && (
+                <button className="btn btn-primary" style={{ fontSize: 15, padding: '10px 20px' }} onClick={handleCheckIn}>
+                  ✅ Check In {nowStr()}
+                </button>
+              )}
+              {amCheckedIn && (
+                <>
+                  <div style={{ fontSize: 12, color: '#f59e0b', display: 'flex', alignItems: 'center', gap: 4, padding: '10px 14px', background: 'rgba(245,158,11,0.1)', borderRadius: 8, border: '1px solid rgba(245,158,11,0.3)' }}>
+                    🟡 Checked in since {myTodayEntry.checkIn}
                   </div>
-                ))}
-              </div>
+                  <button className="btn btn-secondary" style={{ fontSize: 15, padding: '10px 20px' }} onClick={handleCheckOut}>
+                    🔴 Check Out {nowStr()}
+                  </button>
+                </>
+              )}
+              {amCheckedOut && (
+                <button className="btn btn-secondary btn-sm" onClick={() => openEditEntry(currentUser, myTodayEntry)}>✏ Edit</button>
+              )}
             </div>
+          </div>
+        </div>
 
-            {/* Late reason — required when past grace period */}
-            {isLateNow && (
-              <div style={{ marginBottom: 14 }}>
-                <div style={{ fontSize: 11, color: '#fca5a5', marginBottom: 6, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                  Reason for late {checkInType === 'office' ? 'arrival' : 'start'} *
-                </div>
-                <textarea
-                  value={checkInReason}
-                  onChange={e => setCheckInReason(e.target.value)}
-                  placeholder={checkInType === 'office'
-                    ? 'e.g. Train delays, medical appointment, traffic…'
-                    : 'e.g. Doctor appointment, personal emergency, prior approval…'}
-                  rows={3}
-                  style={{ width: '100%', boxSizing: 'border-box', padding: '9px 12px', background: 'rgba(239,68,68,0.08)', border: `1px solid ${checkInReason.trim() ? 'rgba(239,68,68,0.3)' : 'rgba(239,68,68,0.5)'}`, borderRadius: 8, color: '#e2e8f0', fontSize: 13, outline: 'none', resize: 'vertical', fontFamily: 'inherit' }}
-                />
-                {!checkInReason.trim() && (
-                  <div style={{ fontSize: 10, color: '#f87171', marginTop: 3 }}>⚠ A reason is required for late check-in</div>
+        {/* ── View tabs ── */}
+        <div style={{ display: 'flex', gap: 4, marginBottom: 16 }}>
+          {[{ id: 'week', label: '📅 Weekly View' }, { id: 'month', label: '📆 Monthly View' }].map(t => (
+            <button key={t.id} className={`btn btn-sm ${tab === t.id ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab(t.id)}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        {/* ── Weekly view ── */}
+        {tab === 'week' && (
+          <div className="card">
+            {/* Nav */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+              <button className="btn btn-secondary btn-sm" onClick={() => setWeekOffset(o => o - 1)}>← Prev Week</button>
+              <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)', textAlign: 'center' }}>
+                {weekLabel}
+                {weekOffset !== 0 && (
+                  <button className="btn btn-secondary btn-sm" style={{ marginLeft: 10 }} onClick={() => setWeekOffset(0)}>Today</button>
                 )}
               </div>
-            )}
-
-            {/* Optional note */}
-            <div style={{ marginBottom: 20 }}>
-              <div style={{ fontSize: 11, color: '#64748b', marginBottom: 5, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                Note (optional)
-              </div>
-              <input type="text" value={checkInNote} onChange={e => setCheckInNote(e.target.value)}
-                placeholder="e.g. Client site today, early finish at 4pm…"
-                style={{ width: '100%', boxSizing: 'border-box', padding: '9px 12px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, color: '#e2e8f0', fontSize: 13, outline: 'none' }} />
+              <button className="btn btn-secondary btn-sm" onClick={() => setWeekOffset(o => o + 1)}>Next Week →</button>
             </div>
 
-            {/* Submit button */}
-            <button onClick={doCheckIn} disabled={checkInSaving || (isLateNow && !checkInReason.trim())}
-              style={{ width: '100%', padding: '14px 0', background: ACCENT, color: '#000', border: 'none', borderRadius: 10, fontWeight: 800, fontSize: 15, cursor: (isLateNow && !checkInReason.trim()) ? 'not-allowed' : 'pointer', boxShadow: '0 0 20px rgba(0,194,255,0.3)', opacity: (isLateNow && !checkInReason.trim()) ? 0.5 : 1, transition: 'opacity 0.15s' }}>
-              {checkInSaving ? '⏳ Saving…' : `✓ Check In — ${londonTimeStr()}`}
-            </button>
+            <WeekView entries={myEntries} weekDates={weekDates} bankHolidays={bankHolidays} />
 
-            <button onClick={() => setShowCheckInPrompt(false)}
-              style={{ width: '100%', marginTop: 10, padding: '8px', background: 'transparent', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8, color: '#475569', fontSize: 12, cursor: 'pointer' }}>
-              Skip for now (reminder will stay active)
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* ══════════════════════════════════════════════════════════════════════ */}
-      {/* TOP CHECK-IN BAR — visible to everyone at all times                  */}
-      {/* ══════════════════════════════════════════════════════════════════════ */}
-      <div style={{
-        display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16,
-        background: hasCheckedIn ? 'rgba(34,197,94,0.07)' : 'rgba(0,194,255,0.07)',
-        border: `1px solid ${hasCheckedIn ? 'rgba(34,197,94,0.25)' : 'rgba(0,194,255,0.25)'}`,
-        borderRadius: 12, padding: '12px 18px', flexWrap: 'wrap',
-      }}>
-        {/* Status pill */}
-        <div style={{ display:'flex', alignItems:'center', gap:8, flex:1, minWidth:180 }}>
-          <div style={{
-            width: 10, height: 10, borderRadius: '50%', flexShrink: 0,
-            background: hasCheckedIn ? '#22c55e' : '#f59e0b',
-            boxShadow: `0 0 8px ${hasCheckedIn ? '#22c55e' : '#f59e0b'}`,
-          }} />
-          <div>
-            <div style={{ fontSize: 13, fontWeight: 700, color: hasCheckedIn ? '#22c55e' : '#f59e0b' }}>
-              {hasCheckedIn
-                ? (myTodayRec.type === 'office' ? '🏢 Checked in — In Office' : '🏠 Checked in — WFH')
-                : '⏳ Not checked in today'}
+            {/* Week summary */}
+            <div style={{ display: 'flex', gap: 12, marginTop: 14, padding: '10px 0', borderTop: '1px solid var(--border)', flexWrap: 'wrap' }}>
+              {STATUS_OPTIONS.map(s => {
+                const count = weekDates.filter(d => myEntries.find(e => e.date === d)?.status === s.value).length;
+                return count > 0 ? (
+                  <div key={s.value} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12 }}>
+                    <span style={{ color: s.color }}>{s.icon}</span>
+                    <span style={{ color: 'var(--text-muted)' }}>{s.label}:</span>
+                    <span style={{ fontWeight: 600 }}>{count}</span>
+                  </div>
+                ) : null;
+              })}
             </div>
-            <div style={{ fontSize: 11, color: '#64748b', fontFamily: 'DM Mono', marginTop: 1 }}>
-              {hasCheckedIn
-                ? `${myTodayRec.arrival ? myTodayRec.arrival + ' London time' : 'Today'} · ${myTodayRec.confirmedBy ? '✓ Manager confirmed' : 'Pending confirmation'}`
-                : `London time: ${londonTimeStr()}`}
-            </div>
-          </div>
-        </div>
-
-        {/* Quick type toggle */}
-        {!hasCheckedIn && (
-          <div style={{ display:'flex', gap:6 }}>
-            {[['office','🏢 Office','#22c55e'],['wfh','🏠 WFH','#60a5fa']].map(([v,l,c]) => (
-              <div key={v} onClick={() => setCheckInType(v)}
-                style={{ padding:'6px 14px', borderRadius:7, cursor:'pointer', fontSize:12, fontWeight:700,
-                  background: checkInType===v ? `rgba(${v==='office'?'34,197,94':'96,165,250'},0.15)` : 'rgba(255,255,255,0.04)',
-                  border: `1.5px solid ${checkInType===v ? c : 'rgba(255,255,255,0.08)'}`,
-                  color: checkInType===v ? c : '#64748b', transition:'all 0.15s' }}>
-                {l}
-              </div>
-            ))}
           </div>
         )}
 
-        {/* Check-in / Update button */}
-        <button onClick={doCheckIn} disabled={checkInSaving}
-          style={{ padding:'9px 22px', background: hasCheckedIn ? 'rgba(255,255,255,0.08)' : ACCENT,
-            color: hasCheckedIn ? '#94a3b8' : '#000', border: hasCheckedIn ? '1px solid rgba(255,255,255,0.12)' : 'none',
-            borderRadius:8, fontWeight:800, fontSize:13, cursor:'pointer', whiteSpace:'nowrap',
-            boxShadow: hasCheckedIn ? 'none' : '0 0 16px rgba(0,194,255,0.3)' }}>
-          {checkInSaving ? '⏳…' : hasCheckedIn ? '↩ Update' : `✓ Check In — ${londonTimeStr()}`}
-        </button>
-      </div>
-
-      {/* Late check-in warning */}
-      {showLateWarning && (
-        <div style={{
-          display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14,
-          background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)',
-          borderRadius: 10, padding: '10px 16px',
-        }}>
-          <span style={{ fontSize: 20 }}>⚠️</span>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: '#fca5a5' }}>You haven't checked in yet</div>
-            <div style={{ fontSize: 12, color: '#94a3b8' }}>
-              It's past 9:30am London time. Please check in above so your attendance is recorded for today.
-            </div>
-          </div>
-          <button onClick={doCheckIn}
-            style={{ padding:'7px 16px', background:'rgba(239,68,68,0.15)', border:'1px solid rgba(239,68,68,0.35)', borderRadius:7, color:'#fca5a5', fontWeight:700, fontSize:12, cursor:'pointer' }}>
-            Check In Now
-          </button>
-        </div>
-      )}
-
-      {/* Success message */}
-      {checkInMsg && (
-        <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:14, background:'rgba(34,197,94,0.1)', border:'1px solid rgba(34,197,94,0.25)', borderRadius:8, padding:'10px 14px', fontSize:13, color:'#22c55e', fontWeight:600 }}>
-          {checkInMsg}
-        </div>
-      )}
-
-      {/* ── Header ─────────────────────────────────────────────────────────── */}
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 16, flexWrap: 'wrap', gap: 12 }}>
-        <div>
-          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, letterSpacing: '-0.5px' }}>
-            🕒 Time Keeping
-          </h1>
-          <div style={{ fontSize: 12, color: '#64748b', marginTop: 3, fontFamily: 'DM Mono' }}>
-            RTO Policy: {RTO_DAYS_REQUIRED} days/week in office · Start {START_TIME} · Grace {GRACE_LATE_WARN}–{GRACE_LATE_LATE} min
-          </div>
-        </div>
-        <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
-          {isManager && (
-            <>
-              <button onClick={() => setShowExport(true)}
-                style={{ display:'flex', alignItems:'center', gap:6, padding:'8px 16px', background:'rgba(16,185,129,0.12)', color:'#34d399', border:'1px solid rgba(16,185,129,0.3)', borderRadius:8, fontWeight:700, fontSize:13, cursor:'pointer' }}>
-                📥 Export Excel
-              </button>
-              <button
-                onClick={() => { setLogUser(engineers[0]?.id || ''); setLogDate(todayStr()); setLogType('office'); setLogArrival('09:00'); setLogDeparture('18:00'); setLogNote(''); setShowLogModal(true); }}
-                style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '9px 20px', background: ACCENT, color: '#000', border: 'none', borderRadius: 8, fontWeight: 700, fontSize: 13, cursor: 'pointer', boxShadow: `0 0 14px rgba(0,194,255,0.3)` }}>
-                + Log Attendance
-              </button>
-            </>
-          )}
-        </div>
-      </div>
-
-      {/* ── Tabs ───────────────────────────────────────────────────────────── */}
-      <div style={{ display: 'flex', gap: 4, marginBottom: 20, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 10, padding: 4, width: 'fit-content', flexWrap: 'wrap' }}>
-        {tabCfg.map(t => (
-          <div key={t.id} onClick={() => setTab(t.id)} style={{
-            padding: '7px 16px', borderRadius: 7, cursor: 'pointer', fontSize: 12.5, fontWeight: 600,
-            display: 'flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap',
-            background: tab === t.id ? 'rgba(0,194,255,0.1)' : 'transparent',
-            color: tab === t.id ? ACCENT : '#64748b',
-            border: tab === t.id ? '1px solid rgba(0,194,255,0.3)' : '1px solid transparent',
-            transition: 'all 0.15s',
-          }}>
-            <span>{t.icon}</span><span>{t.label}</span>
-          </div>
-        ))}
-      </div>
-
-      {/* ════════════════════════════════════════════════════════════════════ */}
-      {/* TAB: ENGINEER CHECK-IN                                              */}
-      {/* ════════════════════════════════════════════════════════════════════ */}
-      {tab === 'checkin' && (
-        <div style={{ maxWidth: 480 }}>
-          <div style={{ background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.07)', borderRadius:12, padding:24 }}>
-            <div style={{ fontSize:16, fontWeight:700, marginBottom:4 }}>Good {londonHour() < 12 ? 'morning' : londonHour() < 17 ? 'afternoon' : 'evening'}, {me?.name?.split(' ')[0] || 'there'} 👋</div>
-            <div style={{ fontSize:12, color:'#64748b', marginBottom:20 }}>{londonNow().toLocaleDateString('en-GB',{weekday:'long',day:'2-digit',month:'long',year:'numeric'})} · London</div>
-
-            {hasCheckedIn ? (
-              <div style={{ background:'rgba(34,197,94,0.1)', border:'1px solid rgba(34,197,94,0.25)', borderRadius:10, padding:'16px 18px', marginBottom:16 }}>
-                <div style={{ fontSize:14, fontWeight:700, color:'#22c55e', marginBottom:6 }}>
-                  {myTodayRec.type === 'office' ? '🏢 In Office' : '🏠 Working from Home'}
-                </div>
-                <div style={{ fontSize:12, color:'#64748b', fontFamily:'DM Mono' }}>
-                  Checked in at <strong>{myTodayRec.arrival || '—'}</strong> London time
-                </div>
-                <div style={{ fontSize:11, color:'#64748b', marginTop:4 }}>
-                  {myTodayRec.confirmedBy
-                    ? <span style={{ color:'#22c55e' }}>✓ Confirmed by manager</span>
-                    : <span style={{ color:'#f59e0b' }}>⏳ Awaiting manager confirmation</span>}
-                </div>
-                {myTodayRec.note && <div style={{ fontSize:11, color:'#475569', marginTop:4 }}>Note: {myTodayRec.note}</div>}
-              </div>
-            ) : (
-              <div style={{ background:'rgba(245,158,11,0.08)', border:'1px solid rgba(245,158,11,0.2)', borderRadius:10, padding:'12px 16px', marginBottom:16, fontSize:12, color:'#f59e0b' }}>
-                ⏳ Not checked in yet today. Use the <strong>Check In</strong> button at the top of the page.
-              </div>
-            )}
-
-            {/* Location toggle */}
-            <div style={{ marginBottom:14 }}>
-              <div style={{ fontSize:11, color:'#64748b', marginBottom:8, fontWeight:600, textTransform:'uppercase', letterSpacing:'0.5px' }}>Where are you working?</div>
-              <div style={{ display:'flex', gap:8 }}>
-                {[['office','🏢 In Office','#22c55e'],['wfh','🏠 WFH','#60a5fa']].map(([v,l,c]) => (
-                  <div key={v} onClick={() => setCheckInType(v)}
-                    style={{ flex:1, padding:'12px 0', textAlign:'center', borderRadius:8, cursor:'pointer', fontSize:13, fontWeight:700,
-                      background: checkInType===v ? `rgba(${v==='office'?'34,197,94':'96,165,250'},0.15)` : 'rgba(255,255,255,0.03)',
-                      border: `1.5px solid ${checkInType===v ? c : 'rgba(255,255,255,0.08)'}`,
-                      color: checkInType===v ? c : '#64748b', transition:'all 0.15s' }}>
-                    {l}
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Late reason — shown when past grace */}
-            {isLateNow && (
-              <div style={{ marginBottom:14 }}>
-                <div style={{ fontSize:11, color:'#fca5a5', marginBottom:5, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.5px' }}>
-                  Reason for late {checkInType==='office'?'arrival':'start'} *
-                </div>
-                <textarea value={checkInReason} onChange={e=>setCheckInReason(e.target.value)} rows={2}
-                  placeholder={checkInType==='office'?'e.g. Train delays, medical appointment…':'e.g. Doctor appointment, prior approval…'}
-                  style={{ width:'100%', boxSizing:'border-box', padding:'9px 12px', background:'rgba(239,68,68,0.08)', border:`1px solid ${checkInReason.trim()?'rgba(239,68,68,0.3)':'rgba(239,68,68,0.5)'}`, borderRadius:8, color:'#e2e8f0', fontSize:13, outline:'none', resize:'vertical', fontFamily:'inherit' }} />
-                {!checkInReason.trim() && <div style={{ fontSize:10, color:'#f87171', marginTop:3 }}>⚠ Required for late check-in</div>}
-              </div>
-            )}
-
-            <div style={{ marginBottom:16 }}>
-              <div style={{ fontSize:11, color:'#64748b', marginBottom:5, fontWeight:600, textTransform:'uppercase', letterSpacing:'0.5px' }}>Note (optional)</div>
-              <input type="text" value={checkInNote} onChange={e=>setCheckInNote(e.target.value)}
-                placeholder="e.g. Client site visit, working from home today…"
-                style={{ width:'100%', boxSizing:'border-box', padding:'9px 12px', background:'rgba(255,255,255,0.05)', border:'1px solid rgba(255,255,255,0.1)', borderRadius:7, color:'#e2e8f0', fontSize:13, outline:'none' }} />
-            </div>
-
-            <button onClick={doCheckIn} disabled={checkInSaving}
-              style={{ width:'100%', padding:'13px 0', background:ACCENT, color:'#000', border:'none', borderRadius:8, fontWeight:800, fontSize:14, cursor:'pointer', boxShadow:`0 0 18px rgba(0,194,255,0.25)` }}>
-              {checkInSaving ? '⏳ Saving…' : hasCheckedIn ? `↩ Update Check-In` : `✓ Check In — ${londonTimeStr()}`}
-            </button>
-          </div>
-
-          {/* My recent week */}
-          <div style={{ marginTop:16, background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.07)', borderRadius:10, padding:'14px 16px' }}>
-            <div style={{ fontSize:12, fontWeight:700, marginBottom:10, color:'#94a3b8' }}>This week</div>
-            <div style={{ display:'flex', gap:6 }}>
-              {getAllWeekdays(getWeekStart(todayStr())).map(d => {
-                const rec  = (tk[currentUser] || {})[d];
-                const isBH = isBankHoliday(d, bh);
-                const isT  = d === todayStr();
-                const isFut= d > todayStr();
-                let icon = '—', color = '#334155';
-                if (isBH)              { icon = '🏛'; color = '#a78bfa'; }
-                else if (isFut)        { icon = '·'; color = '#334155'; }
-                else if (rec?.type==='office') { icon='🏢'; color='#22c55e'; }
-                else if (rec?.type==='wfh')    { icon='🏠'; color='#60a5fa'; }
-                else if (rec?.type==='absent') { icon='🤒'; color='#ef4444'; }
-                return (
-                  <div key={d} style={{ flex:1, textAlign:'center', padding:'8px 4px', borderRadius:7,
-                    background: isT ? 'rgba(0,194,255,0.08)' : 'rgba(255,255,255,0.02)',
-                    border: `1px solid ${isT ? 'rgba(0,194,255,0.25)' : 'rgba(255,255,255,0.05)'}` }}>
-                    <div style={{ fontSize:9, color:'#475569', marginBottom:3, fontFamily:'DM Mono' }}>
-                      {new Date(d+'T12:00:00').toLocaleDateString('en-GB',{weekday:'short'})}
-                    </div>
-                    <div style={{ fontSize:16 }}>{icon}</div>
-                    {rec?.confirmedBy && <div style={{ fontSize:8, color:'#22c55e', marginTop:2 }}>✓</div>}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ════════════════════════════════════════════════════════════════════ */}
-      {/* TAB: ENGINEER MY WEEK (read-only own data)                         */}
-      {/* ════════════════════════════════════════════════════════════════════ */}
-      {tab === 'myweek' && (
-        <div>
-          <div style={{ fontSize:13, color:'#64748b', marginBottom:14 }}>Your attendance for the current week. Contact your manager to correct any errors.</div>
-          <div style={{ display:'flex', gap:6 }}>
-            {getAllWeekdays(getWeekStart(todayStr())).map(d => {
-              const rec  = (tk[currentUser] || {})[d];
-              const isBH = isBankHoliday(d, bh);
-              const isT  = d === todayStr();
-              const isFut= d > todayStr();
-              let typeLbl='No data', typeColor='#334155', typeIcon='—';
-              if (isBH)              { typeLbl='Bank Holiday'; typeColor='#a78bfa'; typeIcon='🏛'; }
-              else if (isOnHoliday(d,currentUser,holidays)) { typeLbl='Holiday'; typeColor='#c4b5fd'; typeIcon='🌴'; }
-              else if (isFut)        { typeLbl='Future'; typeColor='#334155'; typeIcon='·'; }
-              else if (rec?.type==='office') { typeLbl=rec.arrival?`In at ${rec.arrival}`:'In Office'; typeColor='#22c55e'; typeIcon='🏢'; }
-              else if (rec?.type==='wfh')    { typeLbl='WFH'; typeColor='#60a5fa'; typeIcon='🏠'; }
-              else if (rec?.type==='absent') { typeLbl='Absent'; typeColor='#ef4444'; typeIcon='🤒'; }
-              return (
-                <div key={d} style={{ flex:1, borderRadius:10, background: isT?'rgba(0,194,255,0.06)':'rgba(255,255,255,0.02)', border:`1.5px solid ${isT?'rgba(0,194,255,0.25)':'rgba(255,255,255,0.06)'}`, padding:'14px 10px', textAlign:'center' }}>
-                  <div style={{ fontSize:11, color:isT?ACCENT:'#64748b', fontWeight:600, marginBottom:4 }}>
-                    {new Date(d+'T12:00:00').toLocaleDateString('en-GB',{weekday:'short',day:'2-digit',month:'short'})}
-                  </div>
-                  <div style={{ fontSize:24, marginBottom:6 }}>{typeIcon}</div>
-                  <div style={{ fontSize:11, color:typeColor, fontWeight:600 }}>{typeLbl}</div>
-                  {rec?.confirmedBy
-                    ? <div style={{ fontSize:10, color:'#22c55e', marginTop:4 }}>✓ Confirmed</div>
-                    : rec && !isBH && <div style={{ fontSize:10, color:'#f59e0b', marginTop:4 }}>Pending</div>
-                  }
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* ════════════════════════════════════════════════════════════════════ */}
-      {/* TAB: MANAGER CHECK-INS CONFIRMATION                                */}
-      {/* ════════════════════════════════════════════════════════════════════ */}
-      {tab === 'checkins' && isManager && (
-        <div>
-          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:14, flexWrap:'wrap', gap:8 }}>
-            <div style={{ fontSize:12, color:'#64748b' }}>
-              Today — {londonNow().toLocaleDateString('en-GB',{weekday:'long',day:'2-digit',month:'long'})} · London time {londonTimeStr()}
-            </div>
-            <div style={{ display:'flex', gap:8, fontSize:11, color:'#475569' }}>
-              <span style={{ display:'flex', alignItems:'center', gap:4 }}><span style={{ width:8, height:8, borderRadius:'50%', background:'#22c55e', display:'inline-block' }} /> Confirmed</span>
-              <span style={{ display:'flex', alignItems:'center', gap:4 }}><span style={{ width:8, height:8, borderRadius:'50%', background:'#f59e0b', display:'inline-block' }} /> Pending</span>
-              <span style={{ display:'flex', alignItems:'center', gap:4 }}><span style={{ width:8, height:8, borderRadius:'50%', background:'#ef4444', display:'inline-block' }} /> Not checked in</span>
-            </div>
-          </div>
-
-          {/* Today's summary counts */}
-          {(() => {
-            const total     = [...engineers, ...(isManager ? [users.find(u=>u.id===currentUser)].filter(Boolean) : [])].length;
-            const checkedIn = Object.keys(tk).filter(uid => tk[uid]?.[todayStr()]).length;
-            const confirmed = Object.keys(tk).filter(uid => tk[uid]?.[todayStr()]?.confirmedBy).length;
-            const missing   = total - checkedIn;
-            return (
-              <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10, marginBottom:16 }}>
-                {[
-                  { l:'Checked In',     v:checkedIn, c:'#22c55e' },
-                  { l:'Confirmed',      v:confirmed, c:'#00c2ff' },
-                  { l:'Not Checked In', v:missing,   c: missing > 0 ? '#ef4444' : '#22c55e' },
-                ].map(s => (
-                  <div key={s.l} style={{ background:'rgba(255,255,255,0.03)', border:`1px solid ${s.c}22`, borderRadius:8, padding:'10px 14px', textAlign:'center' }}>
-                    <div style={{ fontSize:22, fontWeight:800, color:s.c, fontFamily:'DM Mono' }}>{s.v}</div>
-                    <div style={{ fontSize:11, color:'#64748b', marginTop:2 }}>{s.l}</div>
-                  </div>
-                ))}
-              </div>
-            );
-          })()}
-
-          <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-            {engineers.map(u => {
-              const rec = (tk[u.id] || {})[todayStr()];
-              const ls  = rec?.type === 'office' ? lateStatus(rec.arrival) : null;
-              const notCheckedIn = !rec;
-              const isBH  = isBankHoliday(todayStr(), bh);
-              const isHol = isOnHoliday(todayStr(), u.id, holidays);
-              if (isBH || isHol) return null; // no warning on bank hols or holidays
-
-              return (
-                <div key={u.id} style={{
-                  background: notCheckedIn ? 'rgba(239,68,68,0.05)' : rec.confirmedBy ? 'rgba(34,197,94,0.05)' : 'rgba(255,255,255,0.03)',
-                  border: `1px solid ${notCheckedIn ? 'rgba(239,68,68,0.2)' : rec.confirmedBy ? 'rgba(34,197,94,0.2)' : 'rgba(255,255,255,0.07)'}`,
-                  borderRadius: 10, padding: '12px 16px',
-                  display:'flex', alignItems:'center', gap:12, flexWrap:'wrap',
-                }}>
-                  {/* Status dot */}
-                  <div style={{ width:8, height:8, borderRadius:'50%', flexShrink:0,
-                    background: notCheckedIn ? '#ef4444' : rec.confirmedBy ? '#22c55e' : '#f59e0b',
-                    boxShadow: `0 0 6px ${notCheckedIn ? '#ef4444' : rec.confirmedBy ? '#22c55e' : '#f59e0b'}` }} />
-
-                  {/* Avatar + name */}
-                  <div style={{ display:'flex', alignItems:'center', gap:8, minWidth:160 }}>
-                    <div style={{ width:30, height:30, borderRadius:'50%', background:'rgba(0,194,255,0.12)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:12, fontWeight:700, color:'#00c2ff', flexShrink:0 }}>{u.name.charAt(0)}</div>
-                    <div>
-                      <div style={{ fontSize:13, fontWeight:700 }}>{u.name}</div>
-                      <div style={{ fontSize:10, color:'#64748b', fontFamily:'DM Mono' }}>{u.id}</div>
-                    </div>
-                  </div>
-
-                  {/* Status info */}
-                  <div style={{ flex:1 }}>
-                    {notCheckedIn ? (
-                      <span style={{ fontSize:12, color:'#ef4444', fontWeight:600 }}>⚠ Not checked in</span>
-                    ) : (
-                      <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
-                        <span style={{ fontSize:13 }}>{rec.type==='office'?'🏢':'🏠'}</span>
-                        <span style={{ fontSize:12, fontFamily:'DM Mono', color: ls?.color || '#94a3b8', fontWeight:700 }}>{rec.arrival || '—'}</span>
-                        {ls?.status === 'late' && <span style={{ fontSize:11, color:'#ef4444', fontWeight:700, background:'rgba(239,68,68,0.1)', padding:'1px 7px', borderRadius:4 }}>+{ls.diff}m late</span>}
-                        {ls?.status === 'warn' && <span style={{ fontSize:11, color:'#f59e0b', fontWeight:700, background:'rgba(245,158,11,0.1)', padding:'1px 7px', borderRadius:4 }}>+{ls.diff}m grace</span>}
-                        {rec.note && <span style={{ fontSize:11, color:'#475569' }}>"{rec.note}"</span>}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Actions */}
-                  <div style={{ display:'flex', gap:6 }}>
-                    {!notCheckedIn && (
-                      rec.confirmedBy
-                        ? <div style={{ display:'flex', alignItems:'center', gap:6 }}>
-                            <span style={{ fontSize:11, color:'#22c55e', fontWeight:600 }}>✓ Confirmed</span>
-                            <button onClick={() => unconfirmCheckIn(u.id, todayStr())} style={{ padding:'3px 8px', background:'transparent', border:'1px solid rgba(239,68,68,0.3)', borderRadius:5, color:'#ef4444', fontSize:10, cursor:'pointer' }}>Undo</button>
-                          </div>
-                        : <button onClick={() => confirmCheckIn(u.id, todayStr())} style={{ padding:'5px 14px', background:'rgba(34,197,94,0.12)', border:'1px solid rgba(34,197,94,0.3)', borderRadius:6, color:'#22c55e', fontSize:12, fontWeight:700, cursor:'pointer' }}>✓ Confirm</button>
-                    )}
-                    <button onClick={() => openLog(u.id, todayStr())} style={{ padding:'5px 10px', background:'rgba(255,255,255,0.05)', border:'1px solid rgba(255,255,255,0.08)', borderRadius:6, color:'#94a3b8', fontSize:12, cursor:'pointer' }}>✏ {notCheckedIn ? 'Log' : 'Edit'}</button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-
-          {/* Past check-ins (last 4 days) */}
-          <div style={{ marginTop:20 }}>
-            <div style={{ fontSize:12, fontWeight:700, color:'#64748b', marginBottom:10 }}>Recent (last 4 working days)</div>
-            {engineers.map(u => {
-              const recentDays = Array.from({length:4},(_,i) => addDays(todayStr(),-(i+1)))
-                .filter(d => isWeekday(d) && !isBankHoliday(d,bh) && !isOnHoliday(d,u.id,holidays));
-              const recentRecs = recentDays.map(d => ({ date:d, rec:(tk[u.id]||{})[d] }));
-              if (recentRecs.every(r=>!r.rec)) return null;
-              return (
-                <div key={u.id} style={{ display:'flex', alignItems:'center', gap:12, marginBottom:6, padding:'8px 12px', background:'rgba(255,255,255,0.02)', borderRadius:8 }}>
-                  <div style={{ fontSize:12, fontWeight:600, minWidth:130, color:'#94a3b8' }}>{u.name.split(' ')[0]}</div>
-                  <div style={{ display:'flex', gap:6 }}>
-                    {recentRecs.map(({date,rec}) => {
-                      const ls = rec?.type==='office' ? lateStatus(rec.arrival) : null;
-                      return (
-                        <div key={date} title={`${formatDate(date)}: ${rec ? (rec.arrival||rec.type) : 'No record'}`}
-                          style={{ padding:'4px 10px', borderRadius:5, fontSize:10, fontFamily:'DM Mono',
-                            background: !rec?'rgba(239,68,68,0.1)':rec.type==='office'?'rgba(34,197,94,0.1)':'rgba(96,165,250,0.1)',
-                            color: !rec?'#ef4444':ls?.color||'#94a3b8', border:`1px solid ${!rec?'rgba(239,68,68,0.2)':'rgba(255,255,255,0.07)'}` }}>
-                          {shortDate(date)}&nbsp;{!rec?'—':rec.arrival||(rec.type==='wfh'?'WFH':'Abs')}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* ════════════════════════════════════════════════════════════════════ */}
-      {/* TAB: DASHBOARD — Manager only, rebuilt                              */}
-      {/* ════════════════════════════════════════════════════════════════════ */}
-      {tab === 'dashboard' && (() => {
-        const thirtyAgo   = addDays(todayStr(), -29);
-        const weekAgo     = addDays(todayStr(), -6);
-        const allS        = engineers.map(u => ({ user: u, s: getUserStats(u.id, thirtyAgo, todayStr()), wk: getUserStats(u.id, weekAgo, todayStr()) }));
-        const avgRTO      = allS.length > 0 ? Math.round(allS.reduce((a,b) => a + b.s.rtoCompliance, 0) / allS.length) : 0;
-        const totalLate   = allS.reduce((a,b) => a + b.s.lateArrivals.length, 0);
-        const nonComp     = allS.filter(a => a.s.rtoCompliance < 60).length;
-        const patternCnt  = patternAlerts.filter(p => p.hasPattern).length;
-
-        // Today's status per engineer
-        const todayCheckins = engineers.map(u => {
-          const rec    = (tk[u.id] || {})[todayStr()];
-          const ls     = rec?.type === 'office' ? lateStatus(rec.arrival) : null;
-          const isBH   = isBankHoliday(todayStr(), bh);
-          const isHol  = isOnHoliday(todayStr(), u.id, holidays);
-          return { user: u, rec, ls, isBH, isHol };
-        }).filter(e => !e.isBH && !e.isHol);
-
-        const checkedIn    = todayCheckins.filter(e => e.rec).length;
-        const inOffice     = todayCheckins.filter(e => e.rec?.type === 'office').length;
-        const wfhToday     = todayCheckins.filter(e => e.rec?.type === 'wfh').length;
-        const lateToday    = todayCheckins.filter(e => e.ls?.status === 'late').length;
-        const notIn        = todayCheckins.filter(e => !e.rec).length;
-        const pendingConf  = todayCheckins.filter(e => e.rec && !e.rec.confirmedBy).length;
-        const withReason   = todayCheckins.filter(e => e.rec?.lateReason).length;
-
-        // Last 5 workdays for timeline
-        const last5 = Array.from({length:5}, (_,i) => addDays(todayStr(), -i))
-          .filter(d => isWeekday(d) && !isBankHoliday(d, bh))
-          .reverse();
-
-        return (
+        {/* ── Monthly view ── */}
+        {tab === 'month' && (
           <div>
-            {/* ── KPI cards ────────────────────────────────────────────────── */}
-            <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:12, marginBottom:20 }}>
-              {[
-                { label:'RTO Compliance', value:`${avgRTO}%`,    sub:'30-day avg', color: avgRTO>=80?GREEN:avgRTO>=60?AMBER:RED, icon:'🏢' },
-                { label:'Late Arrivals',  value:totalLate,        sub:'Last 30 days', color: totalLate>10?RED:totalLate>5?AMBER:GREEN, icon:'⏰' },
-                { label:'Not Checked In', value:notIn,            sub:'Today',      color: notIn>0?RED:GREEN, icon:'❓' },
-                { label:'Pending Confirm',value:pendingConf,      sub:'Today',      color: pendingConf>0?AMBER:GREEN, icon:'✅' },
-              ].map(k => (
-                <div key={k.label} style={{ background:'rgba(255,255,255,0.03)', border:`1px solid ${k.color}18`, borderRadius:12, padding:'16px 18px', position:'relative', overflow:'hidden' }}>
-                  <div style={{ position:'absolute', top:10, right:14, fontSize:22, opacity:0.5 }}>{k.icon}</div>
-                  <div style={{ fontSize:11, color:'#64748b', textTransform:'uppercase', letterSpacing:'0.6px', marginBottom:6 }}>{k.label}</div>
-                  <div style={{ fontSize:32, fontWeight:800, color:k.color, fontFamily:'DM Mono', lineHeight:1 }}>{k.value}</div>
-                  <div style={{ fontSize:11, color:'#475569', marginTop:4 }}>{k.sub}</div>
-                  <div style={{ position:'absolute', bottom:0, left:0, right:0, height:3, background:k.color, opacity:0.35 }} />
-                </div>
-              ))}
-            </div>
-
-            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16, marginBottom:20 }}>
-
-              {/* ── Today's attendance feed ─────────────────────────────── */}
-              <div style={{ background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.07)', borderRadius:12, padding:'18px 20px' }}>
-                <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:14 }}>
-                  <div>
-                    <div style={{ fontSize:14, fontWeight:700, letterSpacing:'-0.3px' }}>Today's Attendance</div>
-                    <div style={{ fontSize:11, color:'#64748b', marginTop:2, fontFamily:'DM Mono' }}>
-                      {londonNow().toLocaleDateString('en-GB',{weekday:'long',day:'2-digit',month:'short'})} · {londonTimeStr()} London
-                    </div>
-                  </div>
-                  <div style={{ display:'flex', gap:8, fontSize:10, flexWrap:'wrap', justifyContent:'flex-end' }}>
-                    {[
-                      { l:`${inOffice} Office`, c:GREEN },
-                      { l:`${wfhToday} WFH`,    c:BLUE },
-                      { l:`${notIn} Missing`,   c:notIn>0?RED:MUTED },
-                    ].map(x => (
-                      <span key={x.l} style={{ background:`${x.c}15`, color:x.c, padding:'2px 8px', borderRadius:8, fontWeight:700, border:`1px solid ${x.c}25` }}>{x.l}</span>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Progress bar */}
-                <div style={{ marginBottom:14 }}>
-                  <div style={{ display:'flex', justifyContent:'space-between', fontSize:10, color:'#64748b', marginBottom:4 }}>
-                    <span>Check-in progress</span>
-                    <span style={{ fontFamily:'DM Mono', color:ACCENT }}>{checkedIn}/{todayCheckins.length}</span>
-                  </div>
-                  <div style={{ height:6, background:'rgba(255,255,255,0.06)', borderRadius:3, overflow:'hidden' }}>
-                    <div style={{ height:'100%', width:`${todayCheckins.length>0?Math.round(checkedIn/todayCheckins.length*100):0}%`, background:`linear-gradient(90deg,${GREEN},${ACCENT})`, borderRadius:3, transition:'width 0.5s' }} />
-                  </div>
-                </div>
-
-                {/* Engineer rows */}
-                <div style={{ display:'flex', flexDirection:'column', gap:6, maxHeight:320, overflowY:'auto', paddingRight:4 }}>
-                  {todayCheckins
-                    .sort((a,b) => {
-                      // Sort: late first, then not-checked-in, then WFH, then on-time
-                      const rank = e => e.ls?.status==='late'?0:!e.rec?1:e.rec?.type==='wfh'?3:2;
-                      return rank(a) - rank(b);
-                    })
-                    .map(({ user:u, rec, ls }) => {
-                    const dot = !rec ? RED : ls?.status==='late' ? RED : rec.type==='wfh' ? BLUE : GREEN;
-                    return (
-                      <div key={u.id} style={{ display:'flex', alignItems:'center', gap:10, padding:'8px 10px', background:`${dot}08`, border:`1px solid ${dot}18`, borderRadius:8, transition:'background 0.15s' }}>
-                        <div style={{ width:8, height:8, borderRadius:'50%', background:dot, boxShadow:`0 0 6px ${dot}`, flexShrink:0 }} />
-                        <div style={{ width:28, height:28, borderRadius:'50%', background:u.color||'#1d4ed8', display:'flex', alignItems:'center', justifyContent:'center', fontSize:11, fontWeight:700, color:'#fff', flexShrink:0 }}>{u.name.charAt(0)}</div>
-                        <div style={{ flex:1, minWidth:0 }}>
-                          <div style={{ fontSize:12, fontWeight:700, display:'flex', alignItems:'center', gap:6 }}>
-                            {u.name.split(' ')[0]}
-                            {rec?.type==='office' && <span style={{ fontSize:10, color:GREEN }}>🏢</span>}
-                            {rec?.type==='wfh'    && <span style={{ fontSize:10, color:BLUE  }}>🏠</span>}
-                            {!rec               && <span style={{ fontSize:10, color:RED   }}>❓</span>}
-                          </div>
-                          <div style={{ fontSize:10, color:'#64748b', fontFamily:'DM Mono' }}>
-                            {rec ? rec.arrival || (rec.type==='wfh'?'WFH':'—') : 'Not checked in'}
-                            {ls?.status==='late' && <span style={{ color:RED, marginLeft:4 }}>+{ls.diff}m late</span>}
-                            {ls?.status==='warn' && <span style={{ color:AMBER, marginLeft:4 }}>grace +{ls.diff}m</span>}
-                          </div>
-                          {rec?.lateReason && <div style={{ fontSize:10, color:AMBER, marginTop:1, fontStyle:'italic' }}>📝 "{rec.lateReason}"</div>}
-                        </div>
-                        <div style={{ display:'flex', gap:4, flexShrink:0 }}>
-                          {rec && !rec.confirmedBy && (
-                            <button onClick={()=>confirmCheckIn(u.id,todayStr())}
-                              style={{ padding:'3px 9px', background:`${GREEN}18`, border:`1px solid ${GREEN}33`, borderRadius:5, color:GREEN, fontSize:10, fontWeight:700, cursor:'pointer' }}>
-                              ✓
-                            </button>
-                          )}
-                          {rec?.confirmedBy && <span style={{ fontSize:10, color:GREEN, fontWeight:700 }}>✓</span>}
-                          <button onClick={()=>openLog(u.id,todayStr())}
-                            style={{ padding:'3px 8px', background:'rgba(255,255,255,0.05)', border:'1px solid rgba(255,255,255,0.08)', borderRadius:5, color:'#64748b', fontSize:10, cursor:'pointer' }}>
-                            {rec ? '✏' : '+'}
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })}
+            {/* Nav + summary */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+              <button className="btn btn-secondary btn-sm" onClick={() => setMonthOffset(o => o - 1)}>← Prev</button>
+              <div style={{ textAlign: 'center' }}>
+                <div style={{ fontSize: 14, fontWeight: 700 }}>{monthLabel}</div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                  {myMonthEntries.length} days logged · ≈{Math.round(myMonthHrs)}h total
                 </div>
               </div>
-
-              {/* ── 5-day attendance timeline ───────────────────────────── */}
-              <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
-                {/* Late reasons feed */}
-                {withReason > 0 && (
-                  <div style={{ background:'rgba(245,158,11,0.06)', border:'1px solid rgba(245,158,11,0.2)', borderRadius:12, padding:'14px 16px' }}>
-                    <div style={{ fontSize:13, fontWeight:700, color:AMBER, marginBottom:10 }}>📝 Late Reason Notes</div>
-                    {todayCheckins.filter(e=>e.rec?.lateReason).map(({user:u,rec,ls})=>(
-                      <div key={u.id} style={{ display:'flex', gap:8, marginBottom:7, padding:'7px 10px', background:'rgba(245,158,11,0.06)', borderRadius:7 }}>
-                        <div style={{ width:24, height:24, borderRadius:'50%', background:u.color||'#1d4ed8', display:'flex', alignItems:'center', justifyContent:'center', fontSize:10, fontWeight:700, color:'#fff', flexShrink:0 }}>{u.name.charAt(0)}</div>
-                        <div>
-                          <div style={{ fontSize:11, fontWeight:700, color:AMBER }}>{u.name.split(' ')[0]} · {rec.arrival} (+{ls?.diff}m)</div>
-                          <div style={{ fontSize:11, color:'#94a3b8', fontStyle:'italic' }}>"{rec.lateReason}"</div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {/* 5-day timeline grid */}
-                <div style={{ background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.07)', borderRadius:12, padding:'18px 20px', flex:1 }}>
-                  <div style={{ fontSize:14, fontWeight:700, marginBottom:14, letterSpacing:'-0.3px' }}>5-Day Attendance Snapshot</div>
-                  <div style={{ overflowX:'auto' }}>
-                    <table style={{ width:'100%', borderCollapse:'separate', borderSpacing:'0 3px' }}>
-                      <thead>
-                        <tr>
-                          <th style={{ textAlign:'left', fontSize:10, color:'#475569', padding:'0 8px 6px', fontWeight:700, textTransform:'uppercase', letterSpacing:'0.6px' }}>Engineer</th>
-                          {last5.map(d => {
-                            const isTd = d===todayStr();
-                            return (
-                              <th key={d} style={{ textAlign:'center', fontSize:10, padding:'0 4px 6px', color:isTd?ACCENT:'#475569', fontWeight:isTd?800:600 }}>
-                                {new Date(d+'T12:00:00').toLocaleDateString('en-GB',{weekday:'short'})}
-                                <div style={{ fontFamily:'DM Mono', fontSize:9, opacity:0.7 }}>{new Date(d+'T12:00:00').getDate()}</div>
-                              </th>
-                            );
-                          })}
-                          <th style={{ textAlign:'center', fontSize:10, color:'#475569', padding:'0 4px 6px', fontWeight:700 }}>RTO</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {engineers.map(u => {
-                          const wkS = getUserStats(u.id, last5[0], todayStr());
-                          return (
-                            <tr key={u.id}>
-                              <td style={{ padding:'4px 8px' }}>
-                                <div style={{ display:'flex', alignItems:'center', gap:6 }}>
-                                  <div style={{ width:22, height:22, borderRadius:'50%', background:u.color||'#1d4ed8', display:'flex', alignItems:'center', justifyContent:'center', fontSize:9, fontWeight:700, color:'#fff' }}>{u.name.charAt(0)}</div>
-                                  <span style={{ fontSize:11, fontWeight:600 }}>{u.name.split(' ')[0]}</span>
-                                </div>
-                              </td>
-                              {last5.map(d => {
-                                const rec = (tk[u.id]||{})[d];
-                                const ls  = rec?.type==='office' ? lateStatus(rec.arrival) : null;
-                                const isBH = isBankHoliday(d, bh);
-                                const isHol= isOnHoliday(d, u.id, holidays);
-                                const isFut= d > todayStr();
-                                let bg='rgba(255,255,255,0.03)', symbol='—', color='#334155';
-                                if (isBH)          { bg='rgba(99,102,241,0.15)'; symbol='BH'; color=PURPLE; }
-                                else if (isHol)    { bg='rgba(139,92,246,0.12)'; symbol='H';  color='#c4b5fd'; }
-                                else if (isFut)    { symbol='·'; }
-                                else if (rec?.type==='office') {
-                                  bg = ls?.status==='late'?'rgba(239,68,68,0.15)':ls?.status==='warn'?'rgba(245,158,11,0.12)':'rgba(34,197,94,0.12)';
-                                  symbol = rec.arrival||'✓';
-                                  color  = ls?.color||GREEN;
-                                }
-                                else if (rec?.type==='wfh')    { bg='rgba(96,165,250,0.12)'; symbol='WFH'; color=BLUE; }
-                                else if (rec?.type==='absent')  { bg='rgba(239,68,68,0.1)'; symbol='Abs'; color=RED; }
-                                return (
-                                  <td key={d} style={{ textAlign:'center', padding:'3px 4px' }}>
-                                    <div style={{ background:bg, color, borderRadius:6, padding:'4px 3px', fontSize:9, fontWeight:700, fontFamily:'DM Mono', cursor:'pointer', minWidth:32 }}
-                                      onClick={()=>!isBH&&!isHol&&!isFut&&openLog(u.id,d)}
-                                      title={rec?.lateReason?`Late reason: ${rec.lateReason}`:undefined}>
-                                      {symbol}
-                                    </div>
-                                  </td>
-                                );
-                              })}
-                              <td style={{ textAlign:'center', padding:'3px 8px' }}>
-                                <span style={{ fontSize:10, fontFamily:'DM Mono', fontWeight:700,
-                                  color:wkS.rtoCompliance>=80?GREEN:wkS.rtoCompliance>=60?AMBER:RED }}>
-                                  {wkS.officeDays}/{RTO_DAYS_REQUIRED}
-                                </span>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-
-                {/* Pattern alert mini-panel */}
-                {patternAlerts.filter(a=>a.hasPattern).length > 0 && (
-                  <div style={{ background:'rgba(239,68,68,0.06)', border:'1px solid rgba(239,68,68,0.2)', borderRadius:12, padding:'14px 16px' }}>
-                    <div style={{ fontSize:13, fontWeight:700, color:RED, marginBottom:8 }}>🚨 Late Arrival Patterns</div>
-                    {patternAlerts.filter(a=>a.hasPattern).map(a=>(
-                      <div key={a.user.id} style={{ display:'flex', alignItems:'center', gap:8, marginBottom:6 }}>
-                        <div style={{ width:24, height:24, borderRadius:'50%', background:a.user.color||'#1d4ed8', display:'flex', alignItems:'center', justifyContent:'center', fontSize:10, fontWeight:700, color:'#fff' }}>{a.user.name.charAt(0)}</div>
-                        <div style={{ flex:1 }}>
-                          <div style={{ fontSize:11, fontWeight:700 }}>{a.user.name}</div>
-                          <div style={{ fontSize:10, color:'#64748b' }}>{a.lateCount} late in 30d · {a.maxStreak}× consecutive</div>
-                        </div>
-                        <button onClick={()=>{setSelectedUser(a.user.id);setTab('alerts');}}
-                          style={{ padding:'3px 8px', background:'rgba(239,68,68,0.12)', border:'1px solid rgba(239,68,68,0.25)', borderRadius:5, color:RED, fontSize:10, cursor:'pointer' }}>
-                          View
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
+              <button className="btn btn-secondary btn-sm" onClick={() => setMonthOffset(o => o + 1)}>Next →</button>
             </div>
 
-            {/* ── RTO compliance bar chart ───────────────────────────────── */}
-            <div style={{ background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.07)', borderRadius:12, padding:'18px 20px' }}>
-              <div style={{ fontSize:14, fontWeight:700, marginBottom:4, letterSpacing:'-0.3px' }}>RTO Compliance — Last 30 Days</div>
-              <div style={{ fontSize:11, color:'#64748b', marginBottom:14 }}>Policy: {RTO_DAYS_REQUIRED} days/week in office · Target ≥80%</div>
-              <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-                {allS.map(({user:u, s}) => {
-                  const color = s.rtoCompliance>=80?GREEN:s.rtoCompliance>=60?AMBER:RED;
-                  return (
-                    <div key={u.id} style={{ display:'flex', alignItems:'center', gap:12 }}>
-                      <div style={{ width:110, display:'flex', alignItems:'center', gap:7, flexShrink:0 }}>
-                        <div style={{ width:24, height:24, borderRadius:'50%', background:u.color||'#1d4ed8', display:'flex', alignItems:'center', justifyContent:'center', fontSize:10, fontWeight:700, color:'#fff' }}>{u.name.charAt(0)}</div>
-                        <span style={{ fontSize:11, fontWeight:600, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{u.name.split(' ')[0]}</span>
-                      </div>
-                      <div style={{ flex:1, height:14, background:'rgba(255,255,255,0.05)', borderRadius:7, overflow:'hidden', position:'relative' }}>
-                        <div style={{ height:'100%', width:`${s.rtoCompliance}%`, background:`linear-gradient(90deg, ${color}cc, ${color})`, borderRadius:7, transition:'width 0.5s ease' }} />
-                        {/* 80% target line */}
-                        <div style={{ position:'absolute', top:0, bottom:0, left:'80%', width:1, background:'rgba(255,255,255,0.25)' }} />
-                      </div>
-                      <div style={{ width:48, textAlign:'right', fontFamily:'DM Mono', fontSize:12, fontWeight:700, color, flexShrink:0 }}>{s.rtoCompliance}%</div>
-                      <div style={{ width:80, textAlign:'right', fontSize:10, color:'#475569', flexShrink:0 }}>
-                        {s.officeDays}d in · {s.wfhDays}d WFH
-                        {s.lateArrivals.length>0 && <span style={{ color:RED }}> · {s.lateArrivals.length} late</span>}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-              <div style={{ marginTop:10, display:'flex', gap:16, fontSize:10, color:'#475569' }}>
-                <span style={{ display:'flex', alignItems:'center', gap:4 }}><div style={{ width:1, height:12, background:'rgba(255,255,255,0.25)' }}/>80% target</span>
-                <span><span style={{ color:GREEN }}>●</span> ≥80% compliant</span>
-                <span><span style={{ color:AMBER }}>●</span> 60–79% low</span>
-                <span><span style={{ color:RED }}>●</span> &lt;60% breach</span>
-              </div>
-            </div>
-          </div>
-        );
-      })()}
-
-      {/* ════════════════════════════════════════════════════════════════════ */}
-      {/* TAB: WEEKLY VIEW                                                    */}
-      {/* ════════════════════════════════════════════════════════════════════ */}
-      {tab === 'weekly' && (
-        <div>
-          {/* Week navigator */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
-            <button onClick={() => setSelectedWeek(addDays(selectedWeek, -7))} style={navBtnStyle}>‹ Prev</button>
-            <div style={{ fontSize: 14, fontWeight: 600, fontFamily: 'DM Mono', minWidth: 200, textAlign: 'center' }}>
-              {shortDate(selectedWeek)} – {shortDate(addDays(selectedWeek, 4))}
-            </div>
-            <button onClick={() => setSelectedWeek(addDays(selectedWeek, 7))} style={navBtnStyle}>Next ›</button>
-            {selectedWeek !== getWeekStart(todayStr()) && (
-              <button onClick={() => setSelectedWeek(getWeekStart(todayStr()))} style={{ ...navBtnStyle, color: ACCENT, borderColor: `${ACCENT}44` }}>↩ This Week</button>
-            )}
-          </div>
-
-          {/* Weekday columns grid */}
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: '0 4px', minWidth: 700 }}>
-              <thead>
-                <tr>
-                  <th style={thS}>Engineer</th>
-                  {getAllWeekdays(selectedWeek).map(d => {
-                    const isBH  = isBankHoliday(d, bh);
-                    const isT   = d === todayStr();
-                    return (
-                      <th key={d} style={{ ...thS, background: isBH ? 'rgba(99,102,241,0.15)' : isT ? 'rgba(0,194,255,0.08)' : 'rgba(255,255,255,0.03)', color: isT ? ACCENT : isBH ? PURPLE : '#94a3b8', border: isT ? `1px solid ${ACCENT}44` : thS.border }}>
-                        {new Date(d + 'T12:00:00').toLocaleDateString('en-GB', { weekday: 'short' })}
-                        <div style={{ fontSize: 10, fontWeight: 400, fontFamily: 'DM Mono', opacity: 0.75 }}>{shortDate(d)}</div>
-                        {isBH && <div style={{ fontSize: 9, color: PURPLE }}>Bank Hol</div>}
-                      </th>
-                    );
-                  })}
-                  <th style={thS}>RTO</th>
-                  <th style={thS}>Late</th>
-                </tr>
-              </thead>
-              <tbody>
-                {engineers.map(u => {
-                  const days = getAllWeekdays(selectedWeek);
-                  const s    = getUserStats(u.id, selectedWeek, addDays(selectedWeek, 4));
-                  const rtoOk = s.officeDays >= RTO_DAYS_REQUIRED;
-                  return (
-                    <tr key={u.id} style={{ background: 'rgba(255,255,255,0.02)', borderRadius: 8 }}>
-                      <td style={{ ...tdS, fontWeight: 600 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                          <div style={{ width: 26, height: 26, borderRadius: '50%', background: 'rgba(0,194,255,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 700, color: ACCENT }}>
-                            {u.name.charAt(0)}
-                          </div>
-                          <div>
-                            <div style={{ fontSize: 12 }}>{u.name.split(' ')[0]}</div>
-                            <div style={{ fontSize: 10, color: '#475569', fontFamily: 'DM Mono' }}>{u.id}</div>
-                          </div>
-                        </div>
-                      </td>
-                      {days.map(d => {
-                        const rec   = (tk[u.id] || {})[d];
-                        const isBH  = isBankHoliday(d, bh);
-                        const isHol = isOnHoliday(d, u.id, holidays);
-                        const isFut = d > todayStr();
-                        let cell;
-                        if (isBH)  cell = <span title="Bank Holiday" style={{ fontSize: 11, color: PURPLE }}>🏛 BH</span>;
-                        else if (isHol) cell = <span title="Holiday" style={{ fontSize: 11, color: '#a78bfa' }}>🌴</span>;
-                        else if (isFut) cell = <span style={{ color: '#334155', fontSize: 11 }}>—</span>;
-                        else if (rec?.type === 'office') {
-                          const ls = lateStatus(rec.arrival);
-                          cell = (
-                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1 }}>
-                              <span style={{ fontSize: 11, color: GREEN }}>🏢</span>
-                              <span style={{ fontSize: 10, fontFamily: 'DM Mono', color: ls?.color || GREEN }}>{rec.arrival}</span>
-                              {ls?.status === 'late' && <span style={{ fontSize: 9, color: RED, fontWeight: 700 }}>+{ls.diff}m</span>}
-                            </div>
-                          );
-                        } else if (rec?.type === 'wfh')   cell = <span style={{ fontSize: 11, color: BLUE }}>🏠 WFH</span>;
-                        else if (rec?.type === 'absent')  cell = <span style={{ fontSize: 11, color: RED }}>🤒 Abs</span>;
-                        else cell = (
-                          <button onClick={() => openLog(u.id, d)} style={{ background: 'rgba(255,255,255,0.03)', border: '1px dashed rgba(255,255,255,0.1)', borderRadius: 5, padding: '3px 7px', fontSize: 10, color: '#475569', cursor: 'pointer' }}>+ Log</button>
-                        );
-                        return (
-                          <td key={d} onClick={!isBH && !isHol && !isFut ? () => openLog(u.id, d) : undefined}
-                            style={{ ...tdS, textAlign: 'center', cursor: (!isBH && !isHol && !isFut) ? 'pointer' : 'default',
-                              background: isBH ? 'rgba(99,102,241,0.07)' : 'transparent' }}>
-                            {cell}
-                          </td>
-                        );
-                      })}
-                      <td style={{ ...tdS, textAlign: 'center' }}>
-                        <span style={{ fontSize: 12, fontWeight: 700, fontFamily: 'DM Mono', color: rtoOk ? GREEN : s.totalWorkdays < 5 ? AMBER : RED }}>
-                          {s.officeDays}/{RTO_DAYS_REQUIRED}
-                        </span>
-                        {!rtoOk && s.totalWorkdays >= 5 && <div style={{ fontSize: 9, color: RED }}>⚠ RTO</div>}
-                      </td>
-                      <td style={{ ...tdS, textAlign: 'center' }}>
-                        <span style={{ fontSize: 12, fontFamily: 'DM Mono', color: s.lateArrivals.length > 0 ? RED : GREEN }}>
-                          {s.lateArrivals.length > 0 ? `${s.lateArrivals.length}×` : '✓'}
-                        </span>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-
-          {/* Legend */}
-          <div style={{ display: 'flex', gap: 16, marginTop: 12, fontSize: 11, color: '#475569', flexWrap: 'wrap' }}>
-            {[['🏢', 'In Office', GREEN], ['🏠', 'WFH', BLUE], ['🤒', 'Absent/Sick', RED], ['🏛', 'Bank Holiday', PURPLE], ['🌴', 'Holiday', '#a78bfa']].map(([ic, lb, c]) => (
-              <span key={lb}>{ic} <span style={{ color: c }}>{lb}</span></span>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* ════════════════════════════════════════════════════════════════════ */}
-      {/* TAB: MONTHLY                                                        */}
-      {/* ════════════════════════════════════════════════════════════════════ */}
-      {tab === 'monthly' && (
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
-            <button onClick={() => {
-              const [y, m] = viewMonth.split('-').map(Number);
-              const prev = m === 1 ? `${y-1}-12` : `${y}-${String(m-1).padStart(2,'0')}`;
-              setViewMonth(prev);
-            }} style={navBtnStyle}>‹ Prev</button>
-            <div style={{ fontSize: 14, fontWeight: 600, minWidth: 130, textAlign: 'center' }}>
-              {new Date(viewMonth + '-01T12:00:00').toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })}
-            </div>
-            <button onClick={() => {
-              const [y, m] = viewMonth.split('-').map(Number);
-              const next = m === 12 ? `${y+1}-01` : `${y}-${String(m+1).padStart(2,'0')}`;
-              setViewMonth(next);
-            }} style={navBtnStyle}>Next ›</button>
-          </div>
-
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 600 }}>
-              <thead>
-                <tr>
-                  <th style={thS}>Engineer</th>
-                  <th style={thS}>Office Days</th>
-                  <th style={thS}>WFH Days</th>
-                  <th style={thS}>Absent</th>
-                  <th style={thS}>Bank Hols</th>
-                  <th style={thS}>Holidays</th>
-                  <th style={thS}>Late</th>
-                  <th style={thS}>RTO %</th>
-                  <th style={thS}>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {monthStats.map(({ user: u, stats: s }) => {
-                  const compColor = s.rtoCompliance >= 80 ? GREEN : s.rtoCompliance >= 60 ? AMBER : RED;
-                  return (
-                    <tr key={u.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
-                      <td style={tdS}><div style={{ display:'flex', alignItems:'center', gap:8 }}><div style={{ width:24, height:24, borderRadius:'50%', background:'rgba(0,194,255,0.12)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:10, fontWeight:700, color:ACCENT }}>{u.name.charAt(0)}</div><span style={{fontSize:12}}>{u.name}</span></div></td>
-                      <td style={{ ...tdS, textAlign:'center', fontFamily:'DM Mono', color:GREEN }}>{s.officeDays}</td>
-                      <td style={{ ...tdS, textAlign:'center', fontFamily:'DM Mono', color:BLUE }}>{s.wfhDays}</td>
-                      <td style={{ ...tdS, textAlign:'center', fontFamily:'DM Mono', color:s.absentDays>0?RED:'#475569' }}>{s.absentDays || '—'}</td>
-                      <td style={{ ...tdS, textAlign:'center', fontFamily:'DM Mono', color:PURPLE }}>{s.bankHolCount || '—'}</td>
-                      <td style={{ ...tdS, textAlign:'center', fontFamily:'DM Mono', color:'#a78bfa' }}>{s.holidayCount || '—'}</td>
-                      <td style={{ ...tdS, textAlign:'center', fontFamily:'DM Mono', color:s.lateArrivals.length>0?RED:GREEN }}>{s.lateArrivals.length > 0 ? s.lateArrivals.length : '✓'}</td>
-                      <td style={{ ...tdS, textAlign:'center' }}>
-                        <div style={{ display:'flex', alignItems:'center', gap:6 }}>
-                          <div style={{ flex:1, height:6, background:'rgba(255,255,255,0.06)', borderRadius:3, overflow:'hidden' }}>
-                            <div style={{ height:'100%', width:`${s.rtoCompliance}%`, background:compColor, borderRadius:3, transition:'width 0.4s' }} />
-                          </div>
-                          <span style={{ fontSize:11, fontFamily:'DM Mono', color:compColor, minWidth:32 }}>{s.rtoCompliance}%</span>
-                        </div>
-                      </td>
-                      <td style={{ ...tdS, textAlign:'center' }}>
-                        <span style={{ fontSize:11, fontWeight:700, color:compColor, background:`${compColor}15`, padding:'2px 8px', borderRadius:4 }}>
-                          {s.rtoCompliance >= 80 ? '✓ Met' : s.rtoCompliance >= 60 ? '⚠ Low' : '✗ Breach'}
-                        </span>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-
-          {/* Monthly comparison bars */}
-          <div style={{ marginTop: 20, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 10, padding: '18px 20px' }}>
-            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 14 }}>Office Days Distribution</div>
-            <div style={{ display: 'flex', gap: 24, overflowX: 'auto' }}>
-              {monthStats.map(({ user: u, stats: s }) => {
-                const [y, m] = viewMonth.split('-').map(Number);
-                const daysInMonth = new Date(y, m, 0).getDate();
-                const workdays = Array.from({ length: daysInMonth }, (_, i) => {
-                  const d = `${viewMonth}-${String(i+1).padStart(2,'0')}`;
-                  const dow = new Date(d+'T12:00:00').getDay();
-                  return dow >= 1 && dow <= 5 && !isBankHoliday(d, bh) && !isOnHoliday(d, u.id, holidays);
-                }).filter(Boolean).length;
-                const needed = Math.ceil(workdays * RTO_DAYS_REQUIRED / 5);
-                return (
-                  <div key={u.id} style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:6, minWidth:70 }}>
-                    <MiniBar value={s.officeDays} max={Math.max(workdays, 1)} color={s.officeDays >= needed ? GREEN : RED} height={60} width={28} label="" />
-                    {needed > 0 && (
-                      <div style={{ fontSize:9, color:'#475569', fontFamily:'DM Mono', textAlign:'center' }}>
-                        need {needed}d
-                      </div>
-                    )}
-                    <div style={{ fontSize:10, color:'#94a3b8', textAlign:'center' }}>{u.name.split(' ')[0]}</div>
+            {/* Status summary pills */}
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
+              {STATUS_OPTIONS.map(s => {
+                const count = myMonthEntries.filter(e => e.status === s.value).length;
+                return count > 0 ? (
+                  <div key={s.value} style={{ background: s.bg, color: s.color, border: `1px solid ${s.border}`, borderRadius: 20, padding: '4px 12px', fontSize: 12, fontWeight: 600 }}>
+                    {s.icon} {s.label}: {count}
                   </div>
-                );
+                ) : null;
               })}
             </div>
-          </div>
-        </div>
-      )}
 
-      {/* ════════════════════════════════════════════════════════════════════ */}
-      {/* TAB: HEAT MAP                                                       */}
-      {/* ════════════════════════════════════════════════════════════════════ */}
-      {tab === 'heatmap' && (
-        <div>
-          <div style={{ fontSize: 12, color: '#64748b', marginBottom: 14 }}>
-            14-week attendance heat map. Each column = 1 week (Mon → Fri), each row = 1 engineer.
-          </div>
-          {/* Week labels */}
-          <div style={{ display: 'flex', gap: 4, marginBottom: 6, marginLeft: 140 }}>
-            {heatWeeks.map(ws => (
-              <div key={ws} style={{ display:'flex', flexDirection:'column', gap:1, width:18*5+4*4 }}>
-                <div style={{ fontSize: 9, color: '#475569', fontFamily: 'DM Mono', textAlign:'center', whiteSpace:'nowrap' }}>
-                  {shortDate(ws)}
-                </div>
-              </div>
-            ))}
-          </div>
-          {/* Engineer rows */}
-          {(filterUser === 'all' ? engineers : engineers.filter(e => e.id === filterUser)).map(u => (
-            <div key={u.id} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-              <div style={{ width: 130, fontSize: 11, color: '#94a3b8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'right' }}>
-                {u.name}
-              </div>
-              {heatWeeks.map(ws => (
-                <div key={ws} style={{ display: 'flex', gap: 2 }}>
-                  {getAllWeekdays(ws).map(d => {
-                    const rec   = (tk[u.id] || {})[d];
-                    const isBH  = isBankHoliday(d, bh);
-                    const isHol = isOnHoliday(d, u.id, holidays);
-                    const isFut = d > todayStr();
-                    return (
-                      <HeatCell key={d} record={rec} bankHol={isBH} holiday={isHol} isToday={d===todayStr()} isFuture={isFut} />
-                    );
-                  })}
-                </div>
-              ))}
+            <div className="card">
+              <MonthView entries={myEntries} year={viewYear} month={viewMonth} bankHolidays={bankHolidays} />
             </div>
-          ))}
-          {/* Legend */}
-          <div style={{ display: 'flex', gap: 16, marginTop: 16, flexWrap: 'wrap', fontSize: 11, color: '#64748b', alignItems: 'center' }}>
-            {[
-              { bg:'rgba(34,197,94,0.25)',  label:'In office (on time)' },
-              { bg:'rgba(245,158,11,0.3)',  label:'In office (late warn)' },
-              { bg:'rgba(239,68,68,0.3)',   label:'In office (late)' },
-              { bg:'rgba(59,130,246,0.2)',  label:'WFH' },
-              { bg:'rgba(99,102,241,0.25)', label:'Bank Holiday' },
-              { bg:'rgba(139,92,246,0.18)', label:'Holiday' },
-              { bg:'rgba(255,255,255,0.03)', label:'No data' },
-            ].map(l => (
-              <span key={l.label} style={{ display:'flex', alignItems:'center', gap:4 }}>
-                <span style={{ width:12, height:12, borderRadius:2, background:l.bg, display:'inline-block', border:'1px solid rgba(255,255,255,0.08)' }} />
-                {l.label}
-              </span>
-            ))}
-          </div>
-          {/* Filter */}
-          <div style={{ marginTop: 14, display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ fontSize: 12, color: '#64748b' }}>Filter:</span>
-            <select value={filterUser} onChange={e => setFilterUser(e.target.value)}
-              style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6, color: '#e2e8f0', padding: '4px 10px', fontSize: 12 }}>
-              <option value="all">All engineers</option>
-              {engineers.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
-            </select>
-          </div>
-        </div>
-      )}
 
-      {/* ════════════════════════════════════════════════════════════════════ */}
-      {/* TAB: ALERTS                                                         */}
-      {/* ════════════════════════════════════════════════════════════════════ */}
-      {tab === 'alerts' && (
-        <div>
-          <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
-            {['all','pattern','lateonly','rto'].map(f => (
-              <div key={f} onClick={() => setAlertFilter(f)}
-                style={{ padding:'5px 14px', borderRadius:6, fontSize:12, cursor:'pointer', fontWeight:600,
-                  background: alertFilter===f ? 'rgba(239,68,68,0.15)' : 'rgba(255,255,255,0.04)',
-                  border: `1px solid ${alertFilter===f ? 'rgba(239,68,68,0.4)' : 'rgba(255,255,255,0.07)'}`,
-                  color: alertFilter===f ? RED : '#64748b' }}>
-                {{ all:'All', pattern:'🔁 Pattern', lateonly:'⏰ Late', rto:'🏢 RTO Breach' }[f]}
+            {/* Entry list for the month */}
+            {myMonthEntries.length > 0 && (
+              <div className="card" style={{ marginTop: 12 }}>
+                <SectionTitle>All Entries — {monthLabel}</SectionTitle>
+                <table>
+                  <thead>
+                    <tr><th>Date</th><th>Status</th><th>Check In</th><th>Check Out</th><th>Duration</th><th>Confirmed</th><th></th></tr>
+                  </thead>
+                  <tbody>
+                    {myMonthEntries.map(e => (
+                      <tr key={e.id}>
+                        <td style={{ fontFamily: 'DM Mono', fontSize: 12 }}>{fmtDate(e.date)}</td>
+                        <td><StatusPill status={e.status} small /></td>
+                        <td style={{ fontFamily: 'DM Mono', fontSize: 12, color: '#6ee7b7' }}>{e.checkIn || '—'}</td>
+                        <td style={{ fontFamily: 'DM Mono', fontSize: 12, color: '#fcd34d' }}>{e.checkOut || '—'}</td>
+                        <td style={{ fontFamily: 'DM Mono', fontSize: 12, color: '#a78bfa' }}>{fmtHours(e.checkIn, e.checkOut) || '—'}</td>
+                        <td>{e.confirmedByManager ? <Tag label="✓ Confirmed" type="green" /> : <Tag label="Pending" type="amber" />}</td>
+                        <td>
+                          <button className="btn btn-secondary btn-sm" onClick={() => openEditEntry(currentUser, e)}>✏</button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
-            ))}
+            )}
           </div>
-          {patternAlerts.length === 0 ? (
-            <div style={{ textAlign:'center', padding:'40px 0', color:'#475569' }}>
-              <div style={{ fontSize:40, marginBottom:10 }}>✅</div>
-              <div style={{ fontSize:14, fontWeight:600 }}>No attendance alerts — team is on track.</div>
+        )}
+
+        {/* ── Log entry modal ── */}
+        {logModal && (
+          <Modal title={editEntry ? 'Edit Attendance Entry' : 'Log Attendance'} onClose={() => setLogModal(false)}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <FormGroup label="Date">
+                <input className="input" type="date" max={today} value={logForm.date}
+                  onChange={e => setLogForm(f => ({ ...f, date: e.target.value }))} />
+              </FormGroup>
+              <FormGroup label="Status">
+                <select className="select" value={logForm.status} onChange={e => setLogForm(f => ({ ...f, status: e.target.value }))}>
+                  {STATUS_OPTIONS.map(s => <option key={s.value} value={s.value}>{s.icon} {s.label}</option>)}
+                </select>
+              </FormGroup>
+              <FormGroup label="Check In Time">
+                <input className="input" type="time" value={logForm.checkIn}
+                  onChange={e => setLogForm(f => ({ ...f, checkIn: e.target.value }))} />
+              </FormGroup>
+              <FormGroup label="Check Out Time" hint="leave blank if still in">
+                <input className="input" type="time" value={logForm.checkOut}
+                  onChange={e => setLogForm(f => ({ ...f, checkOut: e.target.value }))} />
+              </FormGroup>
             </div>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              {patternAlerts
-                .filter(a => alertFilter === 'all' ? true : alertFilter === 'pattern' ? a.hasPattern : alertFilter === 'lateonly' ? a.lateCount > 0 : a.rtoCompliance < 60)
-                .map(a => {
-                  const thirtyAgo = addDays(todayStr(), -29);
-                  const s = getUserStats(a.user.id, thirtyAgo, todayStr());
-                  const compColor = a.rtoCompliance >= 80 ? GREEN : a.rtoCompliance >= 60 ? AMBER : RED;
-                  return (
-                    <div key={a.user.id} style={{ background: a.hasPattern ? 'rgba(239,68,68,0.06)' : 'rgba(245,158,11,0.06)', border: `1px solid ${a.hasPattern ? 'rgba(239,68,68,0.25)' : 'rgba(245,158,11,0.2)'}`, borderRadius: 10, padding: '14px 18px' }}>
-                      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                          <div style={{ width: 36, height: 36, borderRadius: '50%', background: 'rgba(239,68,68,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15, fontWeight: 700, color: RED, border: '1.5px solid rgba(239,68,68,0.3)' }}>{a.user.name.charAt(0)}</div>
-                          <div>
-                            <div style={{ fontSize: 14, fontWeight: 700 }}>{a.user.name}</div>
-                            <div style={{ fontSize: 11, color: '#64748b', fontFamily: 'DM Mono' }}>{a.user.id}</div>
-                          </div>
-                        </div>
-                        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                          {a.lateCount > 0 && <span style={{ background:'rgba(239,68,68,0.12)', border:'1px solid rgba(239,68,68,0.3)', borderRadius:5, padding:'3px 9px', fontSize:11, color:RED, fontWeight:700 }}>⏰ {a.lateCount} late arrivals (30d)</span>}
-                          {a.maxStreak >= STREAK_THRESHOLD && <span style={{ background:'rgba(239,68,68,0.12)', border:'1px solid rgba(239,68,68,0.3)', borderRadius:5, padding:'3px 9px', fontSize:11, color:RED, fontWeight:700 }}>🔁 {a.maxStreak}× consecutive late</span>}
-                          {a.rtoCompliance < 60 && <span style={{ background:`${compColor}18`, border:`1px solid ${compColor}44`, borderRadius:5, padding:'3px 9px', fontSize:11, color:compColor, fontWeight:700 }}>🏢 RTO {a.rtoCompliance}%</span>}
+            {logForm.checkIn && logForm.checkOut && (
+              <div style={{ fontSize: 12, color: '#a78bfa', marginBottom: 12, fontFamily: 'DM Mono' }}>
+                ⏱ Duration: {fmtHours(logForm.checkIn, logForm.checkOut)}
+              </div>
+            )}
+            <FormGroup label="Notes (optional)">
+              <textarea className="textarea" rows={2} placeholder="Any notes about this session…"
+                value={logForm.notes} onChange={e => setLogForm(f => ({ ...f, notes: e.target.value }))} />
+            </FormGroup>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
+              <button className="btn btn-secondary" onClick={() => setLogModal(false)}>Cancel</button>
+              <button className="btn btn-primary" onClick={saveLogEntry} disabled={!logForm.date || !logForm.checkIn}>
+                {editEntry ? 'Update Entry' : 'Save Entry'}
+              </button>
+            </div>
+          </Modal>
+        )}
+      </div>
+    );
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  // ── MANAGER VIEW ─────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────
+  return (
+    <div>
+      <PageHeader
+        title="Time Keeping"
+        sub="Team attendance — confirm entries, view individual and team history"
+        actions={
+          <button className="btn btn-primary" onClick={() => {
+            setLogForm({ userId: currentUser, date: today, checkIn: '', checkOut: '', status: 'present', notes: '' });
+            setEditEntry(null); setLogModal(true);
+          }}>+ Log Entry</button>
+        }
+      />
+
+      {/* ── Stat cards ── */}
+      <div className="grid-4 mb-16">
+        <StatCard label="Present Today"     value={presentToday}    sub="checked in"       accent="#10b981" icon="✅" />
+        <StatCard label="WFH Today"         value={wfhToday}        sub="working remotely" accent="#818cf8" icon="🏠" />
+        <StatCard label="Absent Today"      value={absentToday}     sub="not in"           accent="#ef4444" icon="❌" />
+        <StatCard label="Pending Confirm"   value={pendingConfirm}  sub="awaiting review"  accent="#f59e0b" icon="⏳" />
+      </div>
+
+      {/* ── Tab bar ── */}
+      <div style={{ display: 'flex', gap: 4, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
+        {[
+          { id: 'today', label: "📍 Today's Attendance" },
+          { id: 'week',  label: '📅 Weekly View' },
+          { id: 'month', label: '📆 Monthly View' },
+        ].map(t => (
+          <button key={t.id} className={`btn btn-sm ${tab === t.id ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab(t.id)}>
+            {t.label}
+          </button>
+        ))}
+
+        {/* Engineer filter (week + month) */}
+        {(tab === 'week' || tab === 'month') && (
+          <select className="select" value={filterUser} onChange={e => setFilterUser(e.target.value)} style={{ width: 180, marginLeft: 'auto' }}>
+            <option value="all">All Engineers</option>
+            {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+          </select>
+        )}
+
+        {/* Status filter (today) */}
+        {tab === 'today' && (
+          <select className="select" value={statusFilter} onChange={e => setStatusFilter(e.target.value)} style={{ width: 160, marginLeft: 'auto' }}>
+            <option value="all">All ({users.length})</option>
+            <option value="in">Checked In</option>
+            <option value="out">Checked Out</option>
+            <option value="not-logged">Not Logged</option>
+            {STATUS_OPTIONS.map(s => <option key={s.value} value={s.value}>{s.icon} {s.label}</option>)}
+          </select>
+        )}
+      </div>
+
+      {/* ══════════════════════════════════════════════════════════════════
+          TODAY VIEW
+      ══════════════════════════════════════════════════════════════════ */}
+      {tab === 'today' && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 12 }}>
+          {filteredToday.map(({ user: u, entry }) => {
+            const checkedIn  = entry && entry.checkIn && !entry.checkOut;
+            const checkedOut = entry && entry.checkIn && entry.checkOut;
+            const s          = entry ? statusCfg(entry.status) : null;
+            const hrs        = entry ? fmtHours(entry.checkIn, entry.checkOut) : null;
+
+            return (
+              <div key={u.id} style={{
+                background: 'var(--bg-card)', borderRadius: 12, padding: '14px 16px',
+                border: `1px solid ${checkedIn ? 'rgba(245,158,11,0.4)' : checkedOut ? 'rgba(16,185,129,0.35)' : 'var(--border)'}`,
+                borderLeft: `4px solid ${s ? s.color : 'var(--border)'}`,
+              }}>
+                {/* User row */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                  <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                    <Avatar user={u} size={36} />
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 600 }}>{u.name}</div>
+                      <div style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'DM Mono' }}>{u.id}</div>
+                    </div>
+                  </div>
+                  {entry ? <StatusPill status={entry.status} small /> : <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Not logged</span>}
+                </div>
+
+                {/* Times */}
+                {entry ? (
+                  <div>
+                    <div style={{ display: 'flex', gap: 16, marginBottom: 8 }}>
+                      <div>
+                        <div style={{ fontSize: 9, color: 'var(--text-muted)', marginBottom: 1 }}>IN</div>
+                        <div style={{ fontFamily: 'DM Mono', fontSize: 16, fontWeight: 700, color: '#6ee7b7' }}>{entry.checkIn || '—'}</div>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 9, color: 'var(--text-muted)', marginBottom: 1 }}>OUT</div>
+                        <div style={{ fontFamily: 'DM Mono', fontSize: 16, fontWeight: 700, color: entry.checkOut ? '#fcd34d' : 'var(--text-muted)' }}>
+                          {entry.checkOut || (checkedIn ? '…' : '—')}
                         </div>
                       </div>
-                      {/* Late arrival timeline */}
-                      {s.lateArrivals.length > 0 && (
-                        <div style={{ marginTop: 12 }}>
-                          <div style={{ fontSize: 11, color: '#64748b', marginBottom: 6 }}>Recent late arrivals:</div>
-                          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                            {s.lateArrivals.slice(-8).map(la => (
-                              <span key={la.date} style={{ background:'rgba(239,68,68,0.1)', border:'1px solid rgba(239,68,68,0.2)', borderRadius:5, padding:'2px 8px', fontSize:10, fontFamily:'DM Mono', color:la.color }}>
-                                {shortDate(la.date)} {la.arrival} ({la.label})
-                              </span>
-                            ))}
-                          </div>
+                      {hrs && (
+                        <div>
+                          <div style={{ fontSize: 9, color: 'var(--text-muted)', marginBottom: 1 }}>TOTAL</div>
+                          <div style={{ fontFamily: 'DM Mono', fontSize: 16, fontWeight: 700, color: '#a78bfa' }}>{hrs}</div>
                         </div>
                       )}
                     </div>
-                  );
-                })}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* ════════════════════════════════════════════════════════════════════ */}
-      {/* TAB: ATTENDANCE LOG                                                 */}
-      {/* ════════════════════════════════════════════════════════════════════ */}
-      {tab === 'log' && (
-        <div>
-          <div style={{ display: 'flex', gap: 10, marginBottom: 14, alignItems: 'center', flexWrap: 'wrap' }}>
-            <select value={selectedUser || 'all'} onChange={e => setSelectedUser(e.target.value === 'all' ? null : e.target.value)}
-              style={selStyle}>
-              <option value="all">All Engineers</option>
-              {engineers.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
-            </select>
-            <input type="month" value={viewMonth} onChange={e => setViewMonth(e.target.value)} style={selStyle} />
-          </div>
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 600 }}>
-              <thead>
-                <tr>
-                  <th style={thS}>Engineer</th>
-                  <th style={thS}>Date</th>
-                  <th style={thS}>Type</th>
-                  <th style={thS}>Arrival</th>
-                  <th style={thS}>Departure</th>
-                  <th style={thS}>Hours</th>
-                  <th style={thS}>Status</th>
-                  <th style={thS}>Note</th>
-                  <th style={thS}>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(selectedUser ? [engineers.find(u => u.id === selectedUser)].filter(Boolean) : engineers).flatMap(u => {
-                  const [y, m] = viewMonth.split('-').map(Number);
-                  const start = `${viewMonth}-01`;
-                  const end   = new Date(y, m, 0).toISOString().slice(0, 10);
-                  const recs  = tk[u.id] || {};
-                  return Object.keys(recs)
-                    .filter(d => d >= start && d <= end)
-                    .sort().reverse()
-                    .map(d => {
-                      const rec = recs[d];
-                      const ls  = rec.type === 'office' ? lateStatus(rec.arrival) : null;
-                      const hrs = rec.type === 'office' && rec.arrival && rec.departure
-                        ? ((parseTime(rec.departure) - parseTime(rec.arrival)) / 60).toFixed(1)
-                        : null;
-                      return (
-                        <tr key={`${u.id}-${d}`} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-                          <td style={tdS}><span style={{ fontSize: 12 }}>{u.name}</span></td>
-                          <td style={{ ...tdS, fontFamily: 'DM Mono', fontSize: 11, color: '#94a3b8', whiteSpace:'nowrap' }}>{formatDate(d)}</td>
-                          <td style={{ ...tdS, textAlign: 'center' }}>
-                            <span style={{ fontSize: 12 }}>
-                              {rec.type === 'office' ? '🏢' : rec.type === 'wfh' ? '🏠' : '🤒'}
-                              <span style={{ fontSize: 10, color: '#64748b', marginLeft: 3 }}>{rec.type}</span>
-                            </span>
-                          </td>
-                          <td style={{ ...tdS, fontFamily:'DM Mono', fontSize:11, textAlign:'center', color: ls?.color || '#64748b' }}>{rec.arrival || '—'}</td>
-                          <td style={{ ...tdS, fontFamily:'DM Mono', fontSize:11, textAlign:'center', color:'#64748b' }}>{rec.departure || '—'}</td>
-                          <td style={{ ...tdS, fontFamily:'DM Mono', fontSize:11, textAlign:'center', color: hrs && Number(hrs) < 7 ? AMBER : GREEN }}>{hrs ? `${hrs}h` : '—'}</td>
-                          <td style={{ ...tdS, textAlign: 'center' }}>
-                            {ls ? (
-                              <span style={{ fontSize: 10, fontWeight: 700, color: ls.color, background: `${ls.color}15`, padding:'2px 7px', borderRadius:4 }}>{ls.label}</span>
-                            ) : rec.type === 'wfh' ? <span style={{ fontSize: 10, color: BLUE }}>WFH</span>
-                              : rec.type === 'absent' ? <span style={{ fontSize: 10, color: RED }}>Absent</span> : '—'}
-                          </td>
-                          <td style={{ ...tdS, fontSize: 11, color: '#64748b' }}>{rec.note || '—'}</td>
-                          <td style={{ ...tdS, textAlign: 'center' }}>
-                            <div style={{ display: 'flex', gap: 4, justifyContent:'center' }}>
-                              <button onClick={() => openLog(u.id, d)} style={actBtnStyle}>✏</button>
-                              <button onClick={() => deleteRecord(u.id, d)} style={{ ...actBtnStyle, color: RED, borderColor: `${RED}33` }}>🗑</button>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    });
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {/* ════════════════════════════════════════════════════════════════════ */}
-      {/* EXPORT EXCEL MODAL (manager only)                                  */}
-      {/* ════════════════════════════════════════════════════════════════════ */}
-      {showExport && isManager && (
-        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.7)', zIndex:9999, display:'flex', alignItems:'center', justifyContent:'center', padding:16 }}
-          onClick={e => { if (e.target===e.currentTarget) setShowExport(false); }}>
-          <div style={{ background:'#0f172a', border:'1px solid rgba(255,255,255,0.1)', borderRadius:14, padding:28, width:'100%', maxWidth:440, boxShadow:'0 25px 60px rgba(0,0,0,0.6)' }}>
-            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 }}>
-              <div style={{ fontSize:16, fontWeight:700 }}>📥 Export Attendance to Excel</div>
-              <button onClick={()=>setShowExport(false)} style={{ background:'none', border:'none', color:'#64748b', fontSize:20, cursor:'pointer' }}>✕</button>
-            </div>
-            <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
-              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
-                <div>
-                  <div style={{ fontSize:11, color:'#64748b', marginBottom:5, fontWeight:600 }}>From</div>
-                  <input type="date" value={exportFrom} onChange={e=>setExportFrom(e.target.value)} style={inputStyle} />
-                </div>
-                <div>
-                  <div style={{ fontSize:11, color:'#64748b', marginBottom:5, fontWeight:600 }}>To</div>
-                  <input type="date" value={exportTo} onChange={e=>setExportTo(e.target.value)} style={inputStyle} />
-                </div>
-              </div>
-              <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
-                {[
-                  ['This week', () => { const ws=getWeekStart(todayStr()); setExportFrom(ws); setExportTo(addDays(ws,4)); }],
-                  ['This month', () => { const [y,m]=todayStr().slice(0,7).split('-'); setExportFrom(`${y}-${m}-01`); setExportTo(new Date(y,m,0).toISOString().slice(0,10)); }],
-                  ['Last 30 days', () => { setExportFrom(addDays(todayStr(),-29)); setExportTo(todayStr()); }],
-                  ['All time', () => { setExportFrom(''); setExportTo(''); }],
-                ].map(([l,fn]) => (
-                  <button key={l} onClick={fn} style={{ padding:'4px 12px', background:'rgba(255,255,255,0.05)', border:'1px solid rgba(255,255,255,0.1)', borderRadius:6, color:'#94a3b8', fontSize:11, cursor:'pointer' }}>{l}</button>
-                ))}
-              </div>
-              <div style={{ display:'flex', gap:8, justifyContent:'flex-end', marginTop:4 }}>
-                <button onClick={()=>setShowExport(false)} style={{ padding:'8px 18px', background:'transparent', border:'1px solid rgba(255,255,255,0.1)', borderRadius:7, color:'#64748b', cursor:'pointer', fontSize:13 }}>Cancel</button>
-                <button onClick={async ()=>{ setExporting(true); await exportAttendanceExcel(engineers,tk,bankHolidays,holidays,exportFrom,exportTo); setExporting(false); setShowExport(false); }}
-                  disabled={exporting}
-                  style={{ padding:'8px 22px', background:ACCENT, color:'#000', border:'none', borderRadius:7, fontWeight:700, fontSize:13, cursor:'pointer' }}>
-                  {exporting ? '⏳ Exporting…' : '📥 Download Excel'}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ════════════════════════════════════════════════════════════════════ */}
-      {/* LOG ATTENDANCE MODAL                                                */}
-      {/* ════════════════════════════════════════════════════════════════════ */}
-      {showLogModal && (
-        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.7)', zIndex:9999, display:'flex', alignItems:'center', justifyContent:'center', padding:16 }}
-          onClick={e => { if (e.target === e.currentTarget) setShowLogModal(false); }}>
-          <div style={{ background:'#0f172a', border:'1px solid rgba(255,255,255,0.1)', borderRadius:14, padding:28, width:'100%', maxWidth:460, boxShadow:'0 25px 60px rgba(0,0,0,0.6)' }}>
-            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 }}>
-              <div style={{ fontSize:16, fontWeight:700 }}>🕒 Log Attendance</div>
-              <button onClick={() => setShowLogModal(false)} style={{ background:'none', border:'none', color:'#64748b', fontSize:20, cursor:'pointer', lineHeight:1 }}>✕</button>
-            </div>
-            <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
-              <div>
-                <label style={lblStyle}>Engineer</label>
-                <select value={logUser} onChange={e => setLogUser(e.target.value)} style={inputStyle}>
-                  <option value="">Select engineer…</option>
-                  {engineers.map(u => <option key={u.id} value={u.id}>{u.name} ({u.id})</option>)}
-                </select>
-              </div>
-              <div>
-                <label style={lblStyle}>Date</label>
-                <input type="date" value={logDate} onChange={e => setLogDate(e.target.value)} style={inputStyle} />
-              </div>
-              <div>
-                <label style={lblStyle}>Type</label>
-                <div style={{ display:'flex', gap:8 }}>
-                  {[['office','🏢 In Office',GREEN],['wfh','🏠 WFH',BLUE],['absent','🤒 Absent',RED]].map(([v,l,c]) => (
-                    <div key={v} onClick={() => setLogType(v)}
-                      style={{ flex:1, padding:'8px 0', textAlign:'center', borderRadius:7, cursor:'pointer', fontSize:12, fontWeight:600,
-                        background: logType===v ? `${c}18` : 'rgba(255,255,255,0.03)',
-                        border: `1px solid ${logType===v ? `${c}55` : 'rgba(255,255,255,0.08)'}`,
-                        color: logType===v ? c : '#64748b', transition:'all 0.15s' }}>
-                      {l}
-                    </div>
-                  ))}
-                </div>
-              </div>
-              {logType === 'office' && (
-                <>
-                  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
-                    <div>
-                      <label style={lblStyle}>Arrival Time</label>
-                      <input type="time" value={logArrival} onChange={e => setLogArrival(e.target.value)} style={inputStyle} />
-                      {logArrival && (() => {
-                        const ls = lateStatus(logArrival);
-                        if (!ls) return null;
-                        return (
-                          <div style={{ fontSize:11, color:ls.color, marginTop:4, fontWeight:600 }}>
-                            {ls.status==='ontime'||ls.status==='early' ? '✓ On time' : ls.status==='warn' ? `⚠ Grace period (+${ls.diff}m)` : `✗ Late (+${ls.diff}m over grace)`}
-                          </div>
-                        );
-                      })()}
-                    </div>
-                    <div>
-                      <label style={lblStyle}>Departure Time</label>
-                      <input type="time" value={logDeparture} onChange={e => setLogDeparture(e.target.value)} style={inputStyle} />
+                    {entry.notes && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>📝 {entry.notes}</div>}
+                    {/* Confirm / edit row */}
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                      {!entry.confirmedByManager ? (
+                        <button className="btn btn-success btn-sm" onClick={() => confirmEntry(u.id, entry.id)}>✓ Confirm</button>
+                      ) : (
+                        <span style={{ fontSize: 11, color: '#10b981' }}>✓ Confirmed {entry.confirmedAt ? new Date(entry.confirmedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : ''}</span>
+                      )}
+                      <button className="btn btn-secondary btn-sm" onClick={() => openEditEntry(u.id, entry)}>✏</button>
+                      <button className="btn btn-danger btn-sm" onClick={() => deleteEntry(u.id, entry.id)}>🗑</button>
                     </div>
                   </div>
-                </>
-              )}
-              <div>
-                <label style={lblStyle}>Note (optional)</label>
-                <input type="text" value={logNote} onChange={e => setLogNote(e.target.value)} placeholder="e.g. Client visit, early finish approved…" style={inputStyle} />
+                ) : (
+                  <div>
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>No attendance logged for today.</div>
+                    <button className="btn btn-secondary btn-sm" onClick={() => {
+                      setLogForm({ userId: u.id, date: today, checkIn: '', checkOut: '', status: 'present', notes: '' });
+                      setEditEntry(null); setLogModal(true);
+                    }}>+ Log for {u.name.split(' ')[0]}</button>
+                  </div>
+                )}
               </div>
-              {/* Existing record warning */}
-              {logUser && logDate && (tk[logUser] || {})[logDate] && (
-                <div style={{ background:'rgba(245,158,11,0.1)', border:'1px solid rgba(245,158,11,0.25)', borderRadius:7, padding:'8px 12px', fontSize:12, color:AMBER }}>
-                  ⚠ A record already exists for this date — saving will overwrite it.
-                </div>
-              )}
-              <div style={{ display:'flex', gap:8, justifyContent:'flex-end', marginTop:4 }}>
-                <button onClick={() => setShowLogModal(false)} style={{ padding:'8px 18px', background:'transparent', border:'1px solid rgba(255,255,255,0.1)', borderRadius:7, color:'#64748b', cursor:'pointer', fontSize:13 }}>Cancel</button>
-                <button onClick={saveRecord} disabled={!logUser || !logDate || saving}
-                  style={{ padding:'8px 22px', background:ACCENT, color:'#000', border:'none', borderRadius:7, fontWeight:700, fontSize:13, cursor:'pointer', opacity:(!logUser||!logDate)?0.5:1 }}>
-                  {saving ? 'Saving…' : '✓ Save Record'}
-                </button>
-              </div>
-            </div>
-          </div>
+            );
+          })}
         </div>
+      )}
+
+      {/* ══════════════════════════════════════════════════════════════════
+          WEEKLY VIEW
+      ══════════════════════════════════════════════════════════════════ */}
+      {tab === 'week' && (
+        <div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+            <button className="btn btn-secondary btn-sm" onClick={() => setWeekOffset(o => o - 1)}>← Prev Week</button>
+            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)', textAlign: 'center' }}>
+              {weekLabel}
+              {weekOffset !== 0 && <button className="btn btn-secondary btn-sm" style={{ marginLeft: 10 }} onClick={() => setWeekOffset(0)}>This Week</button>}
+            </div>
+            <button className="btn btn-secondary btn-sm" onClick={() => setWeekOffset(o => o + 1)}>Next Week →</button>
+          </div>
+
+          {displayedUsers.map(u => (
+            <div key={u.id} className="card mb-12">
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                  <Avatar user={u} size={30} />
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>{u.name}</div>
+                </div>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  {STATUS_OPTIONS.map(s => {
+                    const count = weekDates.filter(d => userEntries(u.id).find(e => e.date === d)?.status === s.value).length;
+                    return count > 0 ? (
+                      <span key={s.value} style={{ fontSize: 10, color: s.color, background: s.bg, padding: '2px 7px', borderRadius: 10, fontWeight: 600 }}>
+                        {s.icon} {count}
+                      </span>
+                    ) : null;
+                  })}
+                </div>
+              </div>
+              <WeekView entries={userEntries(u.id)} weekDates={weekDates} bankHolidays={bankHolidays} />
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* ══════════════════════════════════════════════════════════════════
+          MONTHLY VIEW
+      ══════════════════════════════════════════════════════════════════ */}
+      {tab === 'month' && (
+        <div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+            <button className="btn btn-secondary btn-sm" onClick={() => setMonthOffset(o => o - 1)}>← Prev</button>
+            <div style={{ fontSize: 14, fontWeight: 700 }}>{monthLabel}</div>
+            <button className="btn btn-secondary btn-sm" onClick={() => setMonthOffset(o => o + 1)}>Next →</button>
+          </div>
+
+          {displayedUsers.map(u => {
+            const uEntries      = userEntries(u.id);
+            const uMonthEntries = uEntries.filter(e => e.date.startsWith(`${viewYear}-${String(viewMonth + 1).padStart(2, '0')}`));
+            const uHrs          = uMonthEntries.reduce((a, e) => {
+              const h = fmtHours(e.checkIn, e.checkOut);
+              if (!h) return a;
+              return a + parseFloat(h.split('h')[0] || 0);
+            }, 0);
+            const uPending = uMonthEntries.filter(e => !e.confirmedByManager).length;
+
+            return (
+              <div key={u.id} className="card mb-16">
+                {/* Engineer header */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                  <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                    <Avatar user={u} size={32} />
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 600 }}>{u.name}</div>
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                        {uMonthEntries.length} days · ≈{Math.round(uHrs)}h
+                        {uPending > 0 && <span style={{ color: '#f59e0b', marginLeft: 8 }}>· ⏳ {uPending} unconfirmed</span>}
+                      </div>
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                    {STATUS_OPTIONS.map(s => {
+                      const count = uMonthEntries.filter(e => e.status === s.value).length;
+                      return count > 0 ? (
+                        <span key={s.value} style={{ fontSize: 10, color: s.color, background: s.bg, padding: '2px 8px', borderRadius: 10, fontWeight: 600 }}>
+                          {s.icon} {s.label}: {count}
+                        </span>
+                      ) : null;
+                    })}
+                  </div>
+                </div>
+
+                <MonthView entries={uEntries} year={viewYear} month={viewMonth} bankHolidays={bankHolidays} />
+
+                {/* Confirm all / entry table */}
+                {uMonthEntries.length > 0 && (
+                  <div style={{ marginTop: 14 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                      <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 1 }}>Entries</div>
+                      {uPending > 0 && (
+                        <button className="btn btn-success btn-sm" onClick={() => {
+                          uMonthEntries.filter(e => !e.confirmedByManager).forEach(e => confirmEntry(u.id, e.id));
+                        }}>✓ Confirm All ({uPending})</button>
+                      )}
+                    </div>
+                    <div style={{ overflowX: 'auto' }}>
+                      <table style={{ fontSize: 12 }}>
+                        <thead>
+                          <tr><th>Date</th><th>Status</th><th>In</th><th>Out</th><th>Duration</th><th>Notes</th><th>Confirmed</th><th></th></tr>
+                        </thead>
+                        <tbody>
+                          {uMonthEntries.sort((a, b) => a.date.localeCompare(b.date)).map(e => (
+                            <tr key={e.id}>
+                              <td style={{ fontFamily: 'DM Mono', fontSize: 11 }}>{fmtDate(e.date)}</td>
+                              <td><StatusPill status={e.status} small /></td>
+                              <td style={{ fontFamily: 'DM Mono', color: '#6ee7b7' }}>{e.checkIn || '—'}</td>
+                              <td style={{ fontFamily: 'DM Mono', color: '#fcd34d' }}>{e.checkOut || '—'}</td>
+                              <td style={{ fontFamily: 'DM Mono', color: '#a78bfa' }}>{fmtHours(e.checkIn, e.checkOut) || '—'}</td>
+                              <td style={{ color: 'var(--text-muted)', maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.notes || '—'}</td>
+                              <td>
+                                {e.confirmedByManager
+                                  ? <Tag label="✓ Confirmed" type="green" />
+                                  : <button className="btn btn-success btn-sm" onClick={() => confirmEntry(u.id, e.id)}>✓</button>}
+                              </td>
+                              <td>
+                                <div style={{ display: 'flex', gap: 4 }}>
+                                  <button className="btn btn-secondary btn-sm" onClick={() => openEditEntry(u.id, e)}>✏</button>
+                                  <button className="btn btn-danger btn-sm" onClick={() => deleteEntry(u.id, e.id)}>🗑</button>
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* ── Log / Edit modal ── */}
+      {logModal && (
+        <Modal title={editEntry ? 'Edit Attendance Entry' : 'Log Attendance'} onClose={() => setLogModal(false)}>
+          {isManager && !editEntry && (
+            <FormGroup label="Engineer">
+              <select className="select" value={logForm.userId} onChange={e => setLogForm(f => ({ ...f, userId: e.target.value }))}>
+                {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+              </select>
+            </FormGroup>
+          )}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <FormGroup label="Date">
+              <input className="input" type="date" value={logForm.date}
+                onChange={e => setLogForm(f => ({ ...f, date: e.target.value }))} />
+            </FormGroup>
+            <FormGroup label="Status">
+              <select className="select" value={logForm.status} onChange={e => setLogForm(f => ({ ...f, status: e.target.value }))}>
+                {STATUS_OPTIONS.map(s => <option key={s.value} value={s.value}>{s.icon} {s.label}</option>)}
+              </select>
+            </FormGroup>
+            <FormGroup label="Check In Time">
+              <input className="input" type="time" value={logForm.checkIn}
+                onChange={e => setLogForm(f => ({ ...f, checkIn: e.target.value }))} />
+            </FormGroup>
+            <FormGroup label="Check Out Time" hint="optional">
+              <input className="input" type="time" value={logForm.checkOut}
+                onChange={e => setLogForm(f => ({ ...f, checkOut: e.target.value }))} />
+            </FormGroup>
+          </div>
+          {logForm.checkIn && logForm.checkOut && (
+            <div style={{ fontSize: 12, color: '#a78bfa', marginBottom: 10, fontFamily: 'DM Mono' }}>
+              ⏱ Duration: {fmtHours(logForm.checkIn, logForm.checkOut)}
+            </div>
+          )}
+          <FormGroup label="Notes (optional)">
+            <textarea className="textarea" rows={2} placeholder="Any notes…"
+              value={logForm.notes} onChange={e => setLogForm(f => ({ ...f, notes: e.target.value }))} />
+          </FormGroup>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
+            <button className="btn btn-secondary" onClick={() => setLogModal(false)}>Cancel</button>
+            <button className="btn btn-primary" onClick={saveLogEntry} disabled={!logForm.date || !logForm.checkIn}>
+              {editEntry ? 'Update Entry' : 'Save Entry'}
+            </button>
+          </div>
+        </Modal>
       )}
     </div>
   );
 }
-
-// ── Inline style constants ────────────────────────────────────────────────────
-const thS = {
-  padding: '8px 12px', background: 'rgba(255,255,255,0.03)',
-  border: '1px solid rgba(255,255,255,0.06)', fontSize: 11,
-  fontWeight: 700, color: '#64748b', textTransform: 'uppercase',
-  letterSpacing: '0.5px', whiteSpace: 'nowrap', textAlign: 'left',
-};
-const tdS = {
-  padding: '9px 12px', borderBottom: '1px solid rgba(255,255,255,0.04)',
-  fontSize: 12, verticalAlign: 'middle',
-};
-const navBtnStyle = {
-  padding: '6px 14px', background: 'rgba(255,255,255,0.05)',
-  border: '1px solid rgba(255,255,255,0.08)', borderRadius: 6,
-  color: '#94a3b8', cursor: 'pointer', fontSize: 12, fontWeight: 600,
-};
-const selStyle = {
-  background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)',
-  borderRadius: 6, color: '#e2e8f0', padding: '6px 12px', fontSize: 12,
-};
-const inputStyle = {
-  width: '100%', boxSizing: 'border-box', padding: '9px 12px',
-  background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)',
-  borderRadius: 7, color: '#e2e8f0', fontSize: 13, outline: 'none',
-};
-const lblStyle = {
-  display: 'block', fontSize: 11, color: '#64748b', marginBottom: 5,
-  fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px',
-};
-const actBtnStyle = {
-  padding: '3px 8px', background: 'rgba(255,255,255,0.05)',
-  border: '1px solid rgba(255,255,255,0.08)', borderRadius: 5,
-  cursor: 'pointer', fontSize: 12, color: '#94a3b8',
-};
