@@ -337,7 +337,13 @@ export default function TimeKeeping({ users, currentUser, isManager, bankHoliday
   // ─────────────────────────────────────────────────────────────────────
   // Data helpers
   // ─────────────────────────────────────────────────────────────────────
-  const userEntries = (uid) => (timekeeping[uid] || []);
+  const userEntries = (uid) => {
+    const data = (timekeeping || {})[uid];
+    if (!data) return [];
+    if (Array.isArray(data)) return data;
+    // Old format stored entries as an object — normalise to array
+    return Object.values(data).filter(v => v && typeof v === 'object');
+  };
 
   const todayEntry = (uid) => userEntries(uid).find(e => e.date === today);
 
