@@ -1,6 +1,6 @@
 // src/TimeKeeping.js
 // CloudOps Rota — Time Keeping & Attendance
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 11th May 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 09th May 2026
 
 import React, { useState, useEffect } from 'react';
 
@@ -364,7 +364,7 @@ export default function TimeKeeping({ users, currentUser, isManager, bankHoliday
   const upsertEntry = (uid, entry) => {
     setTimekeeping(prev => {
       const existing = (prev[uid] || []).filter(e => e.id !== entry.id);
-      return { ...prev, [uid]: [...existing, entry].sort((a, b) => b.date.localeCompare(a.date)) };
+      return { ...prev, [uid]: [...existing, entry].sort((a, b) => (b.date || '').localeCompare(a.date || '')) };
     });
   };
 
@@ -451,7 +451,7 @@ export default function TimeKeeping({ users, currentUser, isManager, bankHoliday
   const pendingConfirm   = users.flatMap(u => userEntries(u.id).filter(e => !e.confirmedByManager)).length;
 
   // My monthly hours
-  const myMonthEntries   = myEntries.filter(e => e.date.startsWith(`${viewYear}-${String(viewMonth + 1).padStart(2, '0')}`));
+  const myMonthEntries   = myEntries.filter(e => e.date && e.date.startsWith(`${viewYear}-${String(viewMonth + 1).padStart(2, '0')}`));
   const myMonthHrs       = myMonthEntries.reduce((a, e) => {
     const h = fmtHours(e.checkIn, e.checkOut);
     if (!h) return a;
@@ -901,7 +901,7 @@ export default function TimeKeeping({ users, currentUser, isManager, bankHoliday
 
           {displayedUsers.map(u => {
             const uEntries      = userEntries(u.id);
-            const uMonthEntries = uEntries.filter(e => e.date.startsWith(`${viewYear}-${String(viewMonth + 1).padStart(2, '0')}`));
+            const uMonthEntries = uEntries.filter(e => e.date && e.date.startsWith(`${viewYear}-${String(viewMonth + 1).padStart(2, '0')}`));
             const uHrs          = uMonthEntries.reduce((a, e) => {
               const h = fmtHours(e.checkIn, e.checkOut);
               if (!h) return a;
@@ -954,7 +954,7 @@ export default function TimeKeeping({ users, currentUser, isManager, bankHoliday
                           <tr><th>Date</th><th>Status</th><th>In</th><th>Out</th><th>Duration</th><th>Notes</th><th>Confirmed</th><th></th></tr>
                         </thead>
                         <tbody>
-                          {uMonthEntries.sort((a, b) => a.date.localeCompare(b.date)).map(e => (
+                          {uMonthEntries.sort((a, b) => (a.date || '').localeCompare(b.date || '')).map(e => (
                             <tr key={e.id}>
                               <td style={{ fontFamily: 'DM Mono', fontSize: 11 }}>{fmtDate(e.date)}</td>
                               <td><StatusPill status={e.status} small /></td>
