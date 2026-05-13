@@ -12,6 +12,36 @@ const GRACE_LATE_WARN   = 15; // mins → amber
 const GRACE_LATE_LATE   = 20; // mins → red
 const STREAK_THRESHOLD  = 3;  // consecutive lates = pattern
 
+// ── Device detection ─────────────────────────────────────────────────────────
+function detectDevice() {
+  const ua = navigator.userAgent || '';
+  const w  = window.innerWidth  || 0;
+  const isTablet  = /iPad/i.test(ua) || (/Android/i.test(ua) && !/Mobile/i.test(ua));
+  const isMobile  = !isTablet && (/Android|iPhone|iPod|BlackBerry|IEMobile|Opera Mini/i.test(ua) || w < 768);
+  if (isTablet) return 'tablet';
+  if (isMobile) return 'mobile';
+  return 'desktop';
+}
+const DEVICE_META = {
+  desktop: { icon: '💻', label: 'Desktop / Laptop', color: '#60a5fa', bg: 'rgba(96,165,250,0.12)', border: 'rgba(96,165,250,0.3)'  },
+  mobile:  { icon: '📱', label: 'Mobile Phone',     color: '#a78bfa', bg: 'rgba(167,139,250,0.12)', border: 'rgba(167,139,250,0.3)' },
+  tablet:  { icon: '📟', label: 'Tablet',           color: '#34d399', bg: 'rgba(52,211,153,0.12)',  border: 'rgba(52,211,153,0.3)'  },
+};
+function DevicePill({ device, small }) {
+  if (!device) return <span style={{ color: 'var(--text-muted)', fontSize: small ? 10 : 11 }}>—</span>;
+  const m = DEVICE_META[device] || DEVICE_META.desktop;
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', gap: small ? 3 : 4,
+      padding: small ? '2px 6px' : '3px 9px',
+      borderRadius: 20, fontSize: small ? 10 : 11, fontWeight: 600,
+      background: m.bg, color: m.color, border: `1px solid ${m.border}`,
+    }} title={m.label}>
+      {m.icon} {small ? '' : m.label}
+    </span>
+  );
+}
+
 // ── Status config ─────────────────────────────────────────────────────────────
 const STATUS_OPTIONS = [
   { value: 'present',  label: 'Present',  icon: '✅', color: '#10b981', bg: 'rgba(16,185,129,0.12)',  border: 'rgba(16,185,129,0.35)'  },
@@ -177,6 +207,8 @@ function normaliseEntries(uid, data) {
       notes:              v.notes || v.note || '',
       confirmedByManager: !!(v.confirmedByManager || v.confirmedBy),
       confirmedAt:        v.confirmedAt || null,
+      device:             v.device             || null,
+      checkOutDevice:     v.checkOutDevice     || null,
     };
   }).filter(Boolean);
 }
@@ -454,7 +486,7 @@ async function exportAttendanceExcel(users, timekeeping, bankHolidays, holidays,
   if (!XLSX) { alert('XLSX library not loaded — make sure the SheetJS CDN script is included.'); return; }
   const bh  = (bankHolidays || []).map(b => b.date || b);
   const fmt = ds => new Date(ds + 'T12:00:00').toLocaleDateString('en-GB');
-  const hdrs = ['ID', 'Name', 'Date', 'Day', 'Status', 'Check In', 'Check Out', 'Hours', 'Late Status', 'Confirmed', 'Notes'];
+  const hdrs = ['ID', 'Name', 'Date', 'Day', 'Status', 'Check In', 'Check Out', 'Hours', 'Late Status', 'Check-In Device', 'Check-Out Device', 'Confirmed', 'Notes'];
   const rows = [];
   (users || []).forEach(u => {
     const entries = normaliseEntries(u.id, (timekeeping || {})[u.id])
@@ -471,13 +503,15 @@ async function exportAttendanceExcel(users, timekeeping, bankHolidays, holidays,
         isBH ? 'Bank Holiday' : isH ? 'Holiday' : (e.status || '—'),
         e.checkIn || '—', e.checkOut || '—', hrs,
         ls ? ls.label : (e.status === 'wfh' ? 'WFH' : e.status === 'absent' ? 'Absent' : '—'),
+        e.device          ? (DEVICE_META[e.device]?.label          || e.device)          : '—',
+        e.checkOutDevice  ? (DEVICE_META[e.checkOutDevice]?.label  || e.checkOutDevice)  : '—',
         e.confirmedByManager ? '✓' : '—',
         e.notes || '',
       ]);
     });
   });
   const ws = XLSX.utils.aoa_to_sheet([hdrs, ...rows]);
-  ws['!cols'] = [10, 22, 12, 12, 12, 9, 10, 8, 12, 10, 28].map(w => ({ wch: w }));
+  ws['!cols'] = [10, 22, 12, 12, 12, 9, 10, 8, 12, 18, 18, 10, 28].map(w => ({ wch: w }));
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Attendance');
   XLSX.writeFile(wb, `CloudOps-Attendance-${(from || 'all').replace(/-/g, '')}-${(to || 'now').replace(/-/g, '')}.xlsx`);
@@ -672,15 +706,17 @@ export default function TimeKeeping({
   };
 
   const handleCheckIn = () => {
-    const entry = todayEntry(currentUser);
-    const time  = londonTimeStr();
+    const entry  = todayEntry(currentUser);
+    const time   = londonTimeStr();
+    const device = detectDevice();
     if (entry) {
-      upsertEntry(currentUser, { ...entry, checkIn: time, status: 'present' });
+      upsertEntry(currentUser, { ...entry, checkIn: time, status: 'present', device });
     } else {
       upsertEntry(currentUser, {
         id: `ck-${currentUser}-${Date.now()}`,
         date: today, checkIn: time, checkOut: null,
         status: 'present', notes: '', confirmedByManager: false,
+        device,
       });
     }
   };
@@ -688,7 +724,7 @@ export default function TimeKeeping({
   const handleCheckOut = () => {
     const entry = todayEntry(currentUser);
     if (!entry) return;
-    upsertEntry(currentUser, { ...entry, checkOut: londonTimeStr() });
+    upsertEntry(currentUser, { ...entry, checkOut: londonTimeStr(), checkOutDevice: detectDevice() });
   };
 
   const saveLogEntry = () => {
@@ -701,6 +737,9 @@ export default function TimeKeeping({
       status: logForm.status, notes: logForm.notes || '',
       confirmedByManager: editEntry?.confirmedByManager || false,
       confirmedAt: editEntry?.confirmedAt || null,
+      // preserve device on edit; stamp current device on new manual entries
+      device: editEntry?.device || detectDevice(),
+      checkOutDevice: editEntry?.checkOutDevice || null,
     });
     setLogModal(false);
     setEditEntry(null);
@@ -858,6 +897,15 @@ export default function TimeKeeping({
                   {myTodayEntry.notes && (
                     <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 8 }}>📝 {myTodayEntry.notes}</div>
                   )}
+                  {/* Device that was used to check in */}
+                  {myTodayEntry.device && (
+                    <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-muted)' }}>
+                      Logged via <DevicePill device={myTodayEntry.device} />
+                      {myTodayEntry.checkOutDevice && myTodayEntry.checkOutDevice !== myTodayEntry.device && (
+                        <> · checked out via <DevicePill device={myTodayEntry.checkOutDevice} /></>
+                      )}
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>You haven't checked in yet today.</div>
@@ -957,7 +1005,7 @@ export default function TimeKeeping({
                   All Entries — {monthLabel}
                 </div>
                 <table>
-                  <thead><tr><th>Date</th><th>Status</th><th>In</th><th>Out</th><th>Duration</th><th>Confirmed</th><th></th></tr></thead>
+                  <thead><tr><th>Date</th><th>Status</th><th>In</th><th>Out</th><th>Duration</th><th>Device</th><th>Confirmed</th><th></th></tr></thead>
                   <tbody>
                     {myMonthEntries.sort((a, b) => (a.date || '').localeCompare(b.date || '')).map(e => (
                       <tr key={e.id}>
@@ -966,6 +1014,20 @@ export default function TimeKeeping({
                         <td style={{ fontFamily: 'DM Mono', fontSize: 12, color: '#6ee7b7' }}>{e.checkIn || '—'}</td>
                         <td style={{ fontFamily: 'DM Mono', fontSize: 12, color: '#fcd34d' }}>{e.checkOut || '—'}</td>
                         <td style={{ fontFamily: 'DM Mono', fontSize: 12, color: '#a78bfa' }}>{fmtHours(e.checkIn, e.checkOut) || '—'}</td>
+                        <td>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                            {e.device
+                              ? <div style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 11, color: 'var(--text-muted)' }}>
+                                  <span style={{ fontSize: 10 }}>In</span><DevicePill device={e.device} small />
+                                </div>
+                              : <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>—</span>}
+                            {e.checkOutDevice && (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 11, color: 'var(--text-muted)' }}>
+                                <span style={{ fontSize: 10 }}>Out</span><DevicePill device={e.checkOutDevice} small />
+                              </div>
+                            )}
+                          </div>
+                        </td>
                         <td>{e.confirmedByManager ? <Tag label="✓ Confirmed" type="green" /> : <Tag label="Pending" type="amber" />}</td>
                         <td>
                           <button className="btn btn-secondary btn-sm" onClick={() => openEditEntry(currentUser, e)}>✏</button>
@@ -1090,6 +1152,21 @@ export default function TimeKeeping({
                       )}
                     </div>
                     {entry.notes && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>📝 {entry.notes}</div>}
+                    {/* Device row */}
+                    {(entry.device || entry.checkOutDevice) && (
+                      <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap' }}>
+                        {entry.device && (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--text-muted)' }}>
+                            In: <DevicePill device={entry.device} small />
+                          </div>
+                        )}
+                        {entry.checkOutDevice && (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--text-muted)' }}>
+                            Out: <DevicePill device={entry.checkOutDevice} small />
+                          </div>
+                        )}
+                      </div>
+                    )}
                     <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
                       {!entry.confirmedByManager
                         ? <button className="btn btn-success btn-sm" onClick={() => confirmEntry(u.id, entry.id)}>✓ Confirm</button>
@@ -1154,7 +1231,7 @@ export default function TimeKeeping({
           <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 12 }}>
             Today at a Glance
           </div>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 24 }}>
             {allTodayEntries.map(({ user: u, entry }) => {
               const s = entry ? statusCfg(entry.status) : null;
               return (
@@ -1169,10 +1246,48 @@ export default function TimeKeeping({
                   {u.name.split(' ')[0]}
                   {s ? <span>{s.icon}</span> : <span style={{ color: 'var(--text-muted)' }}>—</span>}
                   {entry?.checkIn && <span style={{ fontFamily: 'DM Mono', fontSize: 10, opacity: 0.8 }}>{entry.checkIn}</span>}
+                  {entry?.device && <span title={DEVICE_META[entry.device]?.label || entry.device} style={{ fontSize: 13 }}>{DEVICE_META[entry.device]?.icon}</span>}
                 </div>
               );
             })}
           </div>
+
+          {/* Device breakdown (today) */}
+          {(() => {
+            const todayCounts = { desktop: 0, mobile: 0, tablet: 0, unknown: 0 };
+            allTodayEntries.forEach(({ entry }) => {
+              if (!entry) return;
+              if (entry.device && todayCounts[entry.device] !== undefined) todayCounts[entry.device]++;
+              else if (entry.device) todayCounts.unknown++;
+            });
+            const total = todayCounts.desktop + todayCounts.mobile + todayCounts.tablet + todayCounts.unknown;
+            if (total === 0) return null;
+            return (
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 12 }}>
+                  Check-In Device Breakdown — Today
+                </div>
+                <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                  {Object.entries(todayCounts).map(([type, count]) => {
+                    if (count === 0) return null;
+                    const m   = DEVICE_META[type] || { icon: '❓', label: 'Unknown', color: '#94a3b8', bg: 'rgba(148,163,184,0.1)', border: 'rgba(148,163,184,0.25)' };
+                    const pct = Math.round((count / total) * 100);
+                    return (
+                      <div key={type} style={{
+                        padding: '12px 18px', borderRadius: 12, minWidth: 120, textAlign: 'center',
+                        background: m.bg, border: `1px solid ${m.border}`,
+                      }}>
+                        <div style={{ fontSize: 28, marginBottom: 4 }}>{m.icon}</div>
+                        <div style={{ fontSize: 22, fontWeight: 700, color: m.color, fontFamily: 'DM Mono' }}>{count}</div>
+                        <div style={{ fontSize: 11, color: m.color, fontWeight: 600, marginBottom: 2 }}>{m.label}</div>
+                        <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>{pct}% of logged</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
         </div>
       )}
 
@@ -1248,7 +1363,7 @@ export default function TimeKeeping({
                 {uMonthEntries.length > 0 && (
                   <div style={{ marginTop: 14, overflowX: 'auto' }}>
                     <table style={{ fontSize: 12 }}>
-                      <thead><tr><th>Date</th><th>Status</th><th>In</th><th>Out</th><th>Duration</th><th>Notes</th><th>Confirmed</th><th></th></tr></thead>
+                      <thead><tr><th>Date</th><th>Status</th><th>In</th><th>Out</th><th>Duration</th><th>Device</th><th>Notes</th><th>Confirmed</th><th></th></tr></thead>
                       <tbody>
                         {uMonthEntries.sort((a, b) => (a.date || '').localeCompare(b.date || '')).map(e => (
                           <tr key={e.id}>
@@ -1257,6 +1372,20 @@ export default function TimeKeeping({
                             <td style={{ fontFamily: 'DM Mono', color: '#6ee7b7' }}>{e.checkIn || '—'}</td>
                             <td style={{ fontFamily: 'DM Mono', color: '#fcd34d' }}>{e.checkOut || '—'}</td>
                             <td style={{ fontFamily: 'DM Mono', color: '#a78bfa' }}>{fmtHours(e.checkIn, e.checkOut) || '—'}</td>
+                            <td>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                                {e.device
+                                  ? <div style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 11, color: 'var(--text-muted)' }}>
+                                      <span style={{ fontSize: 10 }}>In</span><DevicePill device={e.device} small />
+                                    </div>
+                                  : <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>—</span>}
+                                {e.checkOutDevice && (
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 11, color: 'var(--text-muted)' }}>
+                                    <span style={{ fontSize: 10 }}>Out</span><DevicePill device={e.checkOutDevice} small />
+                                  </div>
+                                )}
+                              </div>
+                            </td>
                             <td style={{ color: 'var(--text-muted)', maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.notes || '—'}</td>
                             <td>{e.confirmedByManager
                               ? <Tag label="✓ Confirmed" type="green" />
@@ -1440,7 +1569,7 @@ export default function TimeKeeping({
                 <tr>
                   <th>Engineer</th><th>Date</th><th>Status</th>
                   <th>In</th><th>Out</th><th>Duration</th><th>Late</th>
-                  <th>Notes</th><th>Confirmed</th><th></th>
+                  <th>Device</th><th>Notes</th><th>Confirmed</th><th></th>
                 </tr>
               </thead>
               <tbody>
@@ -1466,6 +1595,20 @@ export default function TimeKeeping({
                             ? <span style={{ fontSize: 11, color: ls.color, fontFamily: 'DM Mono', fontWeight: 600 }}>{ls.label}</span>
                             : ls ? <span style={{ fontSize: 11, color: '#22c55e' }}>✓</span>
                             : <span style={{ color: 'var(--text-muted)' }}>—</span>}
+                        </td>
+                        <td>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                            {e.device
+                              ? <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--text-muted)' }}>
+                                  <span style={{ fontSize: 10 }}>In</span> <DevicePill device={e.device} small />
+                                </div>
+                              : <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>—</span>}
+                            {e.checkOutDevice && (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--text-muted)' }}>
+                                <span style={{ fontSize: 10 }}>Out</span> <DevicePill device={e.checkOutDevice} small />
+                              </div>
+                            )}
+                          </div>
                         </td>
                         <td style={{ fontSize: 11, color: 'var(--text-muted)', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                           {e.notes || '—'}
