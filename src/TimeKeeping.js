@@ -3,7 +3,8 @@
 // Fixed: blank screen after check-in (tab init), restored all manager tabs
 // (Dashboard, Heat Map, Alerts, Log + Excel export), holidays prop, unconfirm
 
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { driveWrite, driveRead } from './hooks/useGoogleDrive';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const RTO_DAYS_REQUIRED = 3;
@@ -11,6 +12,19 @@ const START_TIME        = '09:00';
 const GRACE_LATE_WARN   = 15; // mins → amber
 const GRACE_LATE_LATE   = 20; // mins → red
 const STREAK_THRESHOLD  = 3;  // consecutive lates = pattern
+
+function DriveStatus({ token, saving }) {
+  if (!token) return (
+    <span style={{ fontSize: 11, color: '#ef4444', display: 'flex', alignItems: 'center', gap: 4 }}>
+      ⚠ Not connected to Drive
+    </span>
+  );
+  return (
+    <span style={{ fontSize: 11, color: saving ? '#f59e0b' : '#10b981', display: 'flex', alignItems: 'center', gap: 4 }}>
+      {saving ? '⏳ Saving…' : '☁ Saved'}
+    </span>
+  );
+}
 
 // ── Device detection ─────────────────────────────────────────────────────────
 function detectDevice() {
@@ -530,8 +544,10 @@ export default function TimeKeeping({
   setTimekeeping,
   driveToken,
 }) {
-  const today = londonTodayStr();
-  const now   = londonNow();
+  // ── Derived time values — recompute on every clockTick so display stays live ─
+  const today     = londonTodayStr();   // recalculated each render (1 s tick)
+  const now       = londonNow();
+  const liveTime  = londonTimeStr();    // shown on check-in button & today card
 
   // ── View state ──────────────────────────────────────────────────────────────
   // FIX: engineers default to 'week' — 'today' has no content in engineer view
@@ -555,12 +571,72 @@ export default function TimeKeeping({
   const [exportTo,   setExportTo]   = useState('');
   const [exporting,  setExporting]  = useState(false);
 
-  // ── Clock tick (keep "Check In HH:MM" button current) ──────────────────────
-  const [, setTick] = useState(0);
+  // ── Real-time clock (1-second tick) ────────────────────────────────────────
+  const [clockTick, setClockTick] = useState(0);
   useEffect(() => {
-    const t = setInterval(() => setTick(x => x + 1), 30000);
+    const t = setInterval(() => setClockTick(x => x + 1), 1000);
     return () => clearInterval(t);
   }, []);
+
+  // ── Drive save helper ───────────────────────────────────────────────────────
+  // App.js save() only writes the currentUser's slice — this means manager
+  // confirmations and edits for other engineers are never persisted.
+  // We write the full timekeeping object ourselves on every mutation.
+  const saveInProgress = useRef(false);
+  const pendingSave    = useRef(null);
+  const [isSaving, setIsSaving] = useState(false);
+
+  const persistToDrive = useCallback(async (newData) => {
+    if (!driveToken) return;
+    if (saveInProgress.current) { pendingSave.current = newData; return; }
+    saveInProgress.current = true;
+    setIsSaving(true);
+    try {
+      await driveWrite(driveToken, 'timekeeping', newData);
+    } catch (e) {
+      console.warn('TimeKeeping: Drive write failed', e?.message || e);
+    } finally {
+      saveInProgress.current = false;
+      setIsSaving(false);
+      if (pendingSave.current) {
+        const next = pendingSave.current;
+        pendingSave.current = null;
+        persistToDrive(next);
+      }
+    }
+  }, [driveToken]);
+
+  // ── Live poll from Drive (every 60 s) ──────────────────────────────────────
+  // Picks up check-ins from other engineers / other browsers without a reload.
+  const lastPoll = useRef(0);
+  useEffect(() => {
+    if (!driveToken) return;
+    const poll = async () => {
+      // Throttle: only poll if 60 s have elapsed since the last poll
+      if (Date.now() - lastPoll.current < 60_000) return;
+      lastPoll.current = Date.now();
+      try {
+        const fresh = await driveRead(driveToken, 'timekeeping');
+        if (fresh && typeof fresh === 'object') {
+          setTimekeeping(prev => {
+            // Merge: Drive is authoritative for all users except for any
+            // in-flight local edit (identified by a save currently queued).
+            // Simple strategy: Drive wins unless a local write is in flight.
+            if (saveInProgress.current) return prev;
+            // Deep-equal check to avoid unnecessary re-renders
+            if (JSON.stringify(fresh) === JSON.stringify(prev)) return prev;
+            return fresh;
+          });
+        }
+      } catch (e) {
+        console.warn('TimeKeeping: Drive poll failed', e?.message || e);
+      }
+    };
+    // Piggy-back on the 1-second clock tick: poll every ~60 ticks
+    poll();
+    const t = setInterval(poll, 60_000);
+    return () => clearInterval(t);
+  }, [driveToken, setTimekeeping]);
 
   // ── Data helpers ─────────────────────────────────────────────────────────────
   const userEntries  = useCallback((uid) => normaliseEntries(uid, (timekeeping || {})[uid]), [timekeeping]);
@@ -701,13 +777,15 @@ export default function TimeKeeping({
   const upsertEntry = (uid, entry) => {
     setTimekeeping(prev => {
       const existing = normaliseEntries(uid, prev[uid]).filter(e => e.id !== entry.id);
-      return { ...prev, [uid]: [...existing, entry].sort((a, b) => (b.date || '').localeCompare(a.date || '')) };
+      const updated  = { ...prev, [uid]: [...existing, entry].sort((a, b) => (b.date || '').localeCompare(a.date || '')) };
+      persistToDrive(updated);
+      return updated;
     });
   };
 
   const handleCheckIn = () => {
     const entry  = todayEntry(currentUser);
-    const time   = londonTimeStr();
+    const time   = londonTimeStr();   // fresh call — mutation, not display
     const device = detectDevice();
     if (entry) {
       upsertEntry(currentUser, { ...entry, checkIn: time, status: 'present', device });
@@ -760,28 +838,37 @@ export default function TimeKeeping({
 
   const deleteEntry = (uid, entryId) => {
     if (!window.confirm('Delete this attendance entry?')) return;
-    setTimekeeping(prev => ({
-      ...prev,
-      [uid]: normaliseEntries(uid, prev[uid]).filter(e => e.id !== entryId),
-    }));
+    setTimekeeping(prev => {
+      const updated = { ...prev, [uid]: normaliseEntries(uid, prev[uid]).filter(e => e.id !== entryId) };
+      persistToDrive(updated);
+      return updated;
+    });
   };
 
   const confirmEntry = (uid, entryId) => {
-    setTimekeeping(prev => ({
-      ...prev,
-      [uid]: normaliseEntries(uid, prev[uid]).map(e =>
-        e.id === entryId ? { ...e, confirmedByManager: true, confirmedAt: new Date().toISOString() } : e
-      ),
-    }));
+    setTimekeeping(prev => {
+      const updated = {
+        ...prev,
+        [uid]: normaliseEntries(uid, prev[uid]).map(e =>
+          e.id === entryId ? { ...e, confirmedByManager: true, confirmedAt: new Date().toISOString() } : e
+        ),
+      };
+      persistToDrive(updated);
+      return updated;
+    });
   };
 
   const unconfirmEntry = (uid, entryId) => {
-    setTimekeeping(prev => ({
-      ...prev,
-      [uid]: normaliseEntries(uid, prev[uid]).map(e =>
-        e.id === entryId ? { ...e, confirmedByManager: false, confirmedAt: null } : e
-      ),
-    }));
+    setTimekeeping(prev => {
+      const updated = {
+        ...prev,
+        [uid]: normaliseEntries(uid, prev[uid]).map(e =>
+          e.id === entryId ? { ...e, confirmedByManager: false, confirmedAt: null } : e
+        ),
+      };
+      persistToDrive(updated);
+      return updated;
+    });
   };
 
   // ── Shared log modal JSX ────────────────────────────────────────────────────
@@ -848,7 +935,12 @@ export default function TimeKeeping({
         <PageHeader
           title="Time Keeping"
           sub="Check in, check out, and view your attendance history"
-          actions={<button className="btn btn-secondary btn-sm" onClick={() => openNewLog(currentUser)}>✏ Log Manually</button>}
+          actions={
+            <>
+              <DriveStatus token={driveToken} saving={isSaving} />
+              <button className="btn btn-secondary btn-sm" onClick={() => openNewLog(currentUser)}>✏ Log Manually</button>
+            </>
+          }
         />
 
         {/* Today card */}
@@ -860,7 +952,7 @@ export default function TimeKeeping({
               <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 4 }}>
                 {now.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
                 &nbsp;·&nbsp;
-                <span style={{ fontFamily: 'DM Mono', color: 'var(--text-muted)' }}>{londonTimeStr()} London</span>
+                <span style={{ fontFamily: 'DM Mono', color: 'var(--text-muted)' }}>{liveTime} London</span>
               </div>
               {myTodayEntry ? (
                 <div>
@@ -916,7 +1008,7 @@ export default function TimeKeeping({
             <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexWrap: 'wrap' }}>
               {!amCheckedIn && !amCheckedOut && (
                 <button className="btn btn-primary" style={{ fontSize: 15, padding: '10px 20px' }} onClick={handleCheckIn}>
-                  ✅ Check In {londonTimeStr()}
+                  ✅ Check In {liveTime}
                 </button>
               )}
               {amCheckedIn && (
@@ -926,7 +1018,7 @@ export default function TimeKeeping({
                     🟡 Checked in since {myTodayEntry.checkIn}
                   </div>
                   <button className="btn btn-secondary" style={{ fontSize: 15, padding: '10px 20px' }} onClick={handleCheckOut}>
-                    🔴 Check Out {londonTimeStr()}
+                    🔴 Check Out {liveTime}
                   </button>
                 </>
               )}
@@ -1066,6 +1158,7 @@ export default function TimeKeeping({
         sub="Team attendance — confirm entries, view history, track RTO compliance"
         actions={
           <>
+            <DriveStatus token={driveToken} saving={isSaving} />
             <button className="btn btn-secondary" onClick={() => setShowExport(true)}>📥 Export Excel</button>
             <button className="btn btn-primary" onClick={() => openNewLog(null)}>+ Log Entry</button>
           </>
