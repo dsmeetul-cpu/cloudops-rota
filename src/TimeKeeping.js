@@ -653,14 +653,24 @@ export default function TimeKeeping({
     })();
   }, [driveToken, setTimekeeping]);
 
-  // ── Live poll every 15 s — near-real-time sync across all browsers ─────────
+  // ── Live poll every 20 s — near-real-time sync across all browsers ─────────
+  // Skips if: a save is in flight OR a save completed less than 10 s ago.
+  // This guarantees Drive has had time to store the write before we read it back.
   useEffect(() => {
     if (!driveToken) return;
+    const POLL_INTERVAL   = 20_000; // ms between polls
+    const POST_SAVE_GUARD = 10_000; // ms to wait after a save before polling
+
     const poll = async () => {
-      if (saveInProgress.current) return; // skip during in-flight writes
+      const msSinceSave = Date.now() - lastSaveAt.current;
+      if (saveInProgress.current)          return; // write in flight
+      if (msSinceSave < POST_SAVE_GUARD)   return; // too soon after last save
       try {
         const fresh = await driveRead(driveToken, 'timekeeping');
         if (fresh && typeof fresh === 'object') {
+          // Don't replace if a save started while the read was in flight
+          if (saveInProgress.current) return;
+          if (Date.now() - lastSaveAt.current < POST_SAVE_GUARD) return;
           setTimekeeping(prev => {
             if (JSON.stringify(fresh) === JSON.stringify(prev)) return prev;
             return fresh;
@@ -670,7 +680,7 @@ export default function TimeKeeping({
         console.warn('TimeKeeping: poll failed', e?.message || e);
       }
     };
-    const t = setInterval(poll, 15_000);
+    const t = setInterval(poll, POLL_INTERVAL);
     return () => clearInterval(t);
   }, [driveToken, setTimekeeping]);
 
@@ -810,14 +820,28 @@ export default function TimeKeeping({
     [users, userEntries]);
 
   // ── Mutations ───────────────────────────────────────────────────────────────
-  const upsertEntry = (uid, entry) => {
-    setTimekeeping(prev => {
+  // Pattern: keep a ref mirroring current timekeeping state so mutations can
+  // compute next state synchronously, then call setTimekeeping + persistToDrive
+  // together — never inside the updater function (which must stay pure).
+  const timekeepingRef = useRef(timekeeping || {});
+  useEffect(() => { timekeepingRef.current = timekeeping || {}; }, [timekeeping]);
+
+  const lastSaveAt = useRef(0); // epoch ms of last Drive write completion
+
+  const mutate = useCallback((computeNext) => {
+    const next = computeNext(timekeepingRef.current);
+    timekeepingRef.current = next;
+    setTimekeeping(next);
+    lastSaveAt.current = Date.now();
+    persistToDrive(next);
+  }, [setTimekeeping, persistToDrive]);
+
+  const upsertEntry = useCallback((uid, entry) => {
+    mutate(prev => {
       const existing = normaliseEntries(uid, prev[uid]).filter(e => e.id !== entry.id);
-      const updated  = { ...prev, [uid]: [...existing, entry].sort((a, b) => (b.date || '').localeCompare(a.date || '')) };
-      persistToDrive(updated);
-      return updated;
+      return { ...prev, [uid]: [...existing, entry].sort((a, b) => (b.date || '').localeCompare(a.date || '')) };
     });
-  };
+  }, [mutate]);
 
   const handleCheckIn = () => {
     const entry  = todayEntry(currentUser);
@@ -874,37 +898,28 @@ export default function TimeKeeping({
 
   const deleteEntry = (uid, entryId) => {
     if (!window.confirm('Delete this attendance entry?')) return;
-    setTimekeeping(prev => {
-      const updated = { ...prev, [uid]: normaliseEntries(uid, prev[uid]).filter(e => e.id !== entryId) };
-      persistToDrive(updated);
-      return updated;
-    });
+    mutate(prev => ({
+      ...prev,
+      [uid]: normaliseEntries(uid, prev[uid]).filter(e => e.id !== entryId),
+    }));
   };
 
   const confirmEntry = (uid, entryId) => {
-    setTimekeeping(prev => {
-      const updated = {
-        ...prev,
-        [uid]: normaliseEntries(uid, prev[uid]).map(e =>
-          e.id === entryId ? { ...e, confirmedByManager: true, confirmedAt: new Date().toISOString() } : e
-        ),
-      };
-      persistToDrive(updated);
-      return updated;
-    });
+    mutate(prev => ({
+      ...prev,
+      [uid]: normaliseEntries(uid, prev[uid]).map(e =>
+        e.id === entryId ? { ...e, confirmedByManager: true, confirmedAt: new Date().toISOString() } : e
+      ),
+    }));
   };
 
   const unconfirmEntry = (uid, entryId) => {
-    setTimekeeping(prev => {
-      const updated = {
-        ...prev,
-        [uid]: normaliseEntries(uid, prev[uid]).map(e =>
-          e.id === entryId ? { ...e, confirmedByManager: false, confirmedAt: null } : e
-        ),
-      };
-      persistToDrive(updated);
-      return updated;
-    });
+    mutate(prev => ({
+      ...prev,
+      [uid]: normaliseEntries(uid, prev[uid]).map(e =>
+        e.id === entryId ? { ...e, confirmedByManager: false, confirmedAt: null } : e
+      ),
+    }));
   };
 
   // ── Shared log modal JSX ────────────────────────────────────────────────────
