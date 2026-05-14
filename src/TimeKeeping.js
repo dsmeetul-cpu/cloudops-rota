@@ -57,18 +57,32 @@ function DevicePill({ device, small }) {
 }
 
 // ── Status config ─────────────────────────────────────────────────────────────
-const STATUS_OPTIONS = [
-  { value: 'present',  label: 'Present',  icon: '✅', color: '#10b981', bg: 'rgba(16,185,129,0.12)',  border: 'rgba(16,185,129,0.35)'  },
-  { value: 'late',     label: 'Late',     icon: '🟡', color: '#f59e0b', bg: 'rgba(245,158,11,0.12)',  border: 'rgba(245,158,11,0.35)'  },
-  { value: 'wfh',      label: 'WFH',      icon: '🏠', color: '#818cf8', bg: 'rgba(129,140,248,0.12)', border: 'rgba(129,140,248,0.35)' },
-  { value: 'half-day', label: 'Half Day', icon: '🌗', color: '#38bdf8', bg: 'rgba(56,189,248,0.12)',  border: 'rgba(56,189,248,0.35)'  },
-  { value: 'absent',   label: 'Absent',   icon: '❌', color: '#ef4444', bg: 'rgba(239,68,68,0.12)',   border: 'rgba(239,68,68,0.35)'   },
+// Core statuses always available to all users
+const CORE_STATUSES = [
+  { value: 'office',      label: 'Office',       icon: '🏢', color: '#10b981', bg: 'rgba(16,185,129,0.12)',  border: 'rgba(16,185,129,0.35)',  core: true },
+  { value: 'wfh',         label: 'WFH',          icon: '🏠', color: '#818cf8', bg: 'rgba(129,140,248,0.12)', border: 'rgba(129,140,248,0.35)', core: true },
+  { value: 'bank-holiday',label: 'Bank Holiday', icon: '🔴', color: '#f59e0b', bg: 'rgba(245,158,11,0.12)',  border: 'rgba(245,158,11,0.35)',  core: true },
 ];
-function statusCfg(val) {
-  return STATUS_OPTIONS.find(s => s.value === val) || STATUS_OPTIONS[0];
+// Backward-compat map: old status values → new ones for existing Drive records
+const LEGACY_STATUS_MAP = {
+  present:   'office',
+  late:      'office',
+  'half-day':'office',
+  absent:    'office',
+};
+function normStatus(val) {
+  return LEGACY_STATUS_MAP[val] || val || 'office';
 }
-function StatusPill({ status, small }) {
-  const s = statusCfg(status);
+// Build full status list from core + manager extras
+function buildStatusOptions(extraStatuses = []) {
+  return [...CORE_STATUSES, ...(extraStatuses || [])];
+}
+function statusCfg(val, extraStatuses = []) {
+  const all = buildStatusOptions(extraStatuses);
+  return all.find(s => s.value === normStatus(val)) || CORE_STATUSES[0];
+}
+function StatusPill({ status, extraStatuses, small }) {
+  const s = statusCfg(status, extraStatuses);
   return (
     <span style={{
       display: 'inline-flex', alignItems: 'center', gap: small ? 3 : 4,
@@ -209,15 +223,15 @@ function normaliseEntries(uid, data) {
     const checkOut = v.checkOut || v.departure  || null;
     let status = v.status;
     if (!status) {
-      if (v.type === 'office') status = (checkIn && computeLateStatus(checkIn)?.status === 'late') ? 'late' : 'present';
-      else status = v.type || 'present';
+      if (v.type === 'office') status = 'office';
+      else status = v.type || 'office';
     }
     return {
       id:                 v.id || `ck-${uid}-${date}`,
       date,
       checkIn,
       checkOut,
-      status,
+      status:             normStatus(status),
       notes:              v.notes || v.note || '',
       confirmedByManager: !!(v.confirmedByManager || v.confirmedBy),
       confirmedAt:        v.confirmedAt || null,
@@ -354,7 +368,7 @@ function HeatCell({ entry, bankHol, holiday, isToday, isFuture }) {
   else if (bankHol)  { bg = 'rgba(99,102,241,0.25)';  title = 'Bank Holiday'; }
   else if (isFuture) { bg = 'rgba(255,255,255,0.02)'; title = 'Future'; }
   else if (entry) {
-    if (entry.status === 'present' || entry.status === 'half-day') {
+    if (entry.status === 'office' || entry.status === 'wfh') {
       const ls = computeLateStatus(entry.checkIn);
       if (!ls || ls.status === 'ontime' || ls.status === 'early') { bg = 'rgba(34,197,94,0.28)'; title = `In: ${entry.checkIn || '?'}`; }
       else if (ls.status === 'warn') { bg = 'rgba(245,158,11,0.35)'; title = `Grace: ${entry.checkIn}`; }
@@ -536,21 +550,32 @@ async function exportAttendanceExcel(users, timekeeping, bankHolidays, holidays,
 // ═════════════════════════════════════════════════════════════════════════════
 export default function TimeKeeping({
   users        = [],
-  holidays     = [],    // approved leave — used for RTO and heatmap
+  holidays     = [],
   currentUser,
   isManager,
   bankHolidays = [],
   timekeeping,
   setTimekeeping,
   driveToken,
+  extraStatuses    = [],   // manager-defined custom check-in types (persisted by parent)
+  setExtraStatuses,        // setter passed from App.js (saves to Drive via payconfig or dedicated key)
 }) {
-  // ── Derived time values — recompute on every clockTick so display stays live ─
-  const today     = londonTodayStr();   // recalculated each render (1 s tick)
-  const now       = londonNow();
-  const liveTime  = londonTimeStr();    // shown on check-in button & today card
+  // ── Real-time clock — declared FIRST so useMemo deps below are valid ───────
+  const [clockTick, setClockTick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setClockTick(x => x + 1), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  // Derive live time — recomputed every second via clockTick dependency
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const today    = useMemo(() => londonTodayStr(), [clockTick]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const now      = useMemo(() => londonNow(),      [clockTick]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const liveTime = useMemo(() => londonTimeStr(),  [clockTick]);
 
   // ── View state ──────────────────────────────────────────────────────────────
-  // FIX: engineers default to 'week' — 'today' has no content in engineer view
   const [tab,          setTab]          = useState(isManager ? 'today' : 'week');
   const [weekOffset,   setWeekOffset]   = useState(0);
   const [monthOffset,  setMonthOffset]  = useState(0);
@@ -559,29 +584,23 @@ export default function TimeKeeping({
   const [alertFilter,  setAlertFilter]  = useState('all');
 
   // ── Log modal ────────────────────────────────────────────────────────────────
-  const [logModal,  setLogModal]  = useState(false);
-  const [editEntry, setEditEntry] = useState(null);
-  const [logForm,   setLogForm]   = useState({
-    userId: currentUser, date: today, checkIn: '', checkOut: '', status: 'present', notes: '',
+  const [logModal,   setLogModal]   = useState(false);
+  const [editEntry,  setEditEntry]  = useState(null);
+  const [logForm,    setLogForm]    = useState({
+    userId: currentUser, date: '', checkIn: '', checkOut: '', status: 'office', notes: '',
   });
 
-  // ── Export modal (manager) ──────────────────────────────────────────────────
+  // ── Manager: add custom status type ───────────────────────────────────────
+  const [showAddStatus, setShowAddStatus] = useState(false);
+  const [newStatusForm, setNewStatusForm] = useState({ label: '', icon: '📌', color: '#60a5fa' });
+
+  // ── Export modal ────────────────────────────────────────────────────────────
   const [showExport, setShowExport] = useState(false);
   const [exportFrom, setExportFrom] = useState('');
   const [exportTo,   setExportTo]   = useState('');
   const [exporting,  setExporting]  = useState(false);
 
-  // ── Real-time clock (1-second tick) ────────────────────────────────────────
-  const [clockTick, setClockTick] = useState(0);
-  useEffect(() => {
-    const t = setInterval(() => setClockTick(x => x + 1), 1000);
-    return () => clearInterval(t);
-  }, []);
-
-  // ── Drive save helper ───────────────────────────────────────────────────────
-  // App.js save() only writes the currentUser's slice — this means manager
-  // confirmations and edits for other engineers are never persisted.
-  // We write the full timekeeping object ourselves on every mutation.
+  // ── Drive save (queued to prevent race conditions) ─────────────────────────
   const saveInProgress = useRef(false);
   const pendingSave    = useRef(null);
   const [isSaving, setIsSaving] = useState(false);
@@ -606,35 +625,55 @@ export default function TimeKeeping({
     }
   }, [driveToken]);
 
-  // ── Live poll from Drive (every 60 s) ──────────────────────────────────────
-  // Picks up check-ins from other engineers / other browsers without a reload.
-  const lastPoll = useRef(0);
+  // ── Initial load from Drive on mount ──────────────────────────────────────
+  // Fires once as soon as driveToken is available. Does NOT rely on App.js
+  // having already loaded the data — engineers see their history immediately.
+  const didInitialLoad = useRef(false);
+  useEffect(() => {
+    if (!driveToken || didInitialLoad.current) return;
+    didInitialLoad.current = true;
+    (async () => {
+      try {
+        const data = await driveRead(driveToken, 'timekeeping');
+        if (data && typeof data === 'object' && Object.keys(data).length > 0) {
+          setTimekeeping(prev => {
+            if (JSON.stringify(data) === JSON.stringify(prev)) return prev;
+            // Merge: prefer Drive, but keep any local entries not yet in Drive
+            const merged = { ...data };
+            Object.keys(prev || {}).forEach(uid => {
+              const localArr = normaliseEntries(uid, prev[uid]);
+              const driveArr = normaliseEntries(uid, data[uid] || []);
+              const driveIds = new Set(driveArr.map(e => e.id));
+              const extras   = localArr.filter(e => !driveIds.has(e.id));
+              if (extras.length > 0) merged[uid] = [...driveArr, ...extras];
+            });
+            return merged;
+          });
+        }
+      } catch (e) {
+        console.warn('TimeKeeping: initial Drive load failed', e?.message || e);
+      }
+    })();
+  }, [driveToken, setTimekeeping]);
+
+  // ── Live poll every 15 s — near-real-time sync across all browsers ─────────
   useEffect(() => {
     if (!driveToken) return;
     const poll = async () => {
-      // Throttle: only poll if 60 s have elapsed since the last poll
-      if (Date.now() - lastPoll.current < 60_000) return;
-      lastPoll.current = Date.now();
+      if (saveInProgress.current) return; // skip during in-flight writes
       try {
         const fresh = await driveRead(driveToken, 'timekeeping');
         if (fresh && typeof fresh === 'object') {
           setTimekeeping(prev => {
-            // Merge: Drive is authoritative for all users except for any
-            // in-flight local edit (identified by a save currently queued).
-            // Simple strategy: Drive wins unless a local write is in flight.
-            if (saveInProgress.current) return prev;
-            // Deep-equal check to avoid unnecessary re-renders
             if (JSON.stringify(fresh) === JSON.stringify(prev)) return prev;
             return fresh;
           });
         }
       } catch (e) {
-        console.warn('TimeKeeping: Drive poll failed', e?.message || e);
+        console.warn('TimeKeeping: poll failed', e?.message || e);
       }
     };
-    // Piggy-back on the 1-second clock tick: poll every ~60 ticks
-    poll();
-    const t = setInterval(poll, 60_000);
+    const t = setInterval(poll, 15_000);
     return () => clearInterval(t);
   }, [driveToken, setTimekeeping]);
 
@@ -675,8 +714,8 @@ export default function TimeKeeping({
           totalWorkdays++;
           const rec = entries.find(e => e.date === cur);
           if (rec) {
-            const isOfficeStat = rec.status === 'present' || rec.status === 'half-day';
-            const isLateStatus = rec.status === 'late';
+            const isOfficeStat = rec.status === 'office';
+            const isLateStatus = false; // late is now computed from checkIn time, not a status
             if (isOfficeStat || isLateStatus) {
               officeDays++;
               const ls = computeLateStatus(rec.checkIn);
@@ -735,7 +774,7 @@ export default function TimeKeeping({
     [engineers, getUserStats, curWeekStart]);
 
   // ── Derived counts for stat cards ──────────────────────────────────────────
-  const presentToday   = (users || []).filter(u => { const e = todayEntry(u.id); return e && ['present','late','half-day'].includes(e.status); }).length;
+  const presentToday   = (users || []).filter(u => { const e = todayEntry(u.id); return e && e.status === 'office'; }).length;
   const wfhToday       = (users || []).filter(u => todayEntry(u.id)?.status === 'wfh').length;
   const absentToday    = (users || []).filter(u => todayEntry(u.id)?.status === 'absent').length;
   const pendingConfirm = (users || []).flatMap(u => userEntries(u.id).filter(e => !e.confirmedByManager)).length;
@@ -788,12 +827,12 @@ export default function TimeKeeping({
     const time   = londonTimeStr();   // fresh call — mutation, not display
     const device = detectDevice();
     if (entry) {
-      upsertEntry(currentUser, { ...entry, checkIn: time, status: 'present', device });
+      upsertEntry(currentUser, { ...entry, checkIn: time, status: 'office', device });
     } else {
       upsertEntry(currentUser, {
         id: `ck-${currentUser}-${Date.now()}`,
         date: today, checkIn: time, checkOut: null,
-        status: 'present', notes: '', confirmedByManager: false,
+        status: 'office', notes: '', confirmedByManager: false,
         device,
       });
     }
@@ -831,7 +870,7 @@ export default function TimeKeeping({
   };
 
   const openNewLog = (uid) => {
-    setLogForm({ userId: uid || currentUser, date: today, checkIn: '', checkOut: '', status: 'present', notes: '' });
+    setLogForm({ userId: uid || currentUser, date: today, checkIn: '', checkOut: '', status: 'office', notes: '' });
     setEditEntry(null);
     setLogModal(true);
   };
@@ -895,7 +934,7 @@ export default function TimeKeeping({
         <FormGroup label="Status">
           <select className="select" value={logForm.status}
             onChange={e => setLogForm(f => ({ ...f, status: e.target.value }))}>
-            {STATUS_OPTIONS.map(s => <option key={s.value} value={s.value}>{s.icon} {s.label}</option>)}
+            {buildStatusOptions(extraStatuses).map(s => <option key={s.value} value={s.value}>{s.icon} {s.label}</option>)}
           </select>
         </FormGroup>
         <FormGroup label="Check In Time">
@@ -934,13 +973,8 @@ export default function TimeKeeping({
       <div>
         <PageHeader
           title="Time Keeping"
-          sub="Check in, check out, and view your attendance history"
-          actions={
-            <>
-              <DriveStatus token={driveToken} saving={isSaving} />
-              <button className="btn btn-secondary btn-sm" onClick={() => openNewLog(currentUser)}>✏ Log Manually</button>
-            </>
-          }
+          sub="Check in and check out to log your attendance"
+          actions={<DriveStatus token={driveToken} saving={isSaving} />}
         />
 
         {/* Today card */}
@@ -1052,7 +1086,7 @@ export default function TimeKeeping({
             </div>
             <WeekView entries={myEntries} weekDates={weekDates} bankHolidays={bankHolidays} />
             <div style={{ display: 'flex', gap: 12, marginTop: 14, padding: '10px 0', borderTop: '1px solid var(--border)', flexWrap: 'wrap' }}>
-              {STATUS_OPTIONS.map(s => {
+              {buildStatusOptions(extraStatuses).map(s => {
                 const count = weekDates.filter(d => myEntries.find(e => e.date === d)?.status === s.value).length;
                 return count > 0 ? (
                   <div key={s.value} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12 }}>
@@ -1080,7 +1114,7 @@ export default function TimeKeeping({
               <button className="btn btn-secondary btn-sm" onClick={() => setMonthOffset(o => o + 1)}>Next →</button>
             </div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
-              {STATUS_OPTIONS.map(s => {
+              {buildStatusOptions(extraStatuses).map(s => {
                 const count = myMonthEntries.filter(e => e.status === s.value).length;
                 return count > 0 ? (
                   <div key={s.value} style={{ background: s.bg, color: s.color, border: `1px solid ${s.border}`,
@@ -1159,6 +1193,7 @@ export default function TimeKeeping({
         actions={
           <>
             <DriveStatus token={driveToken} saving={isSaving} />
+            <button className="btn btn-secondary btn-sm" onClick={() => setShowAddStatus(true)}>⚙ Check-in Types</button>
             <button className="btn btn-secondary" onClick={() => setShowExport(true)}>📥 Export Excel</button>
             <button className="btn btn-primary" onClick={() => openNewLog(null)}>+ Log Entry</button>
           </>
@@ -1193,7 +1228,7 @@ export default function TimeKeeping({
             <option value="in">Checked In</option>
             <option value="out">Checked Out</option>
             <option value="not-logged">Not Logged</option>
-            {STATUS_OPTIONS.map(s => <option key={s.value} value={s.value}>{s.icon} {s.label}</option>)}
+            {buildStatusOptions(extraStatuses).map(s => <option key={s.value} value={s.value}>{s.icon} {s.label}</option>)}
           </select>
         )}
       </div>
@@ -1403,7 +1438,7 @@ export default function TimeKeeping({
                   <div style={{ fontSize: 13, fontWeight: 600 }}>{u.name}</div>
                 </div>
                 <div style={{ display: 'flex', gap: 6 }}>
-                  {STATUS_OPTIONS.map(s => {
+                  {buildStatusOptions(extraStatuses).map(s => {
                     const count = weekDates.filter(d => userEntries(u.id).find(e => e.date === d)?.status === s.value).length;
                     return count > 0 ? (
                       <span key={s.value} style={{ fontSize: 10, color: s.color, background: s.bg,
@@ -1760,6 +1795,91 @@ export default function TimeKeeping({
             }}>
               {exporting ? '⏳ Exporting…' : '📥 Download Excel'}
             </button>
+          </div>
+        </Modal>
+      )}
+
+      {/* ── Check-in Types modal (manager only) ── */}
+      {showAddStatus && (
+        <Modal title="⚙ Check-in Types" onClose={() => setShowAddStatus(false)} wide>
+          {/* Core types — read only */}
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8 }}>Core Types (always available)</div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {CORE_STATUSES.map(s => (
+                <div key={s.value} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 12px',
+                  background: s.bg, border: `1px solid ${s.border}`, borderRadius: 8 }}>
+                  <span>{s.icon}</span>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: s.color }}>{s.label}</span>
+                  <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>· locked</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Custom types */}
+          {(extraStatuses || []).length > 0 && (
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8 }}>Custom Types</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {(extraStatuses || []).map((s, i) => (
+                  <div key={s.value} style={{ display: 'flex', alignItems: 'center', gap: 10,
+                    padding: '8px 12px', background: s.bg || 'rgba(255,255,255,0.04)',
+                    border: `1px solid ${s.border || 'rgba(255,255,255,0.1)'}`, borderRadius: 8 }}>
+                    <span style={{ fontSize: 18 }}>{s.icon}</span>
+                    <span style={{ fontSize: 13, fontWeight: 600, color: s.color, flex: 1 }}>{s.label}</span>
+                    <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'DM Mono' }}>{s.value}</span>
+                    <button className="btn btn-danger btn-sm" onClick={() => {
+                      const next = (extraStatuses || []).filter((_, j) => j !== i);
+                      setExtraStatuses && setExtraStatuses(next);
+                    }}>🗑 Remove</button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Add new custom type */}
+          <div style={{ borderTop: '1px solid var(--border)', paddingTop: 14 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 10 }}>Add Custom Type</div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: 10, alignItems: 'flex-end' }}>
+              <FormGroup label="Label">
+                <input className="input" placeholder="e.g. Client Site" value={newStatusForm.label}
+                  onChange={e => setNewStatusForm(f => ({ ...f, label: e.target.value }))} />
+              </FormGroup>
+              <FormGroup label="Icon">
+                <input className="input" style={{ width: 60, textAlign: 'center', fontSize: 18 }}
+                  placeholder="📌" maxLength={2} value={newStatusForm.icon}
+                  onChange={e => setNewStatusForm(f => ({ ...f, icon: e.target.value }))} />
+              </FormGroup>
+              <FormGroup label="Colour">
+                <input type="color" style={{ width: 60, height: 38, borderRadius: 6, border: '1px solid var(--border)', background: 'none', cursor: 'pointer', padding: 2 }}
+                  value={newStatusForm.color}
+                  onChange={e => setNewStatusForm(f => ({ ...f, color: e.target.value }))} />
+              </FormGroup>
+            </div>
+            <div style={{ marginTop: 10, display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button className="btn btn-secondary" onClick={() => setShowAddStatus(false)}>Close</button>
+              <button className="btn btn-primary"
+                disabled={!newStatusForm.label.trim()}
+                onClick={() => {
+                  if (!newStatusForm.label.trim()) return;
+                  const slug = newStatusForm.label.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+                  const newEntry = {
+                    value:  slug,
+                    label:  newStatusForm.label.trim(),
+                    icon:   newStatusForm.icon || '📌',
+                    color:  newStatusForm.color,
+                    bg:     `${newStatusForm.color}20`,
+                    border: `${newStatusForm.color}50`,
+                    core:   false,
+                  };
+                  setExtraStatuses && setExtraStatuses([...(extraStatuses || []), newEntry]);
+                  setNewStatusForm({ label: '', icon: '📌', color: '#60a5fa' });
+                }}>
+                + Add Type
+              </button>
+            </div>
           </div>
         </Modal>
       )}
