@@ -3,7 +3,8 @@
 // Manager: create / edit / delete / pin announcements with type, priority, expiry
 // Engineer: see unread banners on app load; mark as read; view archive
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { driveWrite, driveRead } from './hooks/useGoogleDrive';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const TYPES = {
@@ -25,6 +26,39 @@ function fmtDateTime(iso) {
 }
 
 const BLANK = { title: '', body: '', type: 'info', priority: 'normal', expiresAt: '', pinned: false, targetRole: 'all' };
+
+// ── Live sync indicator ───────────────────────────────────────────────────────
+function LiveDot({ active }) {
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11,
+      color: active ? '#10b981' : '#475569', fontWeight: 600 }}>
+      <span style={{
+        width: 7, height: 7, borderRadius: '50%',
+        background: active ? '#10b981' : '#475569',
+        boxShadow: active ? '0 0 0 3px rgba(16,185,129,0.25)' : 'none',
+        display: 'inline-block',
+        animation: active ? 'livePulse 2s ease-in-out infinite' : 'none',
+      }} />
+      {active ? 'Live' : 'Offline'}
+    </span>
+  );
+}
+
+function SyncStatus({ saving, lastSync, token }) {
+  if (!token) return (
+    <span style={{ fontSize: 11, color: '#ef4444', display: 'flex', alignItems: 'center', gap: 5 }}>
+      ⚠ Not connected to Drive
+    </span>
+  );
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+      <LiveDot active={!!token} />
+      <span style={{ fontSize: 11, color: saving ? '#f59e0b' : '#475569' }}>
+        {saving ? '⏳ Saving…' : lastSync ? `☁ ${lastSync.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}` : '☁ Synced'}
+      </span>
+    </div>
+  );
+}
 
 // ── Banner component (rendered globally in App shell for engineers) ─────────────
 export function AnnouncementBanners({ announcements, currentUser, onDismiss }) {
@@ -100,12 +134,69 @@ const IS = { width: '100%', boxSizing: 'border-box', padding: '9px 12px', backgr
 const LBL = { display: 'block', fontSize: 11, color: '#64748b', marginBottom: 4, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.4px' };
 
 // ── Main Announcements Component ───────────────────────────────────────────────
-export default function Announcements({ announcements, setAnnouncements, currentUser, isManager, users }) {
+export default function Announcements({ announcements, setAnnouncements, currentUser, isManager, users, driveToken }) {
   const [showModal,  setShowModal]  = useState(false);
   const [editId,     setEditId]     = useState(null);
   const [form,       setForm]       = useState(BLANK);
   const [activeTab,  setActiveTab]  = useState(isManager ? 'manage' : 'feed');
   const [filterType, setFilterType] = useState('all');
+  const [isSaving,   setIsSaving]   = useState(false);
+  const [lastSync,   setLastSync]   = useState(null);
+  const [newCount,   setNewCount]   = useState(0); // unread picked up by poll
+
+  // ── Drive save (queued to prevent race conditions) ──────────────────────────
+  const saveInProgress = useRef(false);
+  const pendingSave    = useRef(null);
+
+  const persistToDrive = useCallback(async (data) => {
+    if (!driveToken) return;
+    if (saveInProgress.current) { pendingSave.current = data; return; }
+    saveInProgress.current = true;
+    setIsSaving(true);
+    try {
+      await driveWrite(driveToken, 'announcements', data);
+      setLastSync(new Date());
+    } catch (e) {
+      console.warn('Announcements: Drive write failed', e?.message || e);
+    } finally {
+      saveInProgress.current = false;
+      setIsSaving(false);
+      if (pendingSave.current) {
+        const next = pendingSave.current;
+        pendingSave.current = null;
+        persistToDrive(next);
+      }
+    }
+  }, [driveToken]);
+
+  // ── Live poll every 20 s — engineers see new announcements without reload ───
+  const knownIds = useRef(new Set((announcements || []).map(a => a.id)));
+
+  useEffect(() => {
+    if (!driveToken) return;
+    const poll = async () => {
+      if (saveInProgress.current) return; // don't overwrite an in-flight save
+      try {
+        const fresh = await driveRead(driveToken, 'announcements');
+        if (!Array.isArray(fresh)) return;
+        setAnnouncements(prev => {
+          if (JSON.stringify(fresh) === JSON.stringify(prev)) return prev;
+          // Count genuinely new announcements for the pulse badge
+          const prevIds = new Set((prev || []).map(a => a.id));
+          const newOnes = fresh.filter(a => !prevIds.has(a.id) && a.targetRole !== 'manager').length;
+          if (newOnes > 0) setNewCount(n => n + newOnes);
+          knownIds.current = new Set(fresh.map(a => a.id));
+          return fresh;
+        });
+        setLastSync(new Date());
+      } catch (e) {
+        console.warn('Announcements: Drive poll failed', e?.message || e);
+      }
+    };
+    poll(); // immediate on mount
+    const t = setInterval(poll, 20_000);
+    return () => clearInterval(t);
+  }, [driveToken, setAnnouncements]);
 
   const safe = useMemo(() => Array.isArray(announcements) ? announcements : [], [announcements]);
   const today = new Date().toISOString().slice(0, 10);
@@ -137,35 +228,46 @@ export default function Announcements({ announcements, setAnnouncements, current
 
   const save = () => {
     if (!form.title.trim()) return;
+    let next;
     if (editId) {
-      setAnnouncements(safe.map(a => a.id === editId ? { ...a, ...form, updatedAt: new Date().toISOString() } : a));
+      next = safe.map(a => a.id === editId ? { ...a, ...form, updatedAt: new Date().toISOString() } : a);
     } else {
-      setAnnouncements([{
+      next = [{
         id: 'ann-' + Date.now(),
         ...form,
         createdBy: currentUser,
         createdAt: new Date().toISOString(),
         readBy: [],
-      }, ...safe]);
+      }, ...safe];
     }
+    setAnnouncements(next);
+    persistToDrive(next);
     setShowModal(false);
   };
 
   const deleteAnn = (id) => {
     if (!window.confirm('Delete this announcement?')) return;
-    setAnnouncements(safe.filter(a => a.id !== id));
+    const next = safe.filter(a => a.id !== id);
+    setAnnouncements(next);
+    persistToDrive(next);
   };
 
   const togglePin = (id) => {
-    setAnnouncements(safe.map(a => a.id === id ? { ...a, pinned: !a.pinned } : a));
+    const next = safe.map(a => a.id === id ? { ...a, pinned: !a.pinned } : a);
+    setAnnouncements(next);
+    persistToDrive(next);
   };
 
   const dismissForMe = (id) => {
-    setAnnouncements(safe.map(a => a.id === id ? { ...a, readBy: [...(a.readBy || []), currentUser] } : a));
+    const next = safe.map(a => a.id === id ? { ...a, readBy: [...(a.readBy || []), currentUser] } : a);
+    setAnnouncements(next);
+    persistToDrive(next);
   };
 
   const markAllRead = () => {
-    setAnnouncements(safe.map(a => ({ ...a, readBy: [...new Set([...(a.readBy || []), currentUser])] })));
+    const next = safe.map(a => ({ ...a, readBy: [...new Set([...(a.readBy || []), currentUser])] }));
+    setAnnouncements(next);
+    persistToDrive(next);
   };
 
   const filtered = activeTab === 'manage'
@@ -176,7 +278,7 @@ export default function Announcements({ announcements, setAnnouncements, current
 
   const tabs = [
     ...(isManager ? [{ id: 'manage', label: `📢 Manage (${safe.length})` }] : []),
-    { id: 'feed',   label: `📬 My Feed${unreadCount > 0 ? ` (${unreadCount} new)` : ''}` },
+    { id: 'feed',    label: `📬 My Feed${unreadCount > 0 ? ` (${unreadCount} new)` : ''}`, pulse: newCount > 0 },
     { id: 'archive', label: `📁 Archive (${expiredAnns.length})` },
   ];
 
@@ -186,8 +288,9 @@ export default function Announcements({ announcements, setAnnouncements, current
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 18, flexWrap: 'wrap', gap: 10 }}>
         <div>
           <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, letterSpacing: '-0.5px' }}>📢 Announcements</h1>
-          <div style={{ fontSize: 12, color: '#64748b', marginTop: 3 }}>
-            {activeAnns.length} active · {expiredAnns.length} expired · broadcasts to all engineers
+          <div style={{ fontSize: 12, color: '#64748b', marginTop: 3, display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span>{activeAnns.length} active · {expiredAnns.length} expired · broadcasts to all engineers</span>
+            <SyncStatus saving={isSaving} lastSync={lastSync} token={driveToken} />
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
@@ -207,13 +310,25 @@ export default function Announcements({ announcements, setAnnouncements, current
       {/* Tabs */}
       <div style={{ display: 'flex', gap: 4, marginBottom: 18, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 10, padding: 4, width: 'fit-content', flexWrap: 'wrap' }}>
         {tabs.map(t => (
-          <div key={t.id} onClick={() => setActiveTab(t.id)} style={{
+          <div key={t.id} onClick={() => { setActiveTab(t.id); if (t.id === 'feed') setNewCount(0); }} style={{
+            position: 'relative',
             padding: '7px 16px', borderRadius: 7, cursor: 'pointer', fontSize: 12.5, fontWeight: 600,
             background: activeTab === t.id ? 'rgba(0,194,255,0.1)' : 'transparent',
             color: activeTab === t.id ? '#00c2ff' : '#64748b',
             border: activeTab === t.id ? '1px solid rgba(0,194,255,0.3)' : '1px solid transparent',
             transition: 'all 0.15s',
-          }}>{t.label}</div>
+          }}>
+            {t.label}
+            {t.pulse && (
+              <span style={{
+                position: 'absolute', top: 4, right: 4,
+                width: 8, height: 8, borderRadius: '50%', background: '#ef4444',
+                boxShadow: '0 0 0 2px rgba(239,68,68,0.3)',
+                animation: 'livePulse 1.5s ease-in-out infinite',
+                display: 'inline-block',
+              }} />
+            )}
+          </div>
         ))}
       </div>
 
@@ -489,6 +604,10 @@ export default function Announcements({ announcements, setAnnouncements, current
         @keyframes slideDown {
           from { opacity: 0; transform: translateY(-8px); }
           to   { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes livePulse {
+          0%, 100% { opacity: 1;   transform: scale(1);    }
+          50%       { opacity: 0.5; transform: scale(1.25); }
         }
       `}</style>
     </div>
