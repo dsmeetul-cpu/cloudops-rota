@@ -1,6 +1,6 @@
 // src/App.js
 // CloudOps Rota — Full Production Build v2
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 11th May 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 14th May 2026
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
@@ -6622,7 +6622,7 @@ export default function App() {
       case 'rota':       return <RotaPage users={users} rota={rota} setRota={setRota} holidays={holidays} upgrades={upgrades} swapRequests={swapRequests} setSwapRequests={setSwapRequests} isManager={isManager} UK_BANK_HOLIDAYS={UK_BANK_HOLIDAYS} generateRota={generateRota} generateICalFeed={generateICalFeed} downloadIcal={downloadIcal} />;
       case 'incidents':  return <Incidents {...props} timesheets={timesheets} setTimesheets={setTimesheets} />;
       case 'timesheets': return <Timesheets {...props} />;
-      case 'timekeeping': return <TimeKeeping users={users} holidays={holidays} currentUser={currentUser} isManager={isManager} bankHolidays={UK_BANK_HOLIDAYS} timekeeping={timekeeping} setTimekeeping={setTimekeeping} driveToken={driveToken} />;
+      case 'timekeeping': return <TimeKeeping users={users} holidays={holidays} currentUser={currentUser} isManager={isManager} bankHolidays={UK_BANK_HOLIDAYS} timekeeping={timekeeping} setTimekeeping={setTimekeeping} driveToken={driveToken} extraStatuses={payconfig?.extraCheckInTypes || []} setExtraStatuses={types => setPayconfig(prev => ({ ...prev, extraCheckInTypes: types }))} />;
       case 'holidays':   return <Holidays {...props} />;
       case 'swaps':      return <ShiftSwaps {...props} driveToken={driveToken} />;
       case 'upgrades':   return <UpgradeDays {...props} timesheets={timesheets} setTimesheets={setTimesheets} />;
@@ -6636,7 +6636,7 @@ export default function App() {
       case 'contacts':   return <Contacts {...props} />;
       case 'notes':      return <Notes {...props} />;
       case 'docs':       return <Documents {...props} />;
-      case 'announcements':  return <Announcements announcements={announcements} setAnnouncements={setAnnouncements} currentUser={currentUser} isManager={isManager} users={users} />;
+      case 'announcements':  return <Announcements announcements={announcements} setAnnouncements={setAnnouncements} currentUser={currentUser} isManager={isManager} users={users} driveToken={driveToken} />;
       case 'shiftreminders': return <ShiftReminders rota={rota} users={users} incidents={incidents} currentUser={currentUser} isManager={isManager} handoverNotes={handoverNotes} setHandoverNotes={setHandoverNotes} />;
       case 'whatsapp':   return <WhatsAppChat {...props} />;
       case 'insights':   return <Insights {...props} />;
