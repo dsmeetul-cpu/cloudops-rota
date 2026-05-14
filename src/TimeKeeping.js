@@ -387,7 +387,7 @@ function HeatCell({ entry, bankHol, holiday, isToday, isFuture }) {
 }
 
 // ── WeekView sub-component ────────────────────────────────────────────────────
-function WeekView({ entries, weekDates, bankHolidays = [] }) {
+function WeekView({ entries, weekDates, bankHolidays = [], onLogDay }) {
   const today = londonTodayStr();
   const DAYS  = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   return (
@@ -419,6 +419,7 @@ function WeekView({ entries, weekDates, bankHolidays = [] }) {
               const isBH    = bankHolidays.some(b => (b.date || b) === d);
               const isWE    = isWeekend(d);
               const hrs     = entry ? fmtHours(entry.checkIn, entry.checkOut) : null;
+              const canLog  = onLogDay && !isBH;
               if (isBH) return (
                 <td key={d} style={{ textAlign: 'center', background: 'rgba(127,29,29,0.15)' }}>
                   <div style={{ fontSize: 10, color: '#fca5a5' }}>Bank Holiday</div>
@@ -426,7 +427,10 @@ function WeekView({ entries, weekDates, bankHolidays = [] }) {
               );
               return (
                 <td key={d} style={{ textAlign: 'center', verticalAlign: 'top', padding: '10px 8px',
-                  background: isToday ? 'rgba(59,130,246,0.07)' : isWE ? 'rgba(129,140,248,0.04)' : undefined }}>
+                  background: isToday ? 'rgba(59,130,246,0.07)' : isWE ? 'rgba(129,140,248,0.04)' : undefined,
+                  cursor: canLog && !entry ? 'pointer' : undefined }}
+                  onClick={() => canLog && !entry && onLogDay(d)}
+                  title={canLog && !entry ? `Log entry for ${fmtDate(d)}` : undefined}>
                   {entry ? (
                     <div>
                       <StatusPill status={entry.status} small />
@@ -435,10 +439,14 @@ function WeekView({ entries, weekDates, bankHolidays = [] }) {
                       </div>
                       {hrs && <div style={{ fontSize: 10, color: '#6ee7b7', marginTop: 3 }}>{hrs}</div>}
                       {entry.confirmedByManager && <div style={{ fontSize: 9, color: '#10b981', marginTop: 3 }}>✓ Confirmed</div>}
+                      {canLog && (
+                        <button className="btn btn-secondary btn-sm" style={{ marginTop: 5, fontSize: 10, padding: '2px 6px' }}
+                          onClick={e => { e.stopPropagation(); onLogDay(d, entry); }}>✏</button>
+                      )}
                     </div>
                   ) : (
-                    <div style={{ fontSize: 10, color: isWE ? 'var(--border)' : 'var(--text-muted)' }}>
-                      {isWE ? 'Weekend' : d <= today ? '—' : ''}
+                    <div style={{ fontSize: 10, color: isWE ? 'var(--border)' : canLog ? '#475569' : 'var(--text-muted)' }}>
+                      {isWE ? 'Weekend' : d <= today ? (canLog ? <span style={{ fontSize: 18, opacity: 0.3 }}>+</span> : '—') : ''}
                     </div>
                   )}
                 </td>
@@ -452,7 +460,7 @@ function WeekView({ entries, weekDates, bankHolidays = [] }) {
 }
 
 // ── MonthView sub-component ───────────────────────────────────────────────────
-function MonthView({ entries, year, month, bankHolidays = [] }) {
+function MonthView({ entries, year, month, bankHolidays = [], onLogDay }) {
   const today = londonTodayStr();
   const days  = getMonthDates(year, month);
   const DAYS  = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -472,14 +480,19 @@ function MonthView({ entries, year, month, bankHolidays = [] }) {
           const isWE    = isWeekend(date);
           const s       = entry ? statusCfg(entry.status) : null;
           const hrs     = entry ? fmtHours(entry.checkIn, entry.checkOut) : null;
+          const canLog  = onLogDay && isCurrentMonth && !isWE && !isBH && date <= today;
           return (
-            <div key={date} style={{
-              minHeight: 64, borderRadius: 8, padding: '6px 7px',
-              background: isBH ? 'rgba(127,29,29,0.2)' : isToday ? 'rgba(59,130,246,0.12)'
-                : isWE ? 'rgba(129,140,248,0.05)' : 'var(--bg-card2)',
-              border: isToday ? '1.5px solid var(--accent)' : '1px solid var(--border)',
-              opacity: isCurrentMonth ? 1 : 0.35,
-            }}>
+            <div key={date} onClick={() => canLog && !entry && onLogDay(date)}
+              title={canLog && !entry ? `Log entry for ${fmtDate(date)}` : undefined}
+              style={{
+                minHeight: 64, borderRadius: 8, padding: '6px 7px',
+                background: isBH ? 'rgba(127,29,29,0.2)' : isToday ? 'rgba(59,130,246,0.12)'
+                  : isWE ? 'rgba(129,140,248,0.05)' : 'var(--bg-card2)',
+                border: isToday ? '1.5px solid var(--accent)' : '1px solid var(--border)',
+                opacity: isCurrentMonth ? 1 : 0.35,
+                cursor: canLog && !entry ? 'pointer' : undefined,
+                position: 'relative',
+              }}>
               <div style={{ fontSize: 11, fontWeight: isToday ? 700 : 400, marginBottom: 3,
                 color: isToday ? 'var(--accent)' : isBH ? '#fca5a5' : isWE ? '#818cf8' : 'var(--text-muted)' }}>
                 {new Date(date + 'T00:00:00').getDate()}
@@ -495,10 +508,17 @@ function MonthView({ entries, year, month, bankHolidays = [] }) {
                     {entry.checkIn} {entry.checkOut ? `→ ${entry.checkOut}` : ''}
                   </div>
                   {hrs && <div style={{ fontSize: 8, color: '#6ee7b7' }}>{hrs}</div>}
+                  {canLog && (
+                    <button className="btn btn-secondary" onClick={e => { e.stopPropagation(); onLogDay(date, entry); }}
+                      style={{ fontSize: 9, padding: '1px 5px', marginTop: 3, display: 'block' }}>✏</button>
+                  )}
                 </div>
               )}
               {!entry && date < today && isCurrentMonth && !isWE && !isBH && (
-                <div style={{ fontSize: 9, color: 'var(--border)' }}>—</div>
+                <div style={{ fontSize: 9, color: canLog ? 'rgba(255,255,255,0.15)' : 'var(--border)',
+                  position: 'absolute', bottom: 6, right: 7, fontSize: 16 }}>
+                  {canLog ? '+' : '—'}
+                </div>
               )}
             </div>
           );
@@ -1449,7 +1469,7 @@ export default function TimeKeeping({
                   <Avatar user={u} size={30} />
                   <div style={{ fontSize: 13, fontWeight: 600 }}>{u.name}</div>
                 </div>
-                <div style={{ display: 'flex', gap: 6 }}>
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                   {buildStatusOptions(extraStatuses).map(s => {
                     const count = weekDates.filter(d => userEntries(u.id).find(e => e.date === d)?.status === s.value).length;
                     return count > 0 ? (
@@ -1457,9 +1477,15 @@ export default function TimeKeeping({
                         padding: '2px 7px', borderRadius: 10, fontWeight: 600 }}>{s.icon} {count}</span>
                     ) : null;
                   })}
+                  <button className="btn btn-secondary btn-sm" onClick={() => openNewLog(u.id)}>+ Log</button>
                 </div>
               </div>
-              <WeekView entries={userEntries(u.id)} weekDates={weekDates} bankHolidays={bankHolidays} />
+              <WeekView entries={userEntries(u.id)} weekDates={weekDates} bankHolidays={bankHolidays}
+                onLogDay={(date, existing) => {
+                  if (existing) { openEditEntry(u.id, existing); }
+                  else { setLogForm({ userId: u.id, date, checkIn: '', checkOut: '', status: 'office', notes: '' }); setEditEntry(null); setLogModal(true); }
+                }}
+              />
             </div>
           ))}
         </div>
@@ -1492,14 +1518,25 @@ export default function TimeKeeping({
                       </div>
                     </div>
                   </div>
-                  {uPending > 0 && (
-                    <button className="btn btn-success btn-sm"
-                      onClick={() => uMonthEntries.filter(e => !e.confirmedByManager).forEach(e => confirmEntry(u.id, e.id))}>
-                      ✓ Confirm All ({uPending})
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    {uPending > 0 && (
+                      <button className="btn btn-success btn-sm"
+                        onClick={() => uMonthEntries.filter(e => !e.confirmedByManager).forEach(e => confirmEntry(u.id, e.id))}>
+                        ✓ Confirm All ({uPending})
+                      </button>
+                    )}
+                    <button className="btn btn-secondary btn-sm"
+                      onClick={() => { setLogForm({ userId: u.id, date: today, checkIn: '', checkOut: '', status: 'office', notes: '' }); setEditEntry(null); setLogModal(true); }}>
+                      + Log Day
                     </button>
-                  )}
+                  </div>
                 </div>
-                <MonthView entries={uEntries} year={viewYear} month={viewMonth} bankHolidays={bankHolidays} />
+                <MonthView entries={uEntries} year={viewYear} month={viewMonth} bankHolidays={bankHolidays}
+                  onLogDay={(date, existing) => {
+                    if (existing) { openEditEntry(u.id, existing); }
+                    else { setLogForm({ userId: u.id, date, checkIn: '', checkOut: '', status: 'office', notes: '' }); setEditEntry(null); setLogModal(true); }
+                  }}
+                />
                 {uMonthEntries.length > 0 && (
                   <div style={{ marginTop: 14, overflowX: 'auto' }}>
                     <table style={{ fontSize: 12 }}>
