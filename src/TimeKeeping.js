@@ -568,12 +568,9 @@ export default function TimeKeeping({
   }, []);
 
   // Derive live time — recomputed every second via clockTick dependency
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const today    = useMemo(() => londonTodayStr(), [clockTick]);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const now      = useMemo(() => londonNow(),      [clockTick]);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const liveTime = useMemo(() => londonTimeStr(),  [clockTick]);
+  const today    = useMemo(() => londonTodayStr(), [clockTick]); // clockTick intentional
+  const now      = useMemo(() => londonNow(),      [clockTick]); // clockTick intentional
+  const liveTime = useMemo(() => londonTimeStr(),  [clockTick]); // clockTick intentional
 
   // ── View state ──────────────────────────────────────────────────────────────
   const [tab,          setTab]          = useState(isManager ? 'today' : 'week');
