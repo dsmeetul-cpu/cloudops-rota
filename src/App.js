@@ -1,6 +1,6 @@
 // src/App.js
 // CloudOps Rota — Full Production Build v2
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 14th May 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 18th May 2026
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
@@ -6223,7 +6223,8 @@ export default function App() {
         glossary:'shared', contacts:'shared', swapRequests:'shared', absences:'shared',
         logbook:'shared', documents:'shared', whatsappChats:'shared',
         obsidianNotes:'shared',   // ← was 'engineer': notes is a flat array not keyed by uid
-        timesheets:'engineer', overtime:'engineer', timekeeping:'engineer',
+        timesheets:'engineer', overtime:'engineer',
+        timekeeping:'shared',  // full state — manager can write for any user
         toil:'shared',   // ← flat array keyed by record id, NOT by uid
       }[key] || 'shared';
 
