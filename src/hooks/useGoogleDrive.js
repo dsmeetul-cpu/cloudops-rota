@@ -114,6 +114,31 @@ async function getFileId(token, filename, parentId) {
   return data.files && data.files.length > 0 ? data.files[0].id : null;
 }
 
+// ── OPTIMISATION: bulk-load all file IDs in one query ────────────────────────
+// One files.list request returns every file in the folder and pre-warms the
+// fileIds cache, so no individual getFileId searches are needed during load.
+async function bulkLoadFileIds(token, parentId) {
+  let pageToken = null;
+  const all     = [];
+  do {
+    const url = `https://www.googleapis.com/drive/v3/files`
+      + `?q=${encodeURIComponent(`'${parentId}' in parents and trashed=false`)}`
+      + `&fields=nextPageToken,files(id,name)&pageSize=100`
+      + (pageToken ? `&pageToken=${pageToken}` : '');
+    const res  = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    const data = await res.json();
+    if (data.files) all.push(...data.files);
+    pageToken = data.nextPageToken || null;
+  } while (pageToken);
+
+  // Populate fileIds cache from filename → key lookup
+  const nameToId = {};
+  all.forEach(f => { nameToId[f.name] = f.id; });
+  Object.entries(FILES).forEach(([key, filename]) => {
+    if (nameToId[filename]) fileIds[key] = nameToId[filename];
+  });
+}
+
 // ── Read / Write ─────────────────────────────────────────────────────────────
 
 export async function driveRead(token, key) {
@@ -174,13 +199,40 @@ export async function driveWrite(token, key, data) {
 }
 
 // ── Load all data from Drive ─────────────────────────────────────────────────
+// Before: sequential for-loop  → 24 files × ~300 ms = ~7 s
+// After:  1 folder list (pre-warms all IDs) + Promise.all = ~1-2 s
 
 export async function loadAllFromDrive(token, defaults) {
+  // Step 1 — ensure folder ID is resolved
+  if (!folderId) folderId = await getOrCreateFolder(token);
+
+  // Step 2 — one query fetches all file IDs and pre-warms the cache
+  await bulkLoadFileIds(token, folderId);
+
+  // Step 3 — fetch all file contents in parallel
+  const keys    = Object.keys(FILES);
+  const results = await Promise.all(
+    keys.map(async (key) => {
+      try {
+        const fileId = fileIds[key];
+        if (!fileId) return null; // file doesn't exist yet (first run)
+        const res = await fetch(
+          `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        if (!res.ok) return null;
+        return await res.json();
+      } catch {
+        return null;
+      }
+    })
+  );
+
+  // Step 4 — assemble result, falling back to defaults for missing files
   const result = {};
-  for (const key of Object.keys(FILES)) {
-    const data = await driveRead(token, key);
-    result[key] = data !== null ? data : (defaults[key] ?? null);
-  }
+  keys.forEach((key, i) => {
+    result[key] = results[i] !== null ? results[i] : (defaults[key] ?? null);
+  });
   return result;
 }
 
