@@ -631,25 +631,40 @@ export default function TimeKeeping({
   // while the write was still in flight, letting the poll fire with stale data.
   const lastSaveAt = useRef(0); // epoch ms — updated when a Drive WRITE COMPLETES
 
-  const persistToDrive = useCallback(async (newData) => {
-    if (!driveToken) return;
-    if (saveInProgress.current) { pendingSave.current = newData; return; }
+  // ── UID-scoped Drive write ────────────────────────────────────────────────
+  // CRITICAL FIX: previously this wrote the ENTIRE timekeeping object.
+  // Engineer B's local state only contains the data loaded at login, so if
+  // Engineer A checked in after B loaded the page, B's write would erase A's
+  // entry from Drive — silently, with no error — meaning the manager never
+  // saw A's check-in at all.
+  //
+  // Now every write does: READ Drive → update only targetUid's slice → WRITE.
+  // Engineers only ever modify their own UID; managers write only the specific
+  // engineer's UID they just confirmed/edited/deleted.
+  // The pending queue stores {targetUid, entries} pairs so back-to-back ops
+  // for different UIDs don't clobber each other.
+  const persistToDrive = useCallback(async (targetUid, entries) => {
+    if (!driveToken || !targetUid) return;
+    if (saveInProgress.current) {
+      pendingSave.current = { targetUid, entries };
+      return;
+    }
     saveInProgress.current = true;
     setIsSaving(true);
     try {
-      await driveWrite(driveToken, 'timekeeping', newData);
+      const driveState = await driveRead(driveToken, 'timekeeping').catch(() => null);
+      const merged = { ...(driveState || {}), [targetUid]: entries };
+      await driveWrite(driveToken, 'timekeeping', merged);
     } catch (e) {
       console.warn('TimeKeeping: Drive write failed', e?.message || e);
     } finally {
       saveInProgress.current = false;
       setIsSaving(false);
-      // ── FIX: stamp AFTER the write completes (success or failure) so the
-      // POST_SAVE_GUARD in the poll starts from the actual write finish time.
       lastSaveAt.current = Date.now();
       if (pendingSave.current) {
-        const next = pendingSave.current;
+        const { targetUid: nextUid, entries: nextEntries } = pendingSave.current;
         pendingSave.current = null;
-        persistToDrive(next);
+        persistToDrive(nextUid, nextEntries);
       }
     }
   }, [driveToken]);
@@ -875,22 +890,20 @@ export default function TimeKeeping({
 
   // lastSaveAt is declared above (before persistToDrive) and updated there on write completion.
 
-  const mutate = useCallback((computeNext) => {
+  const mutate = useCallback((computeNext, targetUid) => {
     const next = computeNext(timekeepingRef.current);
     timekeepingRef.current = next;
     setTimekeeping(next);
-    // ── FIX: do NOT set lastSaveAt here — it is set when the Drive write
-    // COMPLETES inside persistToDrive's finally block.  Setting it here
-    // (before the async write) caused the poll guard to expire while the
-    // write was still in-flight, letting the poll overwrite local state.
-    persistToDrive(next);
+    // Pass the affected UID and its new entries so persistToDrive only writes
+    // that single user's slice — never the full object.
+    persistToDrive(targetUid, next[targetUid]);
   }, [setTimekeeping, persistToDrive]);
 
   const upsertEntry = useCallback((uid, entry) => {
     mutate(prev => {
       const existing = normaliseEntries(uid, prev[uid]).filter(e => e.id !== entry.id);
       return { ...prev, [uid]: [...existing, entry].sort((a, b) => (b.date || '').localeCompare(a.date || '')) };
-    });
+    }, uid); // uid = targetUid — only this user's slice is written to Drive
   }, [mutate]);
 
   const handleCheckIn = () => {
@@ -956,7 +969,7 @@ export default function TimeKeeping({
     mutate(prev => ({
       ...prev,
       [uid]: normaliseEntries(uid, prev[uid]).filter(e => e.id !== entryId),
-    }));
+    }), uid);
   };
 
   const confirmEntry = (uid, entryId) => {
@@ -965,7 +978,7 @@ export default function TimeKeeping({
       [uid]: normaliseEntries(uid, prev[uid]).map(e =>
         e.id === entryId ? { ...e, confirmedByManager: true, confirmedAt: new Date().toISOString() } : e
       ),
-    }));
+    }), uid);
   };
 
   const unconfirmEntry = (uid, entryId) => {
@@ -974,7 +987,7 @@ export default function TimeKeeping({
       [uid]: normaliseEntries(uid, prev[uid]).map(e =>
         e.id === entryId ? { ...e, confirmedByManager: false, confirmedAt: null } : e
       ),
-    }));
+    }), uid);
   };
 
   // ── Shared log modal JSX ────────────────────────────────────────────────────
