@@ -600,6 +600,10 @@ export default function TimeKeeping({
   const [statusFilter, setStatusFilter] = useState('all');
   const [alertFilter,  setAlertFilter]  = useState('all');
 
+  // ── Quick check-in status selector ──────────────────────────────────────────
+  // Persists engineer's last-chosen location so repeat check-ins default to it.
+  const [checkInStatus, setCheckInStatus] = useState('office');
+
   // ── Log modal ────────────────────────────────────────────────────────────────
   const [logModal,   setLogModal]   = useState(false);
   const [editEntry,  setEditEntry]  = useState(null);
@@ -621,6 +625,11 @@ export default function TimeKeeping({
   const saveInProgress = useRef(false);
   const pendingSave    = useRef(null);
   const [isSaving, setIsSaving] = useState(false);
+  // ── FIX: declare lastSaveAt BEFORE persistToDrive so the callback can close
+  // over it. Previously this was declared after mutate() (line ~849) and set in
+  // mutate() BEFORE the async write started — meaning the guard timer expired
+  // while the write was still in flight, letting the poll fire with stale data.
+  const lastSaveAt = useRef(0); // epoch ms — updated when a Drive WRITE COMPLETES
 
   const persistToDrive = useCallback(async (newData) => {
     if (!driveToken) return;
@@ -634,6 +643,9 @@ export default function TimeKeeping({
     } finally {
       saveInProgress.current = false;
       setIsSaving(false);
+      // ── FIX: stamp AFTER the write completes (success or failure) so the
+      // POST_SAVE_GUARD in the poll starts from the actual write finish time.
+      lastSaveAt.current = Date.now();
       if (pendingSave.current) {
         const next = pendingSave.current;
         pendingSave.current = null;
@@ -693,7 +705,22 @@ export default function TimeKeeping({
           if (Date.now() - lastSaveAt.current < POST_SAVE_GUARD) return;
           setTimekeeping(prev => {
             if (JSON.stringify(fresh) === JSON.stringify(prev)) return prev;
-            return fresh;
+            // ── FIX: MERGE instead of wholesale replace ──────────────────────
+            // A full replace discards any local check-ins whose Drive write
+            // failed or hasn't completed yet (e.g. slow network).  We keep
+            // any local entry whose ID isn't present in the Drive response.
+            const merged = { ...fresh };
+            Object.keys(prev || {}).forEach(uid => {
+              const localArr = normaliseEntries(uid, prev[uid]);
+              const driveArr = normaliseEntries(uid, fresh[uid] || []);
+              const driveIds = new Set(driveArr.map(e => e.id));
+              const unpersisted = localArr.filter(e => !driveIds.has(e.id));
+              if (unpersisted.length > 0) {
+                merged[uid] = [...driveArr, ...unpersisted]
+                  .sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+              }
+            });
+            return JSON.stringify(merged) === JSON.stringify(prev) ? prev : merged;
           });
         }
       } catch (e) {
@@ -846,13 +873,16 @@ export default function TimeKeeping({
   const timekeepingRef = useRef(timekeeping || {});
   useEffect(() => { timekeepingRef.current = timekeeping || {}; }, [timekeeping]);
 
-  const lastSaveAt = useRef(0); // epoch ms of last Drive write completion
+  // lastSaveAt is declared above (before persistToDrive) and updated there on write completion.
 
   const mutate = useCallback((computeNext) => {
     const next = computeNext(timekeepingRef.current);
     timekeepingRef.current = next;
     setTimekeeping(next);
-    lastSaveAt.current = Date.now();
+    // ── FIX: do NOT set lastSaveAt here — it is set when the Drive write
+    // COMPLETES inside persistToDrive's finally block.  Setting it here
+    // (before the async write) caused the poll guard to expire while the
+    // write was still in-flight, letting the poll overwrite local state.
     persistToDrive(next);
   }, [setTimekeeping, persistToDrive]);
 
@@ -868,12 +898,17 @@ export default function TimeKeeping({
     const time   = londonTimeStr();   // fresh call — mutation, not display
     const device = detectDevice();
     if (entry) {
-      upsertEntry(currentUser, { ...entry, checkIn: time, status: 'office', device });
+      // ── FIX: preserve existing status — only stamp the check-in time & device.
+      // Previously this hard-coded status:'office', overriding any WFH / custom
+      // status the engineer had already set via the log modal.
+      upsertEntry(currentUser, { ...entry, checkIn: time, device });
     } else {
+      // New entry — use whatever status the engineer selected in the dropdown
       upsertEntry(currentUser, {
         id: `ck-${currentUser}-${Date.now()}`,
         date: today, checkIn: time, checkOut: null,
-        status: 'office', notes: '', confirmedByManager: false,
+        status: checkInStatus,
+        notes: '', confirmedByManager: false,
         device,
       });
     }
@@ -1073,9 +1108,25 @@ export default function TimeKeeping({
             {/* Check-in / check-out buttons */}
             <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexWrap: 'wrap' }}>
               {!amCheckedIn && !amCheckedOut && (
-                <button className="btn btn-primary" style={{ fontSize: 15, padding: '10px 20px' }} onClick={handleCheckIn}>
-                  ✅ Check In {liveTime}
-                </button>
+                <>
+                  {/* ── FIX: status selector shown BEFORE first check-in so engineers
+                      can choose WFH / Office / custom type without needing the log modal.
+                      Previously the quick "Check In" button always forced status:'office'. */}
+                  <select
+                    className="select"
+                    value={checkInStatus}
+                    onChange={e => setCheckInStatus(e.target.value)}
+                    style={{ fontSize: 13, padding: '10px 12px', minWidth: 130 }}
+                    title="Where are you working from today?"
+                  >
+                    {buildStatusOptions(extraStatuses).map(s => (
+                      <option key={s.value} value={s.value}>{s.icon} {s.label}</option>
+                    ))}
+                  </select>
+                  <button className="btn btn-primary" style={{ fontSize: 15, padding: '10px 20px' }} onClick={handleCheckIn}>
+                    ✅ Check In {liveTime}
+                  </button>
+                </>
               )}
               {amCheckedIn && (
                 <>
