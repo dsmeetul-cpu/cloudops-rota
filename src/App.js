@@ -1,6 +1,6 @@
 // src/App.js
 // CloudOps Rota — Full Production Build v2
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 18th May 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 22nd May 2026
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
@@ -6272,7 +6272,6 @@ export default function App() {
   useEffect(() => { save('overtime', overtime); },         [overtime]);
   useEffect(() => { save('logbook', logbook); },           [logbook]);
   useEffect(() => { save('documents', documents); },       [documents]);
-  useEffect(() => { save('timekeeping', timekeeping); },   [timekeeping]);
   useEffect(() => { save('announcements', announcements); }, [announcements]);
   useEffect(() => { save('handoverNotes', handoverNotes); }, [handoverNotes]);
   useEffect(() => { save('calendarEvents', calendarEvents); }, [calendarEvents]);
