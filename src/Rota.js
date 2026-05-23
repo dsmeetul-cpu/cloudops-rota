@@ -1,9 +1,6 @@
 // src/Rota.js
-// CloudOps Rota — Rota Page (extracted from App.js)
-// New: respects user.start_date, user.oncall_start_date, user.termination_date
-// Engineers are excluded from rota generation until oncall_start_date is reached.
-
-import React, { useState } from 'react';
+// CloudOps Rota — improved editing: floating cell editor, sticky toolbar, floating bulk bar
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 const SHIFT_COLORS = {
@@ -16,15 +13,9 @@ const SHIFT_COLORS = {
   inactive:    { bg: '#1e293b', label: 'Not on-call yet',  text: '#475569' },
 };
 
-// Short abbreviations for compact cell display
 const SHIFT_ABBR = {
-  daily:       'D',
-  evening:     'WD',
-  weekend:     'WE',
-  upgrade:     'UD',
-  holiday:     'H',
-  bankholiday: 'BH',
-  off:         '—',
+  daily: 'D', evening: 'WD', weekend: 'WE',
+  upgrade: 'UD', holiday: 'H', bankholiday: 'BH', off: '—',
 };
 
 const SHIFT_HOURS = {
@@ -49,20 +40,14 @@ function sanitiseRota(raw) {
   return out;
 }
 
-// Returns true if the engineer should appear on-call for a given date
 function isOnCallActive(user, dateStr) {
   if (!user) return false;
-  const d = dateStr;
-  // Must have started employment
-  if (user.start_date && d < user.start_date) return false;
-  // Must have reached on-call start date
-  if (user.oncall_start_date && d < user.oncall_start_date) return false;
-  // Must not be terminated
-  if (user.termination_date && d > user.termination_date) return false;
+  if (user.start_date && dateStr < user.start_date) return false;
+  if (user.oncall_start_date && dateStr < user.oncall_start_date) return false;
+  if (user.termination_date && dateStr > user.termination_date) return false;
   return true;
 }
 
-// Returns true if user is employed on a date (but not necessarily on-call)
 function isEmployed(user, dateStr) {
   if (!user) return false;
   if (user.start_date && dateStr < user.start_date) return false;
@@ -70,15 +55,26 @@ function isEmployed(user, dateStr) {
   return true;
 }
 
-// Status badge for an engineer on a given date
 function getOnCallStatus(user, dateStr) {
   if (!user) return null;
   if (user.termination_date && dateStr > user.termination_date) return { type: 'terminated', label: 'Left', color: '#ef4444' };
   if (user.start_date && dateStr < user.start_date) return { type: 'not_started', label: 'Not started', color: '#64748b' };
   if (user.oncall_start_date && dateStr < user.oncall_start_date) return { type: 'not_ready', label: 'Not on-call yet', color: '#f59e0b' };
-  return null; // active
+  return null;
 }
 
+// ── Avatar ────────────────────────────────────────────────────────────────────
+function Avatar({ user, size = 24 }) {
+  if (!user) return <div style={{ width:size, height:size, borderRadius:'50%', background:'#1e293b' }} />;
+  if (user.profile_picture) return <img src={user.profile_picture} alt="" style={{ width:size, height:size, borderRadius:'50%', objectFit:'cover' }} />;
+  return (
+    <div style={{ width:size, height:size, borderRadius:'50%', background:user.color||'#1d4ed8', display:'flex', alignItems:'center', justifyContent:'center', fontSize:Math.round(size*0.4), fontWeight:700, color:'#fff', flexShrink:0 }}>
+      {user.avatar||user.name?.charAt(0)||'?'}
+    </div>
+  );
+}
+
+// ── Shift Legend ──────────────────────────────────────────────────────────────
 function ShiftLegend() {
   return (
     <div style={{ display:'flex', flexWrap:'wrap', gap:8, marginBottom:12 }}>
@@ -101,57 +97,167 @@ function ShiftLegend() {
   );
 }
 
-// ── Inline Avatar ─────────────────────────────────────────────────────────────
-function Avatar({ user, size = 24 }) {
-  if (!user) return <div style={{ width:size, height:size, borderRadius:'50%', background:'#1e293b' }} />;
-  if (user.profile_picture) return <img src={user.profile_picture} alt="" style={{ width:size, height:size, borderRadius:'50%', objectFit:'cover' }} />;
-  return (
-    <div style={{ width:size, height:size, borderRadius:'50%', background:user.color||'#1d4ed8', display:'flex', alignItems:'center', justifyContent:'center', fontSize:Math.round(size*0.4), fontWeight:700, color:'#fff', flexShrink:0 }}>
-      {user.avatar||user.name?.charAt(0)||'?'}
-    </div>
-  );
-}
-
-// ── On-call readiness banner ──────────────────────────────────────────────────
+// ── Readiness Banner ──────────────────────────────────────────────────────────
 function ReadinessBanner({ users, startDate, weeks }) {
-  // Find engineers who will become on-call active within the viewed date range
   const today = new Date().toISOString().slice(0,10);
   const rangeEnd = new Date(startDate);
   rangeEnd.setDate(rangeEnd.getDate() + weeks * 7);
   const rangeEndStr = rangeEnd.toISOString().slice(0,10);
-
-  const pending = users.filter(u => {
-    if (!u.oncall_start_date) return false;
-    return u.oncall_start_date >= today && u.oncall_start_date <= rangeEndStr;
-  });
-  const notReady = users.filter(u => {
-    if (!u.oncall_start_date) return false;
-    return u.oncall_start_date > rangeEndStr;
-  });
+  const pending    = users.filter(u => u.oncall_start_date && u.oncall_start_date >= today && u.oncall_start_date <= rangeEndStr);
+  const notReady   = users.filter(u => u.oncall_start_date && u.oncall_start_date > rangeEndStr);
   const terminated = users.filter(u => u.termination_date && u.termination_date >= today && u.termination_date <= rangeEndStr);
-
   if (pending.length === 0 && notReady.length === 0 && terminated.length === 0) return null;
-
   return (
     <div style={{ display:'flex', flexDirection:'column', gap:8, marginBottom:14 }}>
       {pending.map(u => (
         <div key={u.id} style={{ display:'flex', alignItems:'center', gap:10, background:'rgba(245,158,11,0.08)', border:'1px solid rgba(245,158,11,0.25)', borderRadius:8, padding:'8px 14px', fontSize:12 }}>
-          <span style={{ fontSize:18 }}>⏳</span>
-          <span><strong style={{ color:'#fcd34d' }}>{u.name}</strong> goes on-call on <strong style={{ color:'#fcd34d', fontFamily:'DM Mono' }}>{u.oncall_start_date}</strong> — they will appear in the rota from that date.</span>
+          <span>⏳</span><span><strong style={{ color:'#fcd34d' }}>{u.name}</strong> goes on-call on <strong style={{ color:'#fcd34d', fontFamily:'DM Mono' }}>{u.oncall_start_date}</strong></span>
         </div>
       ))}
       {notReady.map(u => (
         <div key={u.id} style={{ display:'flex', alignItems:'center', gap:10, background:'rgba(100,116,139,0.08)', border:'1px solid rgba(100,116,139,0.2)', borderRadius:8, padding:'8px 14px', fontSize:12 }}>
-          <span style={{ fontSize:18 }}>🚫</span>
-          <span><strong style={{ color:'#94a3b8' }}>{u.name}</strong> is not on-call yet (on-call start: <strong style={{ fontFamily:'DM Mono' }}>{u.oncall_start_date || 'not set'}</strong>). Set their on-call start date in Settings.</span>
+          <span>🚫</span><span><strong style={{ color:'#94a3b8' }}>{u.name}</strong> is not on-call yet (on-call start: <strong style={{ fontFamily:'DM Mono' }}>{u.oncall_start_date || 'not set'}</strong>).</span>
         </div>
       ))}
       {terminated.map(u => (
         <div key={u.id} style={{ display:'flex', alignItems:'center', gap:10, background:'rgba(239,68,68,0.08)', border:'1px solid rgba(239,68,68,0.2)', borderRadius:8, padding:'8px 14px', fontSize:12 }}>
-          <span style={{ fontSize:18 }}>👋</span>
-          <span><strong style={{ color:'#fca5a5' }}>{u.name}</strong> leaves on <strong style={{ color:'#fca5a5', fontFamily:'DM Mono' }}>{u.termination_date}</strong> — they will be removed from the rota after that date.</span>
+          <span>👋</span><span><strong style={{ color:'#fca5a5' }}>{u.name}</strong> leaves on <strong style={{ color:'#fca5a5', fontFamily:'DM Mono' }}>{u.termination_date}</strong></span>
         </div>
       ))}
+    </div>
+  );
+}
+
+// ── Floating Cell Editor Popover ──────────────────────────────────────────────
+function CellEditorPopover({ cell, users, rota, holidays, UK_BANK_HOLIDAYS, upgrades,
+  onSetShift, onDelete, onClose, onToggleLock, isLockedFn }) {
+  const ref = useRef(null);
+  const [pos, setPos] = useState({ top: cell.y + 12, left: cell.x });
+
+  // Position: keep inside viewport
+  useEffect(() => {
+    if (!ref.current) return;
+    const r = ref.current.getBoundingClientRect();
+    const vw = window.innerWidth; const vh = window.innerHeight;
+    let left = cell.x; let top = cell.y + 12;
+    if (left + r.width > vw - 16) left = vw - r.width - 16;
+    if (top + r.height > vh - 16) top = cell.y - r.height - 8;
+    if (left < 16) left = 16; if (top < 16) top = 16;
+    setPos({ top, left });
+  }, [cell.x, cell.y]);
+
+  // Close on Escape
+  useEffect(() => {
+    const h = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, [onClose]);
+
+  // Click outside to close
+  useEffect(() => {
+    const h = (e) => { if (ref.current && !ref.current.contains(e.target)) onClose(); };
+    document.addEventListener('mousedown', h, true);
+    return () => document.removeEventListener('mousedown', h, true);
+  }, [onClose]);
+
+  const { userId, date } = cell;
+  const user = users.find(u => u.id === userId);
+  const currentShift = rota[userId]?.[date] || 'off';
+  const dow = new Date(date + 'T12:00:00').getDay();
+  const isWeekend = dow === 0 || dow === 6;
+  const locked = isLockedFn(userId, date);
+  const hol = holidays.find(h => h.userId === userId && date >= h.start && date <= h.end);
+  const bh  = (UK_BANK_HOLIDAYS||[]).find(b => b.date === date);
+  const d   = new Date(date + 'T12:00:00');
+  const dayLabel = d.toLocaleDateString('en-GB', { weekday:'long', day:'numeric', month:'short', year:'numeric' });
+
+  const SHIFT_OPTS = [
+    { value:'off',         label:'Off / Rest',        icon:'—',   bg:'#1e293b', text:'#64748b' },
+    { value:'daily',       label:'Daily Shift',        icon:'D',   bg:'#1e40af', text:'#bfdbfe', hideOn: isWeekend },
+    { value:'evening',     label:'Weekday On-Call',    icon:'WD',  bg:'#166534', text:'#bbf7d0', hideOn: !(dow>=1&&dow<=4) },
+    { value:'weekend',     label:'Weekend On-Call',    icon:'WE',  bg:'#854d0e', text:'#fef08a' },
+    { value:'upgrade',     label:'Upgrade Day',        icon:'UD',  bg:'#991b1b', text:'#fecaca' },
+    { value:'holiday',     label:'Annual Leave',       icon:'H',   bg:'#92400e', text:'#fde68a' },
+    { value:'bankholiday', label:'Bank Holiday',       icon:'BH',  bg:'#7f1d1d', text:'#fca5a5' },
+  ].filter(o => !o.hideOn);
+
+  const timeHint = {
+    daily: '09:00 – 19:00', evening: '19:00 – 07:00 (+1)',
+    weekend: '19:00 – 07:00 (+1)', upgrade: 'All day',
+    holiday: 'Annual leave', bankholiday: 'Bank holiday', off: 'Not scheduled',
+  }[currentShift] || '';
+
+  return (
+    <div ref={ref} style={{
+      position:'fixed', top:pos.top, left:pos.left, zIndex:9999,
+      background:'#0d1424',
+      border:'1px solid rgba(255,255,255,0.13)',
+      borderRadius:14, padding:0, minWidth:272,
+      boxShadow:'0 32px 64px rgba(0,0,0,0.7), 0 0 0 1px rgba(255,255,255,0.04)',
+    }}>
+      {/* ── Header ── */}
+      <div style={{ padding:'13px 16px 11px', borderBottom:'1px solid rgba(255,255,255,0.07)', display:'flex', justifyContent:'space-between', alignItems:'flex-start' }}>
+        <div style={{ display:'flex', gap:10, alignItems:'center' }}>
+          <Avatar user={user} size={32} />
+          <div>
+            <div style={{ fontSize:13, fontWeight:700, color:'#e2e8f0', lineHeight:1.2 }}>{user?.name}</div>
+            <div style={{ fontSize:11, color:'#64748b', marginTop:2, fontFamily:'DM Mono' }}>{dayLabel}</div>
+            {timeHint && currentShift !== 'off' && (
+              <div style={{ fontSize:10, color:'#475569', marginTop:1 }}>⏱ {timeHint}</div>
+            )}
+          </div>
+        </div>
+        <button onClick={onClose} style={{ background:'none', border:'none', color:'#475569', cursor:'pointer', fontSize:18, lineHeight:1, padding:'2px 4px', borderRadius:4 }}>✕</button>
+      </div>
+
+      {/* ── Overlay indicators ── */}
+      {(hol || bh) && (
+        <div style={{ padding:'6px 14px', background:'rgba(245,158,11,0.07)', borderBottom:'1px solid rgba(255,255,255,0.05)', fontSize:11, color:'#fcd34d', display:'flex', gap:8, alignItems:'center' }}>
+          {hol && <span>🏖 Holiday period active</span>}
+          {bh  && <span>🏦 {bh.title || 'Bank Holiday'}</span>}
+        </div>
+      )}
+
+      {/* ── Shift options grid ── */}
+      <div style={{ padding:'12px 14px', display:'grid', gridTemplateColumns:'1fr 1fr', gap:7 }}>
+        {SHIFT_OPTS.map(opt => {
+          const isActive = currentShift === opt.value;
+          return (
+            <button key={opt.value}
+              onClick={() => { onSetShift(userId, date, opt.value); onClose(); }}
+              style={{
+                display:'flex', alignItems:'center', gap:9,
+                background: isActive ? `${opt.bg}cc` : `${opt.bg}28`,
+                border: `1.5px solid ${isActive ? opt.bg : `${opt.bg}55`}`,
+                borderRadius:9, padding:'9px 11px', cursor:'pointer',
+                color: isActive ? opt.text : 'rgba(255,255,255,0.4)',
+                fontSize:12, fontWeight:600, transition:'all 0.12s',
+                outline: isActive ? `2px solid ${opt.bg}66` : 'none',
+                outlineOffset:1,
+              }}>
+              <div style={{ width:24, height:24, borderRadius:5, background:opt.bg, display:'flex', alignItems:'center', justifyContent:'center', fontSize:opt.icon.length>1?8:10, fontWeight:900, color:'#fff', flexShrink:0, letterSpacing:'-0.5px' }}>
+                {opt.icon}
+              </div>
+              <span style={{ lineHeight:1.2 }}>{opt.label}</span>
+              {isActive && <span style={{ marginLeft:'auto', fontSize:14 }}>✓</span>}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* ── Actions footer ── */}
+      <div style={{ padding:'10px 14px 13px', borderTop:'1px solid rgba(255,255,255,0.06)', display:'flex', gap:7 }}>
+        <button onClick={() => onToggleLock(userId, date)}
+          style={{ flex:1, padding:'7px 10px', background:locked?'rgba(245,158,11,0.12)':'rgba(255,255,255,0.04)', border:`1px solid ${locked?'rgba(245,158,11,0.45)':'rgba(255,255,255,0.09)'}`, borderRadius:8, color:locked?'#fcd34d':'#64748b', fontSize:11, fontWeight:600, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', gap:5 }}>
+          {locked ? '🔒 Locked' : '🔓 Lock Cell'}
+        </button>
+        {currentShift !== 'off' && (
+          <button onClick={() => { onDelete(userId, date); onClose(); }}
+            style={{ padding:'7px 13px', background:'rgba(239,68,68,0.09)', border:'1px solid rgba(239,68,68,0.28)', borderRadius:8, color:'#fca5a5', fontSize:11, fontWeight:600, cursor:'pointer', display:'flex', alignItems:'center', gap:5 }}>
+            🗑 Clear
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -164,16 +270,14 @@ export default function RotaPage({
   const [startDate,       setStartDate]       = useState(() => new Date().toISOString().slice(0, 10));
   const [weeks,           setWeeks]           = useState(4);
   const [generated,       setGenerated]       = useState(true);
-  const [editCell,        setEditCell]        = useState(null);
+  const [editCell,        setEditCell]        = useState(null); // { userId, date, x, y }
   const [bulkSelected,    setBulkSelected]    = useState(new Set());
   const [bulkShift,       setBulkShift]       = useState('daily');
   const [swapSuggestion,  setSwapSuggestion]  = useState(null);
   const [viewMode,        setViewMode]        = useState('compact');
   const [managerUnlocked, setManagerUnlocked] = useState(false);
   const [lockedCells,     setLockedCells]     = useState(new Set());
-  const [showInactive,    setShowInactive]    = useState(false); // toggle inactive users
-
-  const DAYS = ['M','T','W','T','F','S','S'];
+  const [showInactive,    setShowInactive]    = useState(false);
 
   const toggleLock  = (userId, date) => {
     const key = `${userId}::${date}`;
@@ -182,70 +286,66 @@ export default function RotaPage({
   const isLocked  = (userId, date) => lockedCells.has(`${userId}::${date}`);
   const canEdit   = isManager && managerUnlocked;
 
-  // ── Filter: only show engineers who are employed at some point in the viewed range
   const rangeStart = (() => { const d = new Date(startDate+'T12:00:00'); const dow=d.getDay(); d.setDate(d.getDate()+(dow===0?-6:1-dow)); return d.toISOString().slice(0,10); })();
   const rangeEndDate = new Date(rangeStart+'T12:00:00'); rangeEndDate.setDate(rangeEndDate.getDate()+weeks*7);
   const rangeEndStr = rangeEndDate.toISOString().slice(0,10);
 
-  // Active = on-call active at some point in range; inactive = employed but not on-call yet
   const activeUsers   = users.filter(u => {
-    if (!isEmployed(u, rangeEndStr)) return false; // left before range
+    if (!isEmployed(u, rangeEndStr)) return false;
     if (!isEmployed(u, rangeStart) && !isEmployed(u, rangeEndStr)) return false;
     return isOnCallActive(u, rangeEndStr) || isOnCallActive(u, rangeStart);
   });
   const inactiveUsers = users.filter(u => isEmployed(u, rangeEndStr) && !activeUsers.includes(u));
   const visibleUsers  = showInactive ? [...activeUsers, ...inactiveUsers] : activeUsers;
 
-  // ── Generate (only for on-call-active engineers) ───────────────────────────
   const generate = () => {
     if (!isManager) return;
-    // Only pass users who are on-call active
     const onCallUsers = users.filter(u => isOnCallActive(u, startDate));
     const generated = sanitiseRota(generateRota(onCallUsers, startDate, weeks));
     setRota(prev => {
       const merged = { ...prev };
-      // Initialise empty objects for ALL users (so inactive users have no shifts)
       users.forEach(u => {
         if (!isOnCallActive(u, startDate)) {
-          // Clear any auto-generated shifts for inactive engineers, keep manual ones only
           merged[u.id] = {};
-          Object.entries(prev[u.id] || {}).forEach(([date, shift]) => {
-            if (isLocked(u.id, date)) merged[u.id][date] = shift;
-          });
+          Object.entries(prev[u.id] || {}).forEach(([date, shift]) => { if (isLocked(u.id, date)) merged[u.id][date] = shift; });
           return;
         }
         const existing = prev[u.id] || {};
         const genDates = generated[u.id] || {};
         merged[u.id] = { ...genDates };
-        Object.entries(existing).forEach(([date, shift]) => {
-          if (shift && shift !== 'off') merged[u.id][date] = shift;
-        });
+        Object.entries(existing).forEach(([date, shift]) => { if (shift && shift !== 'off') merged[u.id][date] = shift; });
       });
       return merged;
     });
     setGenerated(true);
   };
 
-  const setCell = (userId, date, shift) => {
+  const setCell = useCallback((userId, date, shift) => {
     if (!canEdit) return;
-    // Prevent assigning on-call shifts to inactive engineers
     const user = users.find(u => u.id === userId);
     if (!isOnCallActive(user, date) && shift !== 'off') {
-      alert(`${user?.name} is not on-call active on ${date}.\nCheck their on-call start date and termination date in Settings.`);
+      alert(`${user?.name} is not on-call active on ${date}.`);
       return;
     }
-    const dow = new Date(date).getDay();
+    const dow = new Date(date + 'T12:00:00').getDay();
     const isWeekend = dow === 0 || dow === 6;
     setRota(prev => ({ ...prev, [userId]: { ...(prev[userId]||{}), [date]: (shift==='daily'&&isWeekend)?'weekend':shift } }));
-    setEditCell(null);
-  };
+  }, [canEdit, users, setRota]);
 
-  const deleteCell = (userId, date) => {
+  const deleteCell = useCallback((userId, date) => {
     if (!canEdit) return;
     const next = JSON.parse(JSON.stringify(rota));
     if (next[userId]) delete next[userId][date];
     setRota(next);
-  };
+  }, [canEdit, rota, setRota]);
+
+  const openCellEditor = useCallback((userId, date, e) => {
+    if (!canEdit) return;
+    const user = users.find(u => u.id === userId);
+    if (!isOnCallActive(user, date)) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    setEditCell({ userId, date, x: rect.left, y: rect.bottom });
+  }, [canEdit, users]);
 
   const toggleBulk = (userId, date) => {
     if (!canEdit) return;
@@ -264,7 +364,7 @@ export default function RotaPage({
       next[uid] = { ...(next[uid]||{}), [date]: bulkShift };
     });
     setRota(next); setBulkSelected(new Set());
-    if (blocked.length > 0) alert(`Skipped ${[...new Set(blocked)].join(', ')} — not on-call active on selected dates.`);
+    if (blocked.length > 0) alert(`Skipped ${[...new Set(blocked)].join(', ')} — not on-call active.`);
   };
 
   const deleteBulk = () => {
@@ -272,6 +372,29 @@ export default function RotaPage({
     const next = JSON.parse(JSON.stringify(rota));
     bulkSelected.forEach(key => { const [uid,date]=key.split('::'); if(next[uid]) delete next[uid][date]; });
     setRota(next); setBulkSelected(new Set());
+  };
+
+  // Select all cells in a date column
+  const selectColumn = (dateStr) => {
+    if (!canEdit) return;
+    setBulkSelected(prev => {
+      const n = new Set(prev);
+      visibleUsers.forEach(u => { if (isOnCallActive(u, dateStr)) n.add(`${u.id}::${dateStr}`); });
+      return n;
+    });
+  };
+
+  // Select all cells in a user row
+  const selectRow = (userId) => {
+    if (!canEdit) return;
+    setBulkSelected(prev => {
+      const n = new Set(prev);
+      weekStarts.forEach(ws => {
+        Array.from({length:7},(_,d) => { const dt=new Date(ws); dt.setDate(ws.getDate()+d); return dt.toISOString().slice(0,10); })
+          .forEach(ds => { if (isOnCallActive(users.find(u=>u.id===userId), ds)) n.add(`${userId}::${ds}`); });
+      });
+      return n;
+    });
   };
 
   const checkConflicts = () => {
@@ -321,9 +444,56 @@ export default function RotaPage({
     return d;
   });
 
+  const DAY_NAMES = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  const MON_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
   return (
     <div>
-      {/* ── Header ─────────────────────────────────────────────────────────── */}
+      {/* ── Floating Cell Editor ──────────────────────────────────────────── */}
+      {editCell && canEdit && (
+        <CellEditorPopover
+          cell={editCell}
+          users={users} rota={rota} holidays={holidays}
+          UK_BANK_HOLIDAYS={UK_BANK_HOLIDAYS} upgrades={upgrades}
+          onSetShift={(uid,date,shift) => { setCell(uid,date,shift); }}
+          onDelete={deleteCell}
+          onClose={() => setEditCell(null)}
+          onToggleLock={toggleLock}
+          isLockedFn={isLocked}
+        />
+      )}
+
+      {/* ── Floating Bulk Action Bar ──────────────────────────────────────── */}
+      {bulkSelected.size > 0 && canEdit && (
+        <div style={{
+          position:'fixed', bottom:24, left:'50%', transform:'translateX(-50%)',
+          zIndex:1000, background:'#0d1424',
+          border:'1px solid rgba(59,130,246,0.45)',
+          borderRadius:14, padding:'12px 18px',
+          display:'flex', gap:10, alignItems:'center',
+          boxShadow:'0 24px 48px rgba(0,0,0,0.65), 0 0 0 1px rgba(59,130,246,0.15)',
+          backdropFilter:'blur(16px)', flexWrap:'wrap',
+        }}>
+          <span style={{ fontSize:13, color:'#93c5fd', fontWeight:700, whiteSpace:'nowrap' }}>
+            📋 {bulkSelected.size} cell{bulkSelected.size>1?'s':''} selected
+          </span>
+          <div style={{ width:1, height:24, background:'rgba(255,255,255,0.1)' }} />
+          <select className="select" value={bulkShift} onChange={e=>setBulkShift(e.target.value)} style={{ width:165, fontSize:12 }}>
+            <option value="off">— Off / Rest</option>
+            <option value="daily">D  Daily Shift</option>
+            <option value="evening">WD Weekday On-Call</option>
+            <option value="weekend">WE Weekend On-Call</option>
+            <option value="upgrade">UD Upgrade Day</option>
+            <option value="holiday">H  Annual Leave</option>
+            <option value="bankholiday">BH Bank Holiday</option>
+          </select>
+          <button className="btn btn-primary btn-sm" onClick={applyBulk}>✓ Apply to All</button>
+          <button className="btn btn-danger btn-sm" onClick={deleteBulk}>🗑 Delete All</button>
+          <button className="btn btn-secondary btn-sm" onClick={()=>setBulkSelected(new Set())}>✕ Clear</button>
+        </div>
+      )}
+
+      {/* ── Page Header ───────────────────────────────────────────────────── */}
       <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', marginBottom:16, flexWrap:'wrap', gap:10 }}>
         <div>
           <h1 style={{ margin:0, fontSize:22, fontWeight:700, letterSpacing:'-0.5px' }}>📅 Rota</h1>
@@ -334,130 +504,132 @@ export default function RotaPage({
         </div>
       </div>
 
-      {/* Readiness banners */}
       <ReadinessBanner users={users} startDate={startDate} weeks={weeks} />
 
-      {/* ── Manager toolbar ─────────────────────────────────────────────────── */}
+      {/* ── Sticky Manager Toolbar ─────────────────────────────────────────── */}
       {isManager && (
-        <div style={{ background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.07)', borderRadius:10, padding:'14px 16px', marginBottom:16 }}>
-          {/* Lock toggle */}
-          <div style={{ marginBottom:12 }}>
+        <div style={{
+          position:'sticky', top:58, zIndex:40,
+          background:'rgba(9,14,27,0.97)', backdropFilter:'blur(20px)',
+          border:'1px solid rgba(255,255,255,0.08)',
+          borderRadius:12, padding:'13px 16px', marginBottom:16,
+          boxShadow:'0 8px 32px rgba(0,0,0,0.4)',
+        }}>
+          {/* Lock row */}
+          <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:managerUnlocked?12:0, flexWrap:'wrap' }}>
             <button onClick={() => setManagerUnlocked(p=>!p)} style={{
-              display:'flex', alignItems:'center', gap:6,
-              background: managerUnlocked?'rgba(239,68,68,0.15)':'rgba(34,197,94,0.12)',
-              border:`1px solid ${managerUnlocked?'#ef4444':'#22c55e'}`,
-              borderRadius:8, padding:'6px 14px', cursor:'pointer',
-              color: managerUnlocked?'#fca5a5':'#4ade80', fontSize:12, fontWeight:600,
+              display:'flex', alignItems:'center', gap:7,
+              background: managerUnlocked?'rgba(239,68,68,0.13)':'rgba(34,197,94,0.1)',
+              border:`1.5px solid ${managerUnlocked?'#ef4444':'#22c55e'}`,
+              borderRadius:9, padding:'7px 16px', cursor:'pointer',
+              color: managerUnlocked?'#fca5a5':'#4ade80', fontSize:12, fontWeight:700,
             }}>
-              {managerUnlocked ? '🔓 Unlocked — editing enabled' : '🔒 Locked — click to enable editing'}
+              {managerUnlocked ? '🔓 Editing enabled — click to lock' : '🔒 Locked — click to enable editing'}
             </button>
+            {managerUnlocked && canEdit && (
+              <span style={{ fontSize:11, color:'rgba(255,255,255,0.25)' }}>
+                Click cell to edit · Shift+click rows/cols for bulk select
+              </span>
+            )}
             {!managerUnlocked && (
-              <div style={{ marginTop:6, fontSize:11, color:'#4ade80', opacity:0.7 }}>
-                🔒 Rota is read-only. Click the button above to unlock editing.
-              </div>
+              <span style={{ fontSize:11, color:'rgba(34,197,94,0.5)' }}>Rota is read-only.</span>
             )}
           </div>
 
-          {/* Controls row */}
-          <div style={{ display:'flex', gap:12, flexWrap:'wrap', alignItems:'flex-end' }}>
-            <div>
-              <div style={{ fontSize:11, color:'#64748b', marginBottom:4, fontWeight:600 }}>Start Date</div>
-              <input className="input" type="date" value={startDate} onChange={e=>setStartDate(e.target.value)} style={{ width:180 }} />
-            </div>
-            <div>
-              <div style={{ fontSize:11, color:'#64748b', marginBottom:4, fontWeight:600 }}>Weeks</div>
-              <select className="select" value={weeks} onChange={e=>setWeeks(+e.target.value)} style={{ width:130 }}>
-                {[2,4,6,8,12,16,24,26,52].map(w=><option key={w} value={w}>{w} week{w>=52?' (1yr)':w>=26?' (6mo)':w>=12?' (3mo)':''}</option>)}
-              </select>
-            </div>
-            <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
-              <button className="btn btn-primary" onClick={generate} disabled={!canEdit} style={{ opacity:canEdit?1:0.4 }}>🔄 Generate Rota</button>
-              <div style={{ fontSize:9, color:'rgba(255,255,255,0.3)', textAlign:'center' }}>🔒 Keeps manual entries</div>
-            </div>
-            <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
-              <button className="btn btn-secondary" disabled={!canEdit} style={{ opacity:canEdit?1:0.4 }} onClick={() => {
-                if (!canEdit) return;
-                if (window.confirm('⚠️ Regenerate from scratch? Locked cells preserved, all others overwritten.')) {
-                  const onCallUsers = users.filter(u => isOnCallActive(u, startDate));
-                  const fresh = sanitiseRota(generateRota(onCallUsers, startDate, weeks));
-                  setRota(prev => {
-                    const merged = {};
-                    users.forEach(u => {
-                      merged[u.id] = {};
-                      if (isOnCallActive(u, startDate)) {
-                        Object.assign(merged[u.id], fresh[u.id]||{});
-                      }
-                      Object.entries(prev[u.id]||{}).forEach(([date,shift]) => {
-                        if (isLocked(u.id,date)) merged[u.id][date]=shift;
+          {/* Controls row — only shown when unlocked */}
+          {managerUnlocked && (
+            <div style={{ display:'flex', gap:10, flexWrap:'wrap', alignItems:'flex-end' }}>
+              <div>
+                <div style={{ fontSize:10, color:'#475569', marginBottom:4, fontWeight:600, letterSpacing:'0.05em', textTransform:'uppercase' }}>Start Date</div>
+                <input className="input" type="date" value={startDate} onChange={e=>setStartDate(e.target.value)} style={{ width:164 }} />
+              </div>
+              <div>
+                <div style={{ fontSize:10, color:'#475569', marginBottom:4, fontWeight:600, letterSpacing:'0.05em', textTransform:'uppercase' }}>Period</div>
+                <select className="select" value={weeks} onChange={e=>setWeeks(+e.target.value)} style={{ width:140 }}>
+                  {[2,4,6,8,12,16,24,26,52].map(w=><option key={w} value={w}>{w} week{w>=52?' (1yr)':w>=26?' (6mo)':w>=12?' (3mo)':''}</option>)}
+                </select>
+              </div>
+
+              <div style={{ width:1, height:36, background:'rgba(255,255,255,0.07)', alignSelf:'flex-end', marginBottom:1 }} />
+
+              {/* Generate */}
+              <div style={{ display:'flex', flexDirection:'column', gap:3, alignSelf:'flex-end' }}>
+                <button className="btn btn-primary btn-sm" onClick={generate} disabled={!canEdit} style={{ opacity:canEdit?1:0.4, fontSize:12, padding:'7px 14px' }}>
+                  🔄 Generate Rota
+                </button>
+                <div style={{ fontSize:9, color:'rgba(255,255,255,0.2)', textAlign:'center' }}>Keeps manual entries</div>
+              </div>
+
+              {/* Force Regenerate */}
+              <div style={{ display:'flex', flexDirection:'column', gap:3, alignSelf:'flex-end' }}>
+                <button className="btn btn-secondary btn-sm" disabled={!canEdit} style={{ opacity:canEdit?1:0.4, fontSize:12, padding:'7px 14px' }} onClick={() => {
+                  if (!canEdit) return;
+                  if (window.confirm('⚠️ Regenerate from scratch? Locked cells preserved.')) {
+                    const onCallUsers = users.filter(u => isOnCallActive(u, startDate));
+                    const fresh = sanitiseRota(generateRota(onCallUsers, startDate, weeks));
+                    setRota(prev => {
+                      const merged = {};
+                      users.forEach(u => {
+                        merged[u.id] = {};
+                        if (isOnCallActive(u, startDate)) Object.assign(merged[u.id], fresh[u.id]||{});
+                        Object.entries(prev[u.id]||{}).forEach(([date,shift]) => { if (isLocked(u.id,date)) merged[u.id][date]=shift; });
                       });
+                      return merged;
                     });
-                    return merged;
+                    setGenerated(true);
+                  }
+                }}>↺ Force Regenerate</button>
+                <div style={{ fontSize:9, color:'rgba(239,68,68,0.4)', textAlign:'center' }}>Overwrites all shifts</div>
+              </div>
+
+              <div style={{ width:1, height:36, background:'rgba(255,255,255,0.07)', alignSelf:'flex-end', marginBottom:1 }} />
+
+              {/* Clear */}
+              <button className="btn btn-danger btn-sm" disabled={!canEdit} style={{ opacity:canEdit?1:0.4, fontSize:12, padding:'7px 14px', alignSelf:'flex-end' }} onClick={() => {
+                if (!canEdit) return;
+                if (window.confirm('⚠️ Clear all rota entries? Locked cells preserved.')) {
+                  setRota(prev => {
+                    const next = {};
+                    users.forEach(u => {
+                      next[u.id]={};
+                      Object.entries(prev[u.id]||{}).forEach(([date,shift]) => { if(isLocked(u.id,date)) next[u.id][date]=shift; });
+                    });
+                    return next;
                   });
-                  setGenerated(true);
                 }
-              }}>↺ Force Regenerate</button>
-              <div style={{ fontSize:9, color:'rgba(255,80,80,0.5)', textAlign:'center' }}>⚠ Overwrites all shifts</div>
-            </div>
-            <button className="btn btn-danger" disabled={!canEdit} style={{ opacity:canEdit?1:0.4 }} onClick={() => {
-              if (!canEdit) return;
-              if (window.confirm('⚠️ Clear all rota entries? Locked cells preserved.')) {
-                setRota(prev => {
-                  const next = {};
-                  users.forEach(u => {
-                    next[u.id]={};
-                    Object.entries(prev[u.id]||{}).forEach(([date,shift]) => { if(isLocked(u.id,date)) next[u.id][date]=shift; });
-                  });
-                  return next;
-                });
-              }
-            }}>🗑 Clear Rota</button>
-            <button className="btn btn-secondary" onClick={checkConflicts}>🔍 Check Conflicts</button>
-            <button style={{ padding:'6px 14px', background:'rgba(16,185,129,0.12)', border:'1px solid rgba(16,185,129,0.3)', borderRadius:7, color:'#34d399', fontSize:12, fontWeight:600, cursor:'pointer' }}
-              onClick={() => activeUsers.forEach(u => { const ic=generateICalFeed(rota[u.id]||{},u.name); downloadIcal(ic,`rota-${u.id}.ics`); })}>
-              📥 Export All (.ics)
-            </button>
-          </div>
+              }}>🗑 Clear Rota</button>
 
-          {/* Inactive toggle */}
-          {inactiveUsers.length > 0 && (
-            <div style={{ marginTop:10, display:'flex', alignItems:'center', gap:8 }}>
-              <button onClick={()=>setShowInactive(p=>!p)}
-                style={{ padding:'4px 12px', background:showInactive?'rgba(245,158,11,0.12)':'rgba(255,255,255,0.04)', border:`1px solid ${showInactive?'rgba(245,158,11,0.35)':'rgba(255,255,255,0.08)'}`, borderRadius:6, color:showInactive?'#f59e0b':'#64748b', fontSize:11, fontWeight:600, cursor:'pointer' }}>
-                {showInactive ? '👁 Hiding inactive' : `👁 Show inactive (${inactiveUsers.length})`}
+              {/* Check Conflicts */}
+              <button className="btn btn-secondary btn-sm" onClick={checkConflicts} style={{ fontSize:12, padding:'7px 14px', alignSelf:'flex-end' }}>🔍 Conflicts</button>
+
+              {/* Export */}
+              <button style={{ padding:'7px 14px', background:'rgba(16,185,129,0.1)', border:'1px solid rgba(16,185,129,0.28)', borderRadius:8, color:'#34d399', fontSize:12, fontWeight:600, cursor:'pointer', alignSelf:'flex-end' }}
+                onClick={() => activeUsers.forEach(u => { const ic=generateICalFeed(rota[u.id]||{},u.name); downloadIcal(ic,`rota-${u.id}.ics`); })}>
+                📥 Export .ics
               </button>
-              <span style={{ fontSize:11, color:'#475569' }}>Inactive = employed but on-call start date not yet reached</span>
-            </div>
-          )}
 
-          {/* Bulk panel */}
-          {bulkSelected.size > 0 && (
-            <div style={{ marginTop:12, padding:'10px 14px', background:'rgba(59,130,246,.1)', border:'1px solid rgba(59,130,246,.35)', borderRadius:8, display:'flex', gap:10, alignItems:'center', flexWrap:'wrap' }}>
-              <span style={{ fontSize:12, color:'#93c5fd' }}>{bulkSelected.size} cell{bulkSelected.size>1?'s':''} selected</span>
-              <select className="select" value={bulkShift} onChange={e=>setBulkShift(e.target.value)} style={{ width:160 }}>
-                <option value="daily">Daily Shift</option>
-                <option value="evening">Weekday On-Call</option>
-                <option value="weekend">Weekend On-Call</option>
-                <option value="off">Off</option>
-              </select>
-              <button className="btn btn-primary btn-sm" onClick={applyBulk}>✓ Apply to Selected</button>
-              <button className="btn btn-danger btn-sm" onClick={deleteBulk}>🗑 Delete Selected</button>
-              <button className="btn btn-secondary btn-sm" onClick={()=>setBulkSelected(new Set())}>✕ Clear</button>
+              {/* Inactive toggle */}
+              {inactiveUsers.length > 0 && (
+                <button onClick={()=>setShowInactive(p=>!p)} style={{ padding:'7px 12px', background:showInactive?'rgba(245,158,11,0.1)':'rgba(255,255,255,0.04)', border:`1px solid ${showInactive?'rgba(245,158,11,0.3)':'rgba(255,255,255,0.08)'}`, borderRadius:8, color:showInactive?'#f59e0b':'#64748b', fontSize:11, fontWeight:600, cursor:'pointer', alignSelf:'flex-end' }}>
+                  {showInactive ? `👁 Hide inactive` : `👁 +${inactiveUsers.length} inactive`}
+                </button>
+              )}
             </div>
           )}
         </div>
       )}
 
-      {/* Conflict suggestions */}
+      {/* ── Conflict Suggestions ─────────────────────────────────────────── */}
       {swapSuggestion && swapSuggestion.length > 0 && isManager && (
-        <div style={{ background:'rgba(245,158,11,0.08)', border:'1px solid rgba(245,158,11,0.3)', borderRadius:10, padding:'14px 16px', marginBottom:16 }}>
+        <div style={{ background:'rgba(245,158,11,0.07)', border:'1px solid rgba(245,158,11,0.28)', borderRadius:10, padding:'13px 16px', marginBottom:14 }}>
           <div style={{ fontSize:13, fontWeight:700, color:'#f59e0b', marginBottom:10 }}>⚠ Holiday Conflicts — Suggested Cover</div>
           {swapSuggestion.map((c,i) => {
             const eng = users.find(u => u.id===c.userId);
             return (
-              <div key={i} style={{ paddingBottom:10, borderBottom:'1px solid rgba(255,255,255,0.06)', marginBottom:10 }}>
+              <div key={i} style={{ paddingBottom:10, borderBottom:'1px solid rgba(255,255,255,0.05)', marginBottom:10 }}>
                 <div style={{ fontSize:12, color:'#94a3b8' }}>{eng?.name} is on holiday on {c.date} but has <strong>{SHIFT_COLORS[c.shift]?.label}</strong></div>
                 <div style={{ display:'flex', gap:8, marginTop:8, flexWrap:'wrap' }}>
-                  {c.available.length===0 && <span style={{ fontSize:11, color:'#64748b' }}>No on-call engineers available for cover</span>}
+                  {c.available.length===0 && <span style={{ fontSize:11, color:'#64748b' }}>No engineers available</span>}
                   {c.available.map(a => <button key={a.id} className="btn btn-success btn-sm" onClick={()=>applySwap(c,a.id)}>✓ Assign {a.name.split(' ')[0]}</button>)}
                 </div>
               </div>
@@ -466,12 +638,12 @@ export default function RotaPage({
         </div>
       )}
       {swapSuggestion && swapSuggestion.length===0 && (
-        <div style={{ background:'rgba(34,197,94,0.08)', border:'1px solid rgba(34,197,94,0.2)', borderRadius:8, padding:'10px 14px', marginBottom:14, fontSize:12, color:'#4ade80' }}>✅ No holiday conflicts found.</div>
+        <div style={{ background:'rgba(34,197,94,0.07)', border:'1px solid rgba(34,197,94,0.18)', borderRadius:8, padding:'9px 14px', marginBottom:14, fontSize:12, color:'#4ade80' }}>✅ No holiday conflicts found.</div>
       )}
 
-      {/* Pending swaps */}
+      {/* ── Pending Swap Requests ────────────────────────────────────────── */}
       {isManager && pendingSwaps.length > 0 && (
-        <div style={{ background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.07)', borderRadius:10, padding:'14px 16px', marginBottom:16 }}>
+        <div style={{ background:'rgba(255,255,255,0.02)', border:'1px solid rgba(255,255,255,0.07)', borderRadius:10, padding:'13px 16px', marginBottom:14 }}>
           <div style={{ fontSize:13, fontWeight:700, marginBottom:10 }}>🔁 Pending Shift Swap Requests</div>
           {pendingSwaps.map(s => {
             const req=users.find(u=>u.id===s.requesterId); const tgt=users.find(u=>u.id===s.targetId);
@@ -494,21 +666,19 @@ export default function RotaPage({
       <ShiftLegend />
 
       {/* View mode toggle */}
-      <div style={{ display:'flex', gap:8, marginBottom:12, alignItems:'center' }}>
+      <div style={{ display:'flex', gap:8, marginBottom:14, alignItems:'center' }}>
         <span style={{ fontSize:12, color:'#64748b' }}>View:</span>
         {[['compact','📋 Compact'],['hours','🕐 Timeline']].map(([m,l]) => (
           <button key={m} className={`btn btn-sm ${viewMode===m?'btn-primary':'btn-secondary'}`} onClick={()=>setViewMode(m)}>{l}</button>
         ))}
-        {viewMode==='hours' && <span style={{ fontSize:11, color:'#64748b', marginLeft:4 }}>Daily: 10am–7pm · Evening OC: 7pm–7am · Weekend OC: 7pm–7am</span>}
+        {canEdit && <span style={{ fontSize:11, color:'rgba(255,255,255,0.2)', marginLeft:8 }}>Click cell to edit · Ctrl+click to bulk select</span>}
       </div>
 
-      {/* ── Week grids ─────────────────────────────────────────────────────── */}
+      {/* ── Week Grids ─────────────────────────────────────────────────────── */}
       {weekStarts.map((ws, wi) => {
         const wdates = Array.from({length:8},(_,d) => { const dt=new Date(ws); dt.setDate(ws.getDate()+d); return dt; });
         const weekDateStr = ws.toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'});
         const hourCols = Array.from({length:24},(_,h)=>h);
-        const DAY_NAMES  = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-        const MON_SHORT  = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
         const getHourActive = (userId, dateStr, hour) => {
           const user = users.find(u=>u.id===userId);
@@ -516,10 +686,7 @@ export default function RotaPage({
           const hol  = holidays.find(h=>h.userId===userId && dateStr>=h.start && dateStr<=h.end);
           const bh   = (UK_BANK_HOLIDAYS||[]).find(b=>b.date===dateStr);
           const rotaEntry = rota[userId]?.[dateStr] || 'off';
-          // BH overlays on-call — if engineer has a rota entry keep its colour, else show bankholiday
-          const thisShift = hol ? 'holiday'
-            : bh ? (rotaEntry !== 'off' ? rotaEntry : 'bankholiday')
-            : rotaEntry;
+          const thisShift = hol ? 'holiday' : bh ? (rotaEntry !== 'off' ? rotaEntry : 'bankholiday') : rotaEntry;
           if (hour>=7) {
             if (thisShift==='daily')   return hour<19?'daily':null;
             if (thisShift==='evening') return hour>=19?'evening':null;
@@ -527,22 +694,20 @@ export default function RotaPage({
             if (['upgrade','holiday','bankholiday'].includes(thisShift)) return thisShift;
             return null;
           }
-          // Before 7am: check if yesterday's shift carries over (look back up to 3 days for weekend OC)
           for (let back = 1; back <= 3; back++) {
-            const prev = new Date(dateStr + 'T12:00:00');
-            prev.setDate(prev.getDate() - back);
+            const prev = new Date(dateStr + 'T12:00:00'); prev.setDate(prev.getDate() - back);
             const prevDs = prev.toISOString().slice(0,10);
             const pHol = holidays.find(h=>h.userId===userId && prevDs>=h.start && prevDs<=h.end);
-            if (pHol) continue; // skip holiday days in lookback
+            if (pHol) continue;
             const prevEntry = rota[userId]?.[prevDs] || 'off';
             if (prevEntry === 'evening') return back === 1 ? 'evening' : null;
-            if (prevEntry === 'weekend') return 'weekend'; // weekend spans multiple days
-            if (prevEntry !== 'off') break; // different shift, stop
+            if (prevEntry === 'weekend') return 'weekend';
+            if (prevEntry !== 'off') break;
           }
           return null;
         };
 
-        // ── Timeline view ─────────────────────────────────────────────────
+        // ── Timeline View ─────────────────────────────────────────────────
         if (viewMode==='hours') {
           return (
             <div key={wi} className="card mb-12">
@@ -571,13 +736,10 @@ export default function RotaPage({
                     </div>
                     {visibleUsers.map(u => {
                       const hol   = holidays.find(h=>h.userId===u.id && ds>=h.start && ds<=h.end);
-                      const upg   = (upgrades||[]).find(up=>up.date===ds && up.attendees?.includes(u.id));
                       const active= isOnCallActive(u, ds);
                       const status= getOnCallStatus(u, ds);
-                      // Upgrade overlays on-call — don't replace it
                       const shift = hol?'holiday':bh?'bankholiday':(rota[u.id]?.[ds]||'off');
                       const col   = active?SHIFT_COLORS[shift]||{}:SHIFT_COLORS.inactive;
-                      const isEditing=editCell?.userId===u.id && editCell?.date===ds;
                       return (
                         <div key={u.id} style={{ display:'flex', alignItems:'center', marginBottom:2 }}>
                           <div style={{ width:100, display:'flex', alignItems:'center', gap:5, flexShrink:0, paddingRight:8 }}>
@@ -585,18 +747,8 @@ export default function RotaPage({
                             <span style={{ fontSize:10, color:active?'#94a3b8':'#334155', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', maxWidth:66 }}>{u.name.split(' ')[0]}</span>
                           </div>
                           <div style={{ flex:1, height:24, borderRadius:4, background:'rgba(255,255,255,0.04)', border:'1px solid rgba(255,255,255,0.06)', position:'relative', display:'flex', cursor:canEdit&&active?'pointer':'default', overflow:'hidden' }}
-                            onDoubleClick={()=>canEdit&&active&&setEditCell({userId:u.id,date:ds})}>
-                            {isEditing&&canEdit ? (
-                              <select autoFocus className="select" style={{ fontSize:10, padding:'2px 4px', width:'100%', height:'100%', background:'var(--bg-card2)', border:'none', color:'var(--text-primary)', zIndex:2 }}
-                                defaultValue={shift}
-                                onChange={e=>setCell(u.id,ds,e.target.value)}
-                                onBlur={e=>setCell(u.id,ds,e.target.value)}>
-                                <option value="off">Off</option>
-                                {!isWkd&&<option value="daily">Daily (10am–7pm)</option>}
-                                {(dow>=1&&dow<=4)&&<option value="evening">Weekday OC (7pm–7am)</option>}
-                                <option value="weekend">Weekend OC (7pm–7am)</option>
-                              </select>
-                            ) : !active ? (
+                            onClick={e=>canEdit&&active&&openCellEditor(u.id,ds,e)}>
+                            {!active ? (
                               <div style={{ flex:1, display:'flex', alignItems:'center', justifyContent:'center' }}>
                                 <span style={{ fontSize:9, color:'#334155', fontStyle:'italic' }}>{status?.label||'Inactive'}</span>
                               </div>
@@ -612,9 +764,6 @@ export default function RotaPage({
                                   <span style={{ fontSize:9, fontWeight:700, color:col.text||'#fff', textShadow:'0 1px 3px rgba(0,0,0,0.8)' }}>
                                     {hol ? 'H — Holiday' : bh ? 'BH — Bank Hol' : SHIFT_ABBR[shift] || shift}
                                   </span>
-                                  {upg && !hol && (
-                                    <span style={{ fontSize:8, fontWeight:800, color:'#fecaca', background:'rgba(153,27,27,0.85)', padding:'1px 4px', borderRadius:3, textShadow:'none' }}>UD</span>
-                                  )}
                                 </div>}
                               </>
                             )}
@@ -628,12 +777,12 @@ export default function RotaPage({
               <div style={{ display:'flex', marginLeft:100, marginTop:4 }}>
                 {hourCols.map(h=><div key={h} style={{ flex:1, textAlign:'center', fontSize:7, color:'rgba(255,255,255,0.2)', fontFamily:'DM Mono' }}>{h%6===0?String(h).padStart(2,'0'):''}</div>)}
               </div>
-              {canEdit&&<div style={{ fontSize:10, color:'#475569', marginTop:8 }}>💡 Double-click any row to edit that shift</div>}
+              {canEdit&&<div style={{ fontSize:10, color:'#475569', marginTop:8 }}>💡 Click any row to open the shift editor</div>}
             </div>
           );
         }
 
-        // ── Compact view ─────────────────────────────────────────────────
+        // ── Compact View ─────────────────────────────────────────────────
         return (
           <div key={wi} className="card mb-12" style={{ overflowX:'auto' }}>
             <div className="card-title" style={{ fontSize:12, color:'#64748b' }}>Week of {weekDateStr}</div>
@@ -646,7 +795,10 @@ export default function RotaPage({
                     const bh=(UK_BANK_HOLIDAYS||[]).find(b=>b.date===ds);
                     const dow=d.getDay(); const isWkd=dow===0||dow===6;
                     return (
-                      <th key={di} style={{ textAlign:'center', fontSize:10, paddingBottom:6, color:bh?'#fca5a5':isWkd?'rgba(255,255,255,0.35)':'#94a3b8', background:isWkd?'rgba(255,255,255,0.025)':undefined, borderBottom:'1px solid rgba(255,255,255,0.08)', minWidth:68 }}>
+                      <th key={di}
+                        onClick={()=>canEdit&&selectColumn(ds)}
+                        style={{ textAlign:'center', fontSize:10, paddingBottom:6, color:bh?'#fca5a5':isWkd?'rgba(255,255,255,0.35)':'#94a3b8', background:isWkd?'rgba(255,255,255,0.025)':undefined, borderBottom:'1px solid rgba(255,255,255,0.08)', minWidth:68, cursor:canEdit?'pointer':'default' }}
+                        title={canEdit?'Click to select entire column':undefined}>
                         <div style={{ fontWeight:800, fontSize:11 }}>{DAY_NAMES[dow]}</div>
                         <div style={{ fontFamily:'DM Mono', fontSize:10, opacity:0.8 }}>{d.getDate()} {MON_SHORT[d.getMonth()]}</div>
                         <div style={{ fontSize:8, color:'rgba(255,255,255,0.2)', fontFamily:'DM Mono', marginTop:1 }}>
@@ -664,7 +816,9 @@ export default function RotaPage({
                       <div style={{ display:'flex', alignItems:'center', gap:6 }}>
                         <Avatar user={u} size={24} />
                         <div>
-                          <span style={{ fontSize:12 }}>{u.name.split(' ')[0]}</span>
+                          <span style={{ fontSize:12, cursor:canEdit?'pointer':'default', color:canEdit?'#94a3b8':undefined }}
+                            onClick={()=>canEdit&&selectRow(u.id)}
+                            title={canEdit?'Click to select all cells this week':''}>{u.name.split(' ')[0]}</span>
                           {!activeUsers.includes(u) && (
                             <div style={{ fontSize:9, color:'#f59e0b', fontFamily:'DM Mono' }}>⏳ not on-call</div>
                           )}
@@ -678,98 +832,66 @@ export default function RotaPage({
                       const upg  = (upgrades||[]).find(up=>up.date===ds && up.attendees?.includes(u.id));
                       const active=isOnCallActive(u,ds);
                       const status=getOnCallStatus(u,ds);
-
-                      // The actual on-call rota assignment (never overridden by BH/upgrade)
                       const rotaShift = rota[u.id]?.[ds] || 'off';
-                      // Display shift: holiday beats everything, BH is an overlay over on-call
                       const s    = hol ? 'holiday' : rotaShift;
                       const col  = active ? (SHIFT_COLORS[s]||{}) : SHIFT_COLORS.inactive;
-                      // BH only acts as overlay badge when there is an on-call shift underneath
                       const bhOverlay = bh && rotaShift !== 'off' && !hol;
-                      // When BH with no rota shift, show BH colour
-                      const displayCol = (bh && rotaShift === 'off' && !hol)
-                        ? SHIFT_COLORS.bankholiday
-                        : col;
-
+                      const displayCol = (bh && rotaShift === 'off' && !hol) ? SHIFT_COLORS.bankholiday : col;
                       const key  = `${u.id}::${ds}`;
                       const isBulkSel=bulkSelected.has(key);
-                      const isEditing=editCell?.userId===u.id && editCell?.date===ds;
                       const dow=d.getDay(); const isWkd=dow===0||dow===6;
                       const isOvernight=(s==='evening'||s==='weekend');
-
-                      // Carry-over: check previous day's on-call shift
                       const prevDate=new Date(d); prevDate.setDate(d.getDate()-1);
                       const prevDs=prevDate.toISOString().slice(0,10);
                       const prevHol=holidays.find(h=>h.userId===u.id && prevDs>=h.start && prevDs<=h.end);
                       const prevRotaShift = rota[u.id]?.[prevDs] || 'off';
-                      // prevS for carry-over: use rota shift, not BH override
                       const prevS = prevHol ? 'holiday' : prevRotaShift;
-                      // Carry-over shows when:
-                      // - previous shift was overnight (evening/weekend)
-                      // - current display is off OR bank holiday (not on-call) OR holiday
                       const currentHasNoShift = (s==='off' || (bh && rotaShift==='off') || hol);
                       const hasCarryOver = (prevS==='evening'||prevS==='weekend') && currentHasNoShift && isOnCallActive(u,prevDs);
                       const prevCol=SHIFT_COLORS[prevS]||{};
+                      const isEditTarget = editCell?.userId===u.id && editCell?.date===ds;
 
                       return (
                         <td key={ds} style={{ textAlign:'center', padding:'3px 2px', background:isWkd?'rgba(255,255,255,0.02)':undefined, verticalAlign:'top' }}>
-                          {/* Inactive state */}
                           {!active && !hol && !bh && (
                             <div style={{ background:'rgba(30,41,59,0.6)', borderRadius:5, padding:'4px 4px', fontSize:9, color:'#334155', fontStyle:'italic', minWidth:30 }}>
                               {status?.type==='terminated'?'left':status?.type==='not_started'?'tbc':'—'}
                             </div>
                           )}
-                          {/* Active state */}
                           {(active || hol || bh) && (
                             <>
-                              {isEditing&&canEdit ? (
-                                <select autoFocus className="select" style={{ fontSize:10, padding:'2px 4px', width:100 }}
-                                  defaultValue={rotaShift} onBlur={e=>setCell(u.id,ds,e.target.value)} onChange={e=>setCell(u.id,ds,e.target.value)}>
-                                  <option value="off">Off</option>
-                                  {!isWkd&&<option value="daily">Daily (10–19)</option>}
-                                  {(dow>=1&&dow<=4)&&<option value="evening">WD OC (19→07)</option>}
-                                  <option value="weekend">WE OC (19→07)</option>
-                                </select>
-                              ) : (
-                                <>
-                                  <div onClick={()=>canEdit&&active&&toggleBulk(u.id,ds)}
-                                    onDoubleClick={()=>canEdit&&active&&setEditCell({userId:u.id,date:ds})}
-                                    title={`${displayCol.label||s}${bhOverlay?' + Bank Holiday':''}${upg&&!hol?' + Upgrade Day':''}${isOvernight?' →07:00':''}`}
-                                    style={{
-                                      background: displayCol.bg ? displayCol.bg+'55' : 'transparent',
-                                      color: displayCol.text||'#475569',
-                                      border: isBulkSel ? '2px solid #3b82f6' : displayCol.bg ? `1px solid ${displayCol.bg}88` : '1px solid transparent',
-                                      borderRadius:6, padding:'4px 4px', fontSize:9, fontWeight:800,
-                                      cursor:canEdit&&active?'pointer':'default', userSelect:'none',
-                                      lineHeight:1.3, minWidth:30, position:'relative',
-                                    }}>
-                                    {/* Main abbreviation — shows on-call shift, not BH */}
-                                    {hol ? 'H' : (SHIFT_ABBR[s]||'—')}
-                                    {/* BH badge when on-call runs through a bank holiday */}
-                                    {bhOverlay && (
-                                      <span style={{ position:'absolute', top:-4, right: upg&&!hol ? 12 : -4, background:'#7f1d1d', color:'#fca5a5', fontSize:7, fontWeight:800, padding:'1px 3px', borderRadius:3, lineHeight:1.2, border:'1px solid rgba(0,0,0,0.3)' }}>BH</span>
-                                    )}
-                                    {/* UD badge overlay */}
-                                    {upg && !hol && (
-                                      <span style={{ position:'absolute', top:-4, right:-4, background:'#991b1b', color:'#fecaca', fontSize:7, fontWeight:800, padding:'1px 3px', borderRadius:3, lineHeight:1.2, border:'1px solid rgba(0,0,0,0.3)' }}>UD</span>
-                                    )}
-                                    {isOvernight&&<div style={{ fontSize:7, color:displayCol.text, opacity:0.8, marginTop:1 }}>→07:00</div>}
-                                  </div>
-                                  {/* Carry-over: previous overnight shift continues into this day */}
-                                  {hasCarryOver&&(
-                                    <div style={{ marginTop:2, background:(prevCol.bg||'#166534')+'33', color:prevCol.text||'#bbf7d0', border:`1px solid ${prevCol.bg||'#166534'}66`, borderRadius:6, padding:'2px 4px', fontSize:8, fontWeight:600, lineHeight:1.3 }}>
-                                      ←07:00<div style={{ fontSize:7, opacity:0.8 }}>cont.</div>
-                                    </div>
-                                  )}
-                                </>
-                              )}
-                              {canEdit&&rotaShift!=='off'&&!isEditing&&active&&(
-                                <div style={{ display:'flex', justifyContent:'center', gap:3, marginTop:2 }}>
-                                  <button onClick={e=>{e.stopPropagation();toggleLock(u.id,ds);}} title={isLocked(u.id,ds)?'Unlock':'Lock from Clear/Generate'}
-                                    style={{ background:'none', border:'none', fontSize:9, cursor:'pointer', padding:0, color:isLocked(u.id,ds)?'#f59e0b':'rgba(255,255,255,0.25)', lineHeight:1 }}>
-                                    {isLocked(u.id,ds)?'🔒':'🔓'}
-                                  </button>
-                                  <button onClick={()=>deleteCell(u.id,ds)} style={{ background:'none', border:'none', color:'#ef4444', fontSize:8, cursor:'pointer', padding:0 }}>✕</button>
+                              <div
+                                onClick={e => {
+                                  if (!canEdit || !active) return;
+                                  if (e.ctrlKey || e.metaKey || e.shiftKey) { toggleBulk(u.id, ds); }
+                                  else { setEditCell(null); openCellEditor(u.id, ds, e); }
+                                }}
+                                title={canEdit&&active ? `${displayCol.label||s}${bhOverlay?' + Bank Holiday':''}${upg&&!hol?' + Upgrade Day':''}${isLocked(u.id,ds)?' 🔒 Locked':''} — click to edit, Ctrl+click to bulk select` : `${displayCol.label||s}`}
+                                style={{
+                                  background: isBulkSel ? 'rgba(59,130,246,0.25)' : displayCol.bg ? displayCol.bg+'55' : 'transparent',
+                                  color: displayCol.text||'#475569',
+                                  border: isBulkSel ? '2px solid #3b82f6' : isEditTarget ? `2px solid #94a3b8` : displayCol.bg ? `1px solid ${displayCol.bg}88` : '1px solid transparent',
+                                  borderRadius:6, padding:'4px 4px', fontSize:9, fontWeight:800,
+                                  cursor:canEdit&&active?'pointer':'default', userSelect:'none',
+                                  lineHeight:1.3, minWidth:30, position:'relative',
+                                  transition:'border-color 0.1s, background 0.1s',
+                                  boxShadow: isEditTarget ? '0 0 0 3px rgba(148,163,184,0.2)' : 'none',
+                                }}>
+                                {hol ? 'H' : (SHIFT_ABBR[s]||'—')}
+                                {bhOverlay && (
+                                  <span style={{ position:'absolute', top:-4, right:upg&&!hol?12:-4, background:'#7f1d1d', color:'#fca5a5', fontSize:7, fontWeight:800, padding:'1px 3px', borderRadius:3, lineHeight:1.2, border:'1px solid rgba(0,0,0,0.3)' }}>BH</span>
+                                )}
+                                {upg && !hol && (
+                                  <span style={{ position:'absolute', top:-4, right:-4, background:'#991b1b', color:'#fecaca', fontSize:7, fontWeight:800, padding:'1px 3px', borderRadius:3, lineHeight:1.2, border:'1px solid rgba(0,0,0,0.3)' }}>UD</span>
+                                )}
+                                {isLocked(u.id,ds) && (
+                                  <span style={{ position:'absolute', bottom:-3, right:-3, fontSize:7, lineHeight:1 }}>🔒</span>
+                                )}
+                                {isOvernight&&<div style={{ fontSize:7, color:displayCol.text, opacity:0.8, marginTop:1 }}>→07:00</div>}
+                              </div>
+                              {hasCarryOver&&(
+                                <div style={{ marginTop:2, background:(prevCol.bg||'#166534')+'33', color:prevCol.text||'#bbf7d0', border:`1px solid ${prevCol.bg||'#166534'}66`, borderRadius:6, padding:'2px 4px', fontSize:8, fontWeight:600, lineHeight:1.3 }}>
+                                  ←07:00<div style={{ fontSize:7, opacity:0.8 }}>cont.</div>
                                 </div>
                               )}
                             </>
@@ -784,7 +906,12 @@ export default function RotaPage({
           </div>
         );
       })}
-      {canEdit&&<div style={{ fontSize:11, color:'#475569', marginTop:8 }}>💡 Click a cell to select for bulk edit · Double-click to edit inline · Click ✕ to delete</div>}
+
+      {canEdit && bulkSelected.size === 0 && (
+        <div style={{ fontSize:11, color:'#334155', marginTop:8, textAlign:'center', padding:'8px 0', letterSpacing:'0.02em' }}>
+          💡 <strong style={{ color:'#475569' }}>Click</strong> cell to edit · <strong style={{ color:'#475569' }}>Ctrl+click</strong> to bulk select · <strong style={{ color:'#475569' }}>Click column header</strong> to select day · <strong style={{ color:'#475569' }}>Click name</strong> to select row
+        </div>
+      )}
     </div>
   );
 }
