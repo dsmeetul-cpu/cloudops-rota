@@ -1,6 +1,6 @@
 // src/UpgradeDays.js
 // CloudOps Rota — Upgrade Days Component
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 09th May 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 23rd May 2026
 
 import React, { useState } from 'react';
 
@@ -114,7 +114,7 @@ function statusBadge(status) {
 }
 
 // ── UpgradeDays ────────────────────────────────────────────────────────────
-export default function UpgradeDays({ users, upgrades, setUpgrades, isManager, currentUser, timesheets, setTimesheets }) {
+export default function UpgradeDays({ users, upgrades, setUpgrades, isManager, currentUser, timesheets, setTimesheets, setRota }) {
   const [showModal,         setShowModal]         = useState(false);
   const [editId,            setEditId]            = useState(null);
   const [form,              setForm]              = useState({ date: '', startTime: '', name: '', desc: '' });
@@ -167,6 +167,23 @@ export default function UpgradeDays({ users, upgrades, setUpgrades, isManager, c
   const save = () => {
     if (!form.date || !form.name || !form.startTime) return;
     if (editId) {
+      const existing = upgrades.find(u => u.id === editId);
+      // If the date changed, move all attendees' rota 'upgrade' entries to the new date
+      if (setRota && existing && existing.date !== form.date && (existing.attendees || []).length > 0) {
+        setRota(prev => {
+          const next = { ...prev };
+          (existing.attendees || []).forEach(uid => {
+            // Remove from old date
+            if (next[uid]?.[existing.date] === 'upgrade') {
+              next[uid] = { ...next[uid] };
+              delete next[uid][existing.date];
+            }
+            // Apply to new date
+            next[uid] = { ...(next[uid] || {}), [form.date]: 'upgrade' };
+          });
+          return next;
+        });
+      }
       setUpgrades(upgrades.map(u => u.id === editId ? { ...u, ...form } : u));
     } else {
       setUpgrades([...upgrades, { id: 'u' + Date.now(), ...form, attendees: [], engineerTimes: [] }]);
@@ -174,16 +191,78 @@ export default function UpgradeDays({ users, upgrades, setUpgrades, isManager, c
     setShowModal(false);
   };
 
-  const deleteOne  = (id, e) => { e.stopPropagation(); if (window.confirm('Delete this upgrade day?')) setUpgrades(upgrades.filter(u => u.id !== id)); };
-  const deleteBulk = () => { if (window.confirm(`Delete ${selected.size} upgrade days?`)) { setUpgrades(upgrades.filter(u => !selected.has(u.id))); clearAll(); } };
-
-  const toggleAttend = (upgradeId, uid) => setUpgrades(upgrades.map(u =>
-    u.id !== upgradeId ? u : {
-      ...u, attendees: (u.attendees || []).includes(uid)
-        ? (u.attendees || []).filter(x => x !== uid)
-        : [...(u.attendees || []), uid],
+  const deleteOne  = (id, e) => {
+    e.stopPropagation();
+    if (!window.confirm('Delete this upgrade day?')) return;
+    const upgrade = upgrades.find(u => u.id === id);
+    // Remove 'upgrade' rota entries for all attendees on this date
+    if (setRota && upgrade && (upgrade.attendees || []).length > 0) {
+      setRota(prev => {
+        const next = { ...prev };
+        (upgrade.attendees || []).forEach(uid => {
+          if (next[uid]?.[upgrade.date] === 'upgrade') {
+            next[uid] = { ...next[uid] };
+            delete next[uid][upgrade.date];
+          }
+        });
+        return next;
+      });
     }
-  ));
+    setUpgrades(upgrades.filter(u => u.id !== id));
+  };
+  const deleteBulk = () => {
+    if (!window.confirm(`Delete ${selected.size} upgrade days?`)) return;
+    const toDelete = upgrades.filter(u => selected.has(u.id));
+    // Remove 'upgrade' rota entries for all attendees of all deleted upgrade days
+    if (setRota && toDelete.length > 0) {
+      setRota(prev => {
+        const next = { ...prev };
+        toDelete.forEach(upgrade => {
+          (upgrade.attendees || []).forEach(uid => {
+            if (next[uid]?.[upgrade.date] === 'upgrade') {
+              next[uid] = { ...next[uid] };
+              delete next[uid][upgrade.date];
+            }
+          });
+        });
+        return next;
+      });
+    }
+    setUpgrades(upgrades.filter(u => !selected.has(u.id)));
+    clearAll();
+  };
+
+  const toggleAttend = (upgradeId, uid) => {
+    const upgrade    = upgrades.find(u => u.id === upgradeId);
+    if (!upgrade) return;
+    const isAttending = (upgrade.attendees || []).includes(uid);
+
+    setUpgrades(upgrades.map(u =>
+      u.id !== upgradeId ? u : {
+        ...u, attendees: isAttending
+          ? (u.attendees || []).filter(x => x !== uid)
+          : [...(u.attendees || []), uid],
+      }
+    ));
+
+    // ── Sync rota ────────────────────────────────────────────────────────
+    // Adding attendee  → mark their rota cell as 'upgrade' for the upgrade date
+    // Removing attendee → clear the 'upgrade' shift (only if it is still 'upgrade',
+    //   so we never accidentally wipe a manually-set shift that differs)
+    if (setRota) {
+      setRota(prev => {
+        const userRota = { ...(prev[uid] || {}) };
+        if (isAttending) {
+          // Removing: only clear if it was set to 'upgrade' by this system
+          if (userRota[upgrade.date] === 'upgrade') delete userRota[upgrade.date];
+        } else {
+          // Adding: stamp as 'upgrade'
+          userRota[upgrade.date] = 'upgrade';
+        }
+        return { ...prev, [uid]: userRota };
+      });
+    }
+  };
 
   const openComplete = (upgradeId) => { setCompleteForm({ upgradeId, completedTime: '' }); setShowCompleteModal(true); };
 
