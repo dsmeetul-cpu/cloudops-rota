@@ -1,5 +1,5 @@
 // src/Rota.js
-// CloudOps Rota — improved editing: floating cell editor, sticky toolbar, floating bulk bar
+// CloudOps Rota — improved editing: floating cell editor, sticky toolbar, floating bulk bar 23rd May 2026
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 
 // ── Constants ────────────────────────────────────────────────────────────────
