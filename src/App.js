@@ -1,6 +1,6 @@
 // src/App.js
 // CloudOps Rota — Full Production Build v2
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 22nd May 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 23rd May 2026
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
@@ -6625,7 +6625,7 @@ export default function App() {
       case 'timekeeping': return <TimeKeeping users={users} holidays={holidays} currentUser={currentUser} isManager={isManager} bankHolidays={UK_BANK_HOLIDAYS} timekeeping={timekeeping} setTimekeeping={setTimekeeping} driveToken={driveToken} extraStatuses={payconfig?.extraCheckInTypes || []} setExtraStatuses={types => setPayconfig(prev => ({ ...prev, extraCheckInTypes: types }))} />;
       case 'holidays':   return <Holidays {...props} />;
       case 'swaps':      return <ShiftSwaps {...props} driveToken={driveToken} />;
-      case 'upgrades':   return <UpgradeDays {...props} timesheets={timesheets} setTimesheets={setTimesheets} />;
+      case 'upgrades':   return <UpgradeDays {...props} timesheets={timesheets} setTimesheets={setTimesheets} setRota={setRota} />;
       case 'stress':     return <StressScore {...props} overtime={overtime} holidays={holidays} />;
       case 'toil':       return <TOIL users={users} timesheets={timesheets} toil={toil} setToil={setToil} currentUser={currentUser} isManager={isManager} />;
       case 'absence':    return <Absence {...props} driveToken={driveToken} />;
