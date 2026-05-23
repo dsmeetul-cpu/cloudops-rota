@@ -119,7 +119,7 @@ export default function UpgradeDays({ users, upgrades, setUpgrades, isManager, c
   const [editId,            setEditId]            = useState(null);
   const [form,              setForm]              = useState({ date: '', startTime: '', name: '', desc: '' });
   const [showCompleteModal, setShowCompleteModal] = useState(false);
-  const [completeForm,      setCompleteForm]      = useState({ upgradeId: '', completedTime: '' });
+  const [completeForm,      setCompleteForm]      = useState({ upgradeId: '', startTime: '', completedTime: '' });
   const [filter,            setFilter]            = useState('all');
   const [search,            setSearch]            = useState('');
   const { selected, toggleOne, clearAll } = useBulkSelect(upgrades);
@@ -264,13 +264,18 @@ export default function UpgradeDays({ users, upgrades, setUpgrades, isManager, c
     }
   };
 
-  const openComplete = (upgradeId) => { setCompleteForm({ upgradeId, completedTime: '' }); setShowCompleteModal(true); };
+  const openComplete = (upgradeId) => {
+    const upgrade = upgrades.find(u => u.id === upgradeId);
+    // Pre-fill start time from the upgrade, manager can override it
+    setCompleteForm({ upgradeId, startTime: upgrade?.startTime || '', completedTime: '' });
+    setShowCompleteModal(true);
+  };
 
   const saveCompletedTime = () => {
-    if (!completeForm.completedTime) return;
+    if (!completeForm.completedTime || !completeForm.startTime) return;
     const upgrade = upgrades.find(u => u.id === completeForm.upgradeId);
     if (!upgrade) return;
-    const [startH, startM] = (upgrade.startTime || '00:00').split(':').map(Number);
+    const [startH, startM] = completeForm.startTime.split(':').map(Number);
     const [endH,   endM]   = completeForm.completedTime.split(':').map(Number);
     let hrs = (endH * 60 + endM - startH * 60 - startM) / 60;
     if (hrs < 0) hrs += 24;
@@ -278,12 +283,28 @@ export default function UpgradeDays({ users, upgrades, setUpgrades, isManager, c
     const existing = (upgrade.engineerTimes || []).filter(e => e.engineerId !== currentUser);
     const newEntry = {
       engineerId:    currentUser,
+      startTime:     completeForm.startTime,
       completedTime: completeForm.completedTime,
       hours:         hrs,
       approved:      isManager,
       submittedAt:   new Date().toISOString(),
     };
-    setUpgrades(upgrades.map(u => u.id === completeForm.upgradeId ? { ...u, engineerTimes: [...existing, newEntry] } : u));
+    // If manager is logging time but wasn't added as an attendee yet, auto-add them
+    const updatedAttendees = (upgrade.attendees || []).includes(currentUser)
+      ? upgrade.attendees
+      : [...(upgrade.attendees || []), currentUser];
+    setUpgrades(upgrades.map(u =>
+      u.id === completeForm.upgradeId
+        ? { ...u, attendees: updatedAttendees, engineerTimes: [...existing, newEntry] }
+        : u
+    ));
+    // Sync rota so the manager's cell shows 'upgrade' on that date
+    if (setRota && !upgrade.attendees?.includes(currentUser)) {
+      setRota(prev => ({
+        ...prev,
+        [currentUser]: { ...(prev[currentUser] || {}), [upgrade.date]: 'upgrade' },
+      }));
+    }
     setShowCompleteModal(false);
     if (isManager) applyUpgradeToTimesheet(upgrade, newEntry);
   };
@@ -510,8 +531,8 @@ export default function UpgradeDays({ users, upgrades, setUpgrades, isManager, c
               </div>
             </div>
 
-            {/* ── Engineer: Log My Time ────────────────────────────── */}
-            {iAmAttending && (
+            {/* ── Log My Time (engineers when attending, managers always) ── */}
+            {(iAmAttending || isManager) && (
               <div style={{ borderTop: '1px solid var(--border)', paddingTop: 12, marginTop: 4 }}>
                 {myTime ? (
                   <div style={{
@@ -522,16 +543,14 @@ export default function UpgradeDays({ users, upgrades, setUpgrades, isManager, c
                   }}>
                     <div style={{ fontSize: 12, color: myTime.approved ? '#6ee7b7' : '#fcd34d' }}>
                       {myTime.approved
-                        ? `✅ Your time: finished at ${myTime.completedTime} — ${myTime.hours}h approved & added to payroll`
-                        : `⏳ Your time: finished at ${myTime.completedTime} — ${myTime.hours}h awaiting manager approval`}
+                        ? `✅ Your time: ${myTime.startTime || up.startTime} → ${myTime.completedTime} (${myTime.hours}h) — approved & added to payroll`
+                        : `⏳ Your time: ${myTime.startTime || up.startTime} → ${myTime.completedTime} (${myTime.hours}h) — awaiting approval`}
                     </div>
-                    {!myTime.approved && (
-                      <button className="btn btn-secondary btn-sm" onClick={() => openComplete(up.id)}>✏ Update</button>
-                    )}
+                    <button className="btn btn-secondary btn-sm" onClick={() => openComplete(up.id)}>✏ Update</button>
                   </div>
                 ) : (
                   <button className="btn btn-primary btn-sm" onClick={() => openComplete(up.id)}>
-                    🕐 Log My Completed Time
+                    🕐 Log {isManager ? 'Your' : 'My'} Completed Time
                   </button>
                 )}
               </div>
@@ -608,34 +627,60 @@ export default function UpgradeDays({ users, upgrades, setUpgrades, isManager, c
       {showCompleteModal && (() => {
         const up = upgrades.find(u => u.id === completeForm.upgradeId);
         let preview = null;
-        if (completeForm.completedTime && up?.startTime) {
-          const [sh, sm] = up.startTime.split(':').map(Number);
+        if (completeForm.startTime && completeForm.completedTime) {
+          const [sh, sm] = completeForm.startTime.split(':').map(Number);
           const [eh, em] = completeForm.completedTime.split(':').map(Number);
           let hrs = (eh * 60 + em - sh * 60 - sm) / 60;
           if (hrs < 0) hrs += 24;
           preview = Math.round(hrs * 4) / 4;
         }
         return (
-          <Modal title="Log My Completed Time" onClose={() => setShowCompleteModal(false)}>
+          <Modal title="Log Completed Time" onClose={() => setShowCompleteModal(false)}>
             <div style={{ padding: '10px 14px', borderRadius: 8, background: 'rgba(153,27,27,0.15)', border: '1px solid rgba(153,27,27,0.3)', marginBottom: 16 }}>
               <div style={{ fontSize: 14, fontWeight: 600, color: '#fecaca', marginBottom: 2 }}>{up?.name}</div>
               <div style={{ fontSize: 12, color: 'var(--text-muted)', fontFamily: 'DM Mono' }}>
-                📅 {up?.date} · 🕐 Started at {up?.startTime || 'N/A'}
+                📅 {up?.date}
               </div>
             </div>
-            <FormGroup label="Your Finish Time" hint="HH:MM — when you completed the upgrade">
-              <input className="input" type="time" value={completeForm.completedTime}
-                onChange={e => setCompleteForm({ ...completeForm, completedTime: e.target.value })} />
-            </FormGroup>
-            {preview !== null && (
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <FormGroup label="Start Time" hint="When you began">
+                <input
+                  className="input"
+                  type="time"
+                  value={completeForm.startTime}
+                  onChange={e => setCompleteForm({ ...completeForm, startTime: e.target.value })}
+                />
+              </FormGroup>
+              <FormGroup label="Finish Time" hint="When you completed">
+                <input
+                  className="input"
+                  type="time"
+                  value={completeForm.completedTime}
+                  onChange={e => setCompleteForm({ ...completeForm, completedTime: e.target.value })}
+                />
+              </FormGroup>
+            </div>
+            {preview !== null && preview > 0 && (
               <Alert type="info" style={{ marginBottom: 8 }}>
-                ⏱ Calculated duration: <strong>{preview}h</strong>
-                {isManager ? ' — will be auto-approved.' : ' — will be submitted for manager approval.'}
+                ⏱ Duration: <strong>{preview}h</strong>
+                {isManager ? ' — will be auto-approved and added to payroll.' : ' — will be submitted for manager approval.'}
               </Alert>
+            )}
+            {preview !== null && preview <= 0 && (
+              <Alert type="warning" style={{ marginBottom: 8 }}>
+                ⚠ Finish time must be after start time. If the upgrade ran past midnight, the duration will be calculated correctly.
+              </Alert>
+            )}
+            {(!completeForm.startTime || !completeForm.completedTime) && (
+              <Alert type="warning" style={{ marginBottom: 8 }}>⚠ Both start and finish time are required.</Alert>
             )}
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
               <button className="btn btn-secondary" onClick={() => setShowCompleteModal(false)}>Cancel</button>
-              <button className="btn btn-primary" onClick={saveCompletedTime} disabled={!completeForm.completedTime}>
+              <button
+                className="btn btn-primary"
+                onClick={saveCompletedTime}
+                disabled={!completeForm.startTime || !completeForm.completedTime}
+              >
                 Submit Time
               </button>
             </div>
