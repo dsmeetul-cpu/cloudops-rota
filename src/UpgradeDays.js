@@ -1,6 +1,6 @@
 // src/UpgradeDays.js
 // CloudOps Rota — Upgrade Days Component
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 23rd May 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 24th May 2026
 
 import React, { useState } from 'react';
 
@@ -120,6 +120,8 @@ export default function UpgradeDays({ users, upgrades, setUpgrades, isManager, c
   const [form,              setForm]              = useState({ date: '', startTime: '', name: '', desc: '' });
   const [showCompleteModal, setShowCompleteModal] = useState(false);
   const [completeForm,      setCompleteForm]      = useState({ upgradeId: '', startTime: '', completedTime: '' });
+  const [showEditEngModal,  setShowEditEngModal]  = useState(false);
+  const [editEngForm,       setEditEngForm]       = useState({ upgradeId: '', engineerId: '', startTime: '', completedTime: '' });
   const [filter,            setFilter]            = useState('all');
   const [search,            setSearch]            = useState('');
   const { selected, toggleOne, clearAll } = useBulkSelect(upgrades);
@@ -266,9 +268,50 @@ export default function UpgradeDays({ users, upgrades, setUpgrades, isManager, c
 
   const openComplete = (upgradeId) => {
     const upgrade = upgrades.find(u => u.id === upgradeId);
-    // Pre-fill start time from the upgrade, manager can override it
     setCompleteForm({ upgradeId, startTime: upgrade?.startTime || '', completedTime: '' });
     setShowCompleteModal(true);
+  };
+
+  // Manager edits any engineer's logged time
+  const openEditEngineerTime = (upgradeId, engineerId) => {
+    const upgrade = upgrades.find(u => u.id === upgradeId);
+    const entry   = (upgrade?.engineerTimes || []).find(e => e.engineerId === engineerId);
+    setEditEngForm({
+      upgradeId,
+      engineerId,
+      startTime:     entry?.startTime     || upgrade?.startTime || '',
+      completedTime: entry?.completedTime || '',
+    });
+    setShowEditEngModal(true);
+  };
+
+  const saveEngineerTime = () => {
+    if (!editEngForm.startTime || !editEngForm.completedTime) return;
+    const upgrade = upgrades.find(u => u.id === editEngForm.upgradeId);
+    if (!upgrade) return;
+    const [sh, sm] = editEngForm.startTime.split(':').map(Number);
+    const [eh, em] = editEngForm.completedTime.split(':').map(Number);
+    let hrs = (eh * 60 + em - sh * 60 - sm) / 60;
+    if (hrs < 0) hrs += 24;
+    hrs = Math.round(hrs * 4) / 4;
+    const existing = (upgrade.engineerTimes || []).filter(e => e.engineerId !== editEngForm.engineerId);
+    const prev     = (upgrade.engineerTimes || []).find(e => e.engineerId === editEngForm.engineerId);
+    const updated  = {
+      ...(prev || { engineerId: editEngForm.engineerId, submittedAt: new Date().toISOString() }),
+      startTime:     editEngForm.startTime,
+      completedTime: editEngForm.completedTime,
+      hours:         hrs,
+      approved:      true, // manager edit is always approved
+      approvedAt:    new Date().toISOString(),
+    };
+    setUpgrades(upgrades.map(u =>
+      u.id === editEngForm.upgradeId
+        ? { ...u, engineerTimes: [...existing, updated] }
+        : u
+    ));
+    // Apply to timesheet automatically
+    applyUpgradeToTimesheet(upgrade, updated);
+    setShowEditEngModal(false);
   };
 
   const saveCompletedTime = () => {
@@ -507,7 +550,7 @@ export default function UpgradeDays({ users, upgrades, setUpgrades, isManager, c
                         border: `1px solid ${attending ? (eTime?.approved ? '#10b981' : eTime ? '#f59e0b' : 'var(--accent3)') : 'var(--border)'}`,
                         background: attending ? (eTime?.approved ? 'rgba(16,185,129,.1)' : eTime ? 'rgba(245,158,11,.08)' : 'rgba(0,194,255,.07)') : 'var(--bg-card2)',
                         cursor: isManager ? 'pointer' : 'default',
-                        transition: 'all 0.15s',
+                        transition: 'all 0.15s', position: 'relative',
                       }}>
                       <Avatar user={u} size={26} />
                       <div style={{ flex: 1, minWidth: 0 }}>
@@ -517,7 +560,7 @@ export default function UpgradeDays({ users, upgrades, setUpgrades, isManager, c
                         </div>
                         {eTime ? (
                           <div style={{ fontSize: 10, fontFamily: 'DM Mono', color: eTime.approved ? '#6ee7b7' : '#fcd34d', marginTop: 1 }}>
-                            {eTime.completedTime} · {eTime.hours}h · {eTime.approved ? '✅' : '⏳'}
+                            {eTime.startTime || up.startTime} → {eTime.completedTime} · {eTime.hours}h · {eTime.approved ? '✅' : '⏳'}
                           </div>
                         ) : attending ? (
                           <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 1 }}>No time logged</div>
@@ -525,6 +568,19 @@ export default function UpgradeDays({ users, upgrades, setUpgrades, isManager, c
                           <div style={{ fontSize: 10, color: 'var(--border)', marginTop: 1 }}>Not attending</div>
                         )}
                       </div>
+                      {/* Manager edit button — only on cards with logged time */}
+                      {isManager && attending && (
+                        <button
+                          onClick={e => { e.stopPropagation(); openEditEngineerTime(up.id, u.id); }}
+                          title="Edit this engineer's logged time"
+                          style={{
+                            flexShrink: 0, background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)',
+                            borderRadius: 5, padding: '3px 6px', cursor: 'pointer', fontSize: 11, color: 'var(--text-muted)',
+                            lineHeight: 1,
+                          }}>
+                          ✏
+                        </button>
+                      )}
                     </div>
                   );
                 })}
@@ -575,12 +631,15 @@ export default function UpgradeDays({ users, upgrades, setUpgrades, isManager, c
                         <div style={{ flex: 1 }}>
                           <div style={{ fontSize: 13, fontWeight: 500 }}>{eng?.name}</div>
                           <div style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'DM Mono' }}>
-                            Finished at <strong style={{ color: 'var(--text-secondary)' }}>{e.completedTime}</strong>
+                            <strong style={{ color: 'var(--text-secondary)' }}>{e.startTime || up.startTime}</strong>
+                            {' → '}
+                            <strong style={{ color: 'var(--text-secondary)' }}>{e.completedTime}</strong>
                             {' · '}
                             <strong style={{ color: '#fcd34d' }}>{e.hours}h</strong>
                           </div>
                         </div>
                         <div style={{ display: 'flex', gap: 6 }}>
+                          <button className="btn btn-secondary btn-sm" onClick={() => openEditEngineerTime(up.id, e.engineerId)} title="Edit times">✏ Edit</button>
                           <button className="btn btn-success btn-sm" onClick={() => approveTime(up.id, e.engineerId, true)}>✓ Approve</button>
                           <button className="btn btn-danger  btn-sm" onClick={() => approveTime(up.id, e.engineerId, false)}>✗ Reject</button>
                         </div>
@@ -687,6 +746,59 @@ export default function UpgradeDays({ users, upgrades, setUpgrades, isManager, c
           </Modal>
         );
       })()}
+
+      {/* ── Edit Engineer Time Modal (manager only) ──────────────────────── */}
+      {showEditEngModal && isManager && (() => {
+        const up  = upgrades.find(u => u.id === editEngForm.upgradeId);
+        const eng = users.find(u => u.id === editEngForm.engineerId);
+        let preview = null;
+        if (editEngForm.startTime && editEngForm.completedTime) {
+          const [sh, sm] = editEngForm.startTime.split(':').map(Number);
+          const [eh, em] = editEngForm.completedTime.split(':').map(Number);
+          let hrs = (eh * 60 + em - sh * 60 - sm) / 60;
+          if (hrs < 0) hrs += 24;
+          preview = Math.round(hrs * 4) / 4;
+        }
+        return (
+          <Modal title="Edit Engineer Time" onClose={() => setShowEditEngModal(false)}>
+            <div style={{ display:'flex', gap:12, alignItems:'center', padding:'10px 14px', borderRadius:8, background:'var(--bg-card2)', border:'1px solid var(--border)', marginBottom:16 }}>
+              <Avatar user={eng} size={36} />
+              <div>
+                <div style={{ fontSize:14, fontWeight:600, color:'#e2e8f0' }}>{eng?.name}</div>
+                <div style={{ fontSize:12, color:'var(--text-muted)' }}>{up?.name}</div>
+                <div style={{ fontSize:11, color:'var(--text-muted)', fontFamily:'DM Mono' }}>📅 {up?.date}</div>
+              </div>
+            </div>
+            <Alert type="warning" style={{ marginBottom:14 }}>
+              ⚠ Saving will immediately approve this time and apply it to payroll.
+            </Alert>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+              <FormGroup label="Start Time">
+                <input className="input" type="time" value={editEngForm.startTime}
+                  onChange={e => setEditEngForm({ ...editEngForm, startTime: e.target.value })} />
+              </FormGroup>
+              <FormGroup label="Finish Time">
+                <input className="input" type="time" value={editEngForm.completedTime}
+                  onChange={e => setEditEngForm({ ...editEngForm, completedTime: e.target.value })} />
+              </FormGroup>
+            </div>
+            {preview !== null && preview > 0 && (
+              <Alert type="success" style={{ marginBottom:8 }}>✅ Duration: <strong>{preview}h</strong> — will be approved &amp; added to payroll.</Alert>
+            )}
+            {preview !== null && preview <= 0 && (
+              <Alert type="warning" style={{ marginBottom:8 }}>⚠ Finish time must be after start time (overnight calculated correctly).</Alert>
+            )}
+            <div style={{ display:'flex', gap:8, justifyContent:'flex-end', marginTop:16 }}>
+              <button className="btn btn-secondary" onClick={() => setShowEditEngModal(false)}>Cancel</button>
+              <button className="btn btn-primary" onClick={saveEngineerTime}
+                disabled={!editEngForm.startTime || !editEngForm.completedTime || !preview || preview <= 0}>
+                💾 Save &amp; Approve
+              </button>
+            </div>
+          </Modal>
+        );
+      })()}
+
     </div>
   );
 }
