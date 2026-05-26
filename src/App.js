@@ -1,6 +1,6 @@
 // src/App.js
 // CloudOps Rota — Full Production Build v2
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 23rd May 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 18th May 2026
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
@@ -6260,7 +6260,7 @@ export default function App() {
   useEffect(() => { save('holidays', holidays); },         [holidays]);
   useEffect(() => { save('incidents', incidents); },       [incidents]);
   useEffect(() => { save('timesheets', timesheets); },     [timesheets]);
-  useEffect(() => { save('upgrades', upgrades); },         [upgrades]);
+  // upgrades save is owned by UpgradeDays.js via its own persistUpgrades()
   useEffect(() => { save('wiki', wiki); },                 [wiki]);
   useEffect(() => { save('glossary', glossary); },         [glossary]);
   useEffect(() => { save('contacts', contacts); },         [contacts]);
@@ -6625,7 +6625,7 @@ export default function App() {
       case 'timekeeping': return <TimeKeeping users={users} holidays={holidays} currentUser={currentUser} isManager={isManager} bankHolidays={UK_BANK_HOLIDAYS} timekeeping={timekeeping} setTimekeeping={setTimekeeping} driveToken={driveToken} extraStatuses={payconfig?.extraCheckInTypes || []} setExtraStatuses={types => setPayconfig(prev => ({ ...prev, extraCheckInTypes: types }))} />;
       case 'holidays':   return <Holidays {...props} />;
       case 'swaps':      return <ShiftSwaps {...props} driveToken={driveToken} />;
-      case 'upgrades':   return <UpgradeDays {...props} timesheets={timesheets} setTimesheets={setTimesheets} setRota={setRota} />;
+      case 'upgrades':   return <UpgradeDays {...props} timesheets={timesheets} setTimesheets={setTimesheets} setRota={setRota} driveToken={driveToken} />;
       case 'stress':     return <StressScore {...props} overtime={overtime} holidays={holidays} />;
       case 'toil':       return <TOIL users={users} timesheets={timesheets} toil={toil} setToil={setToil} currentUser={currentUser} isManager={isManager} />;
       case 'absence':    return <Absence {...props} driveToken={driveToken} />;
