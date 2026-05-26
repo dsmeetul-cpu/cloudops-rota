@@ -1,6 +1,6 @@
 // src/UpgradeDays.js
 // CloudOps Rota — Upgrade Days Component
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 09th May 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 26th May 2026
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { driveRead, driveWrite } from './hooks/useGoogleDrive';
@@ -412,10 +412,12 @@ export default function UpgradeDays({ users, upgrades, setUpgrades, isManager, c
     <div>
       <PageHeader
         title="Upgrade Days"
-        sub="Schedule and track system upgrade days — hours auto-added to payroll on approval"
+        sub={<span style={{ display:'flex', alignItems:'center', gap:10 }}>
+          Schedule and track system upgrade days — hours auto-added to payroll on approval
+          {isSaving && <span style={{ fontSize:10, color:'var(--text-muted)', fontFamily:'DM Mono' }}>💾 saving…</span>}
+          {!isSaving && driveToken && <span style={{ fontSize:10, color:'#22c55e', fontFamily:'DM Mono' }}>✓ synced</span>}
+        </span>}
         actions={<>
-          {isSaving && <span style={{ fontSize: 11, color: '#64748b', display: 'flex', alignItems: 'center', gap: 5 }}>💾 Saving…</span>}
-          {!isSaving && driveToken && <span style={{ fontSize: 11, color: '#22c55e', display: 'flex', alignItems: 'center', gap: 5 }}>✓ Synced</span>}
           {isManager && selected.size > 0 && (
             <button className="btn btn-danger btn-sm" onClick={deleteBulk}>🗑 Delete {selected.size}</button>
           )}
@@ -588,11 +590,23 @@ export default function UpgradeDays({ users, upgrades, setUpgrades, isManager, c
                           onClick={e => { e.stopPropagation(); openEditEngineerTime(up.id, u.id); }}
                           title="Edit this engineer's logged time"
                           style={{
-                            flexShrink: 0, background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)',
-                            borderRadius: 5, padding: '3px 6px', cursor: 'pointer', fontSize: 11, color: 'var(--text-muted)',
-                            lineHeight: 1,
-                          }}>
-                          ✏
+                            flexShrink: 0,
+                            background: 'rgba(255,255,255,0.07)',
+                            border: '1px solid rgba(255,255,255,0.12)',
+                            borderRadius: 5,
+                            padding: '3px 8px',
+                            cursor: 'pointer',
+                            fontSize: 10,
+                            color: 'var(--text-muted)',
+                            fontFamily: 'DM Sans, sans-serif',
+                            fontWeight: 600,
+                            lineHeight: 1.4,
+                            transition: 'all 0.12s',
+                          }}
+                          onMouseEnter={e => { e.currentTarget.style.color = 'var(--text-secondary)'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.25)'; }}
+                          onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-muted)'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.12)'; }}
+                        >
+                          Edit
                         </button>
                       )}
                     </div>
@@ -653,7 +667,7 @@ export default function UpgradeDays({ users, upgrades, setUpgrades, isManager, c
                           </div>
                         </div>
                         <div style={{ display: 'flex', gap: 6 }}>
-                          <button className="btn btn-secondary btn-sm" onClick={() => openEditEngineerTime(up.id, e.engineerId)} title="Edit times">✏ Edit</button>
+                          <button className="btn btn-secondary btn-sm" onClick={() => openEditEngineerTime(up.id, e.engineerId)}>Edit Times</button>
                           <button className="btn btn-success btn-sm" onClick={() => approveTime(up.id, e.engineerId, true)}>✓ Approve</button>
                           <button className="btn btn-danger  btn-sm" onClick={() => approveTime(up.id, e.engineerId, false)}>✗ Reject</button>
                         </div>
