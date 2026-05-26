@@ -1,8 +1,9 @@
 // src/UpgradeDays.js
 // CloudOps Rota — Upgrade Days Component
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 24th May 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 09th May 2026
 
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { driveRead, driveWrite } from './hooks/useGoogleDrive';
 
 // ── Shared UI primitives ───────────────────────────────────────────────────
 function Avatar({ user, size = 32 }) {
@@ -114,7 +115,7 @@ function statusBadge(status) {
 }
 
 // ── UpgradeDays ────────────────────────────────────────────────────────────
-export default function UpgradeDays({ users, upgrades, setUpgrades, isManager, currentUser, timesheets, setTimesheets, setRota }) {
+export default function UpgradeDays({ users, upgrades, setUpgrades, isManager, currentUser, timesheets, setTimesheets, setRota, driveToken }) {
   const [showModal,         setShowModal]         = useState(false);
   const [editId,            setEditId]            = useState(null);
   const [form,              setForm]              = useState({ date: '', startTime: '', name: '', desc: '' });
@@ -124,7 +125,52 @@ export default function UpgradeDays({ users, upgrades, setUpgrades, isManager, c
   const [editEngForm,       setEditEngForm]       = useState({ upgradeId: '', engineerId: '', startTime: '', completedTime: '' });
   const [filter,            setFilter]            = useState('all');
   const [search,            setSearch]            = useState('');
+  const [isSaving,          setIsSaving]          = useState(false);
+  const saveInProgress = useRef(false);
+  const pendingSave    = useRef(null);
   const { selected, toggleOne, clearAll } = useBulkSelect(upgrades);
+
+  // ── Direct Drive persistence ────────────────────────────────────────────
+  // Owns the save/load for upgrades.json independently of App.js's useEffect
+  // chain, which had stale-closure timing bugs causing silent write failures.
+  const persistUpgrades = useCallback(async (data) => {
+    if (!driveToken) return;
+    if (saveInProgress.current) { pendingSave.current = data; return; }
+    saveInProgress.current = true;
+    setIsSaving(true);
+    try {
+      await driveWrite(driveToken, 'upgrades', data);
+    } catch (e) {
+      console.warn('UpgradeDays: Drive write failed', e?.message || e);
+    } finally {
+      saveInProgress.current = false;
+      setIsSaving(false);
+      if (pendingSave.current) {
+        const next = pendingSave.current;
+        pendingSave.current = null;
+        persistUpgrades(next);
+      }
+    }
+  }, [driveToken]);
+
+  // ── Defensive load on mount / token change ──────────────────────────────
+  // Re-reads upgrades.json from Drive whenever a token becomes available,
+  // ensuring freshest data is shown even if App.js's initial load was stale.
+  useEffect(() => {
+    if (!driveToken) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await driveRead(driveToken, 'upgrades');
+        if (!cancelled && Array.isArray(data) && data.length > 0) {
+          setUpgrades(data);
+        }
+      } catch (e) {
+        console.warn('UpgradeDays: Drive read failed', e?.message || e);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [driveToken, setUpgrades]);
 
   const today = new Date().toISOString().slice(0, 10);
 
@@ -168,69 +214,62 @@ export default function UpgradeDays({ users, upgrades, setUpgrades, isManager, c
 
   const save = () => {
     if (!form.date || !form.name || !form.startTime) return;
+    let next;
     if (editId) {
       const existing = upgrades.find(u => u.id === editId);
-      // If the date changed, move all attendees' rota 'upgrade' entries to the new date
       if (setRota && existing && existing.date !== form.date && (existing.attendees || []).length > 0) {
         setRota(prev => {
-          const next = { ...prev };
+          const n = { ...prev };
           (existing.attendees || []).forEach(uid => {
-            // Remove from old date
-            if (next[uid]?.[existing.date] === 'upgrade') {
-              next[uid] = { ...next[uid] };
-              delete next[uid][existing.date];
-            }
-            // Apply to new date
-            next[uid] = { ...(next[uid] || {}), [form.date]: 'upgrade' };
+            if (n[uid]?.[existing.date] === 'upgrade') { n[uid] = { ...n[uid] }; delete n[uid][existing.date]; }
+            n[uid] = { ...(n[uid] || {}), [form.date]: 'upgrade' };
           });
-          return next;
+          return n;
         });
       }
-      setUpgrades(upgrades.map(u => u.id === editId ? { ...u, ...form } : u));
+      next = upgrades.map(u => u.id === editId ? { ...u, ...form } : u);
     } else {
-      setUpgrades([...upgrades, { id: 'u' + Date.now(), ...form, attendees: [], engineerTimes: [] }]);
+      next = [...upgrades, { id: 'u' + Date.now(), ...form, attendees: [], engineerTimes: [] }];
     }
+    setUpgrades(next);
+    persistUpgrades(next);
     setShowModal(false);
   };
 
-  const deleteOne  = (id, e) => {
+  const deleteOne = (id, e) => {
     e.stopPropagation();
     if (!window.confirm('Delete this upgrade day?')) return;
     const upgrade = upgrades.find(u => u.id === id);
-    // Remove 'upgrade' rota entries for all attendees on this date
     if (setRota && upgrade && (upgrade.attendees || []).length > 0) {
       setRota(prev => {
         const next = { ...prev };
         (upgrade.attendees || []).forEach(uid => {
-          if (next[uid]?.[upgrade.date] === 'upgrade') {
-            next[uid] = { ...next[uid] };
-            delete next[uid][upgrade.date];
-          }
+          if (next[uid]?.[upgrade.date] === 'upgrade') { next[uid] = { ...next[uid] }; delete next[uid][upgrade.date]; }
         });
         return next;
       });
     }
-    setUpgrades(upgrades.filter(u => u.id !== id));
+    const next = upgrades.filter(u => u.id !== id);
+    setUpgrades(next);
+    persistUpgrades(next);
   };
   const deleteBulk = () => {
     if (!window.confirm(`Delete ${selected.size} upgrade days?`)) return;
     const toDelete = upgrades.filter(u => selected.has(u.id));
-    // Remove 'upgrade' rota entries for all attendees of all deleted upgrade days
     if (setRota && toDelete.length > 0) {
       setRota(prev => {
-        const next = { ...prev };
+        const n = { ...prev };
         toDelete.forEach(upgrade => {
           (upgrade.attendees || []).forEach(uid => {
-            if (next[uid]?.[upgrade.date] === 'upgrade') {
-              next[uid] = { ...next[uid] };
-              delete next[uid][upgrade.date];
-            }
+            if (n[uid]?.[upgrade.date] === 'upgrade') { n[uid] = { ...n[uid] }; delete n[uid][upgrade.date]; }
           });
         });
-        return next;
+        return n;
       });
     }
-    setUpgrades(upgrades.filter(u => !selected.has(u.id)));
+    const next = upgrades.filter(u => !selected.has(u.id));
+    setUpgrades(next);
+    persistUpgrades(next);
     clearAll();
   };
 
@@ -238,29 +277,20 @@ export default function UpgradeDays({ users, upgrades, setUpgrades, isManager, c
     const upgrade    = upgrades.find(u => u.id === upgradeId);
     if (!upgrade) return;
     const isAttending = (upgrade.attendees || []).includes(uid);
-
-    setUpgrades(upgrades.map(u =>
+    const next = upgrades.map(u =>
       u.id !== upgradeId ? u : {
         ...u, attendees: isAttending
           ? (u.attendees || []).filter(x => x !== uid)
           : [...(u.attendees || []), uid],
       }
-    ));
-
-    // ── Sync rota ────────────────────────────────────────────────────────
-    // Adding attendee  → mark their rota cell as 'upgrade' for the upgrade date
-    // Removing attendee → clear the 'upgrade' shift (only if it is still 'upgrade',
-    //   so we never accidentally wipe a manually-set shift that differs)
+    );
+    setUpgrades(next);
+    persistUpgrades(next);
     if (setRota) {
       setRota(prev => {
         const userRota = { ...(prev[uid] || {}) };
-        if (isAttending) {
-          // Removing: only clear if it was set to 'upgrade' by this system
-          if (userRota[upgrade.date] === 'upgrade') delete userRota[upgrade.date];
-        } else {
-          // Adding: stamp as 'upgrade'
-          userRota[upgrade.date] = 'upgrade';
-        }
+        if (isAttending) { if (userRota[upgrade.date] === 'upgrade') delete userRota[upgrade.date]; }
+        else { userRota[upgrade.date] = 'upgrade'; }
         return { ...prev, [uid]: userRota };
       });
     }
@@ -298,18 +328,14 @@ export default function UpgradeDays({ users, upgrades, setUpgrades, isManager, c
     const prev     = (upgrade.engineerTimes || []).find(e => e.engineerId === editEngForm.engineerId);
     const updated  = {
       ...(prev || { engineerId: editEngForm.engineerId, submittedAt: new Date().toISOString() }),
-      startTime:     editEngForm.startTime,
-      completedTime: editEngForm.completedTime,
-      hours:         hrs,
-      approved:      true, // manager edit is always approved
-      approvedAt:    new Date().toISOString(),
+      startTime: editEngForm.startTime, completedTime: editEngForm.completedTime,
+      hours: hrs, approved: true, approvedAt: new Date().toISOString(),
     };
-    setUpgrades(upgrades.map(u =>
-      u.id === editEngForm.upgradeId
-        ? { ...u, engineerTimes: [...existing, updated] }
-        : u
-    ));
-    // Apply to timesheet automatically
+    const next = upgrades.map(u =>
+      u.id === editEngForm.upgradeId ? { ...u, engineerTimes: [...existing, updated] } : u
+    );
+    setUpgrades(next);
+    persistUpgrades(next);
     applyUpgradeToTimesheet(upgrade, updated);
     setShowEditEngModal(false);
   };
@@ -324,29 +350,13 @@ export default function UpgradeDays({ users, upgrades, setUpgrades, isManager, c
     if (hrs < 0) hrs += 24;
     hrs = Math.round(hrs * 4) / 4;
     const existing = (upgrade.engineerTimes || []).filter(e => e.engineerId !== currentUser);
-    const newEntry = {
-      engineerId:    currentUser,
-      startTime:     completeForm.startTime,
-      completedTime: completeForm.completedTime,
-      hours:         hrs,
-      approved:      isManager,
-      submittedAt:   new Date().toISOString(),
-    };
-    // If manager is logging time but wasn't added as an attendee yet, auto-add them
-    const updatedAttendees = (upgrade.attendees || []).includes(currentUser)
-      ? upgrade.attendees
-      : [...(upgrade.attendees || []), currentUser];
-    setUpgrades(upgrades.map(u =>
-      u.id === completeForm.upgradeId
-        ? { ...u, attendees: updatedAttendees, engineerTimes: [...existing, newEntry] }
-        : u
-    ));
-    // Sync rota so the manager's cell shows 'upgrade' on that date
+    const newEntry = { engineerId: currentUser, startTime: completeForm.startTime, completedTime: completeForm.completedTime, hours: hrs, approved: isManager, submittedAt: new Date().toISOString() };
+    const updatedAttendees = (upgrade.attendees || []).includes(currentUser) ? upgrade.attendees : [...(upgrade.attendees || []), currentUser];
+    const next = upgrades.map(u => u.id === completeForm.upgradeId ? { ...u, attendees: updatedAttendees, engineerTimes: [...existing, newEntry] } : u);
+    setUpgrades(next);
+    persistUpgrades(next);
     if (setRota && !upgrade.attendees?.includes(currentUser)) {
-      setRota(prev => ({
-        ...prev,
-        [currentUser]: { ...(prev[currentUser] || {}), [upgrade.date]: 'upgrade' },
-      }));
+      setRota(prev => ({ ...prev, [currentUser]: { ...(prev[currentUser] || {}), [upgrade.date]: 'upgrade' } }));
     }
     setShowCompleteModal(false);
     if (isManager) applyUpgradeToTimesheet(upgrade, newEntry);
@@ -378,12 +388,14 @@ export default function UpgradeDays({ users, upgrades, setUpgrades, isManager, c
   const approveTime = (upgradeId, engineerId, approve) => {
     const upgrade = upgrades.find(u => u.id === upgradeId);
     if (!upgrade) return;
-    const updated = (upgrade.engineerTimes || []).map(e =>
+    const updatedTimes = (upgrade.engineerTimes || []).map(e =>
       e.engineerId === engineerId ? { ...e, approved: approve, reviewedAt: new Date().toISOString() } : e
     );
-    setUpgrades(upgrades.map(u => u.id === upgradeId ? { ...u, engineerTimes: updated } : u));
+    const next = upgrades.map(u => u.id === upgradeId ? { ...u, engineerTimes: updatedTimes } : u);
+    setUpgrades(next);
+    persistUpgrades(next);
     if (approve) {
-      const entry = updated.find(e => e.engineerId === engineerId);
+      const entry = updatedTimes.find(e => e.engineerId === engineerId);
       if (entry) applyUpgradeToTimesheet(upgrade, entry);
     } else {
       if (setTimesheets) {
@@ -402,6 +414,8 @@ export default function UpgradeDays({ users, upgrades, setUpgrades, isManager, c
         title="Upgrade Days"
         sub="Schedule and track system upgrade days — hours auto-added to payroll on approval"
         actions={<>
+          {isSaving && <span style={{ fontSize: 11, color: '#64748b', display: 'flex', alignItems: 'center', gap: 5 }}>💾 Saving…</span>}
+          {!isSaving && driveToken && <span style={{ fontSize: 11, color: '#22c55e', display: 'flex', alignItems: 'center', gap: 5 }}>✓ Synced</span>}
           {isManager && selected.size > 0 && (
             <button className="btn btn-danger btn-sm" onClick={deleteBulk}>🗑 Delete {selected.size}</button>
           )}
