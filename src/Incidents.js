@@ -1,6 +1,6 @@
 // src/Incidents.js
 // CloudOps Rota — Incidents Component
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 9th May 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 27th May 2026
 
 import React, { useState, useRef, useEffect } from 'react';
 
@@ -446,6 +446,7 @@ export default function Incidents({ users, incidents, setIncidents, currentUser,
       notes:      `Incident: ${alertName} (${incDate}, ${hours}h)`,
       autoLogged: true,
       incidentId: incId,
+      date:       incDate,   // explicit ISO date for payroll range filtering
     };
   };
 
