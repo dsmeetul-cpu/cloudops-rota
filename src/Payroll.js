@@ -3,7 +3,7 @@
 // Manager-only payroll calculations, Excel export, cycle management
 
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
-import { UK_BANK_HOLIDAYS } from './defaultData';
+import { UK_BANK_HOLIDAYS } from './utils/defaults';
 
 // ── On-call pay constants ─────────────────────────────────────────────────────
 const ONCALL_STANDBY_RATE      = 5;    // £/hr flat
