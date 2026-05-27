@@ -429,6 +429,47 @@ export default function Incidents({ users, incidents, setIncidents, currentUser,
   const openAdd  = ()        => { setForm({ ...EMPTY_FORM, assigned_to: currentUser }); setEditInc(null); setShowModal(true); };
   const openEdit = (inc, e)  => { e.stopPropagation(); setForm({ ...inc }); setEditInc(inc.id); setShowModal(true); };
 
+  // ── Timesheet helpers ─────────────────────────────────────────────────────
+  // Builds one timesheet row for an incident — worked hours only (not standby)
+  const makeTimesheetEntry = (incId, alertName, incDate, hours) => {
+    const dow  = new Date(incDate + 'T12:00:00').getDay();
+    const isWE = dow === 0 || dow === 6;
+    return {
+      week:           `INC ${incId}`,
+      weekday_oncall: 0,
+      weekend_oncall: 0,
+      // Incident response = actively worked hours, not standby
+      worked_wd:  isWE ? 0 : hours,
+      worked_we:  isWE ? hours : 0,
+      standby_wd: 0,
+      standby_we: 0,
+      notes:      `Incident: ${alertName} (${incDate}, ${hours}h)`,
+      autoLogged: true,
+      incidentId: incId,
+    };
+  };
+
+  // Remove any existing timesheet row for this incident from one user
+  const removeIncidentTimesheet = (incId, userId) => {
+    if (!setTimesheets || !userId) return;
+    const label = `INC ${incId}`;
+    setTimesheets(prev => ({
+      ...prev,
+      [userId]: (prev[userId] || []).filter(e => e.week !== label),
+    }));
+  };
+
+  // Add (or replace) timesheet row for this incident for one user
+  const addIncidentTimesheet = (incId, userId, alertName, incDate, hours) => {
+    if (!setTimesheets || !userId || !hours) return;
+    const entry = makeTimesheetEntry(incId, alertName, incDate, +hours);
+    setTimesheets(prev => ({
+      ...prev,
+      [userId]: [entry, ...(prev[userId] || []).filter(e => e.week !== `INC ${incId}`)],
+    }));
+  };
+
+  // ── Save ───────────────────────────────────────────────────────────────────
   const save = () => {
     if (!form.alert_name) return;
     const combinedDesc = [
@@ -438,10 +479,35 @@ export default function Incidents({ users, incidents, setIncidents, currentUser,
     ].filter(Boolean).join('');
 
     if (editInc) {
+      // ── Edit path ──────────────────────────────────────────────────────────
+      const oldInc  = incidents.find(i => i.id === editInc);
+      const oldHrs  = +(oldInc?.duration_hours || 0);
+      const newHrs  = +(form.duration_hours    || 0);
+      const oldUid  = oldInc?.assigned_to;
+      const newUid  = form.assigned_to;
+      const incDate = (oldInc?.date || new Date().toISOString()).slice(0, 10);
+
       setIncidents(incidents.map(i => i.id === editInc ? { ...i, ...form, desc: combinedDesc } : i));
+
+      // Step 1: remove old timesheet entry if user changed OR duration cleared
+      if (oldHrs > 0 && (oldUid !== newUid || newHrs === 0)) {
+        removeIncidentTimesheet(editInc, oldUid);
+      }
+
+      // Step 2: add / update new timesheet entry if duration is set
+      if (newHrs > 0 && newUid) {
+        // Also clean up old user's entry when reassigned
+        if (oldUid && oldUid !== newUid && oldHrs > 0) {
+          removeIncidentTimesheet(editInc, oldUid);
+        }
+        addIncidentTimesheet(editInc, newUid, form.alert_name, incDate, newHrs);
+      }
+
     } else {
+      // ── New incident path ──────────────────────────────────────────────────
       const trigram = (currentUser || 'UNK').toUpperCase();
       const id      = `${trigram}-${Date.now()}`;
+      const incDate = new Date().toISOString().slice(0, 10);
       const newInc  = {
         id, ...form, desc: combinedDesc,
         status: 'Investigating', reporter: currentUser,
@@ -452,27 +518,9 @@ export default function Incidents({ users, incidents, setIncidents, currentUser,
         const safe = Array.isArray(prev) ? prev : [];
         return [newInc, ...safe];
       });
-      if (form.duration_hours && form.assigned_to && setTimesheets) {
-        const incDate  = new Date().toISOString().slice(0, 10);
-        const dow      = new Date().getDay();
-        const isWE     = dow === 0 || dow === 6;
-        const hrs      = +form.duration_hours;
-        const weekLabel = `INC ${id}`;
-        setTimesheets(prev => ({
-          ...prev,
-          [form.assigned_to]: [
-            {
-              week: weekLabel,
-              weekday_oncall: isWE ? 0 : hrs,
-              weekend_oncall: isWE ? hrs : 0,
-              worked_wd:      isWE ? 0 : hrs,
-              worked_we:      isWE ? hrs : 0,
-              standby_wd: 0, standby_we: 0,
-              notes: `Auto-logged: ${form.alert_name} on ${incDate} (${hrs}h)`,
-            },
-            ...(prev[form.assigned_to] || []),
-          ],
-        }));
+
+      if (form.duration_hours && form.assigned_to) {
+        addIncidentTimesheet(id, form.assigned_to, form.alert_name, incDate, +form.duration_hours);
       }
     }
     setShowModal(false); setForm(EMPTY_FORM);
