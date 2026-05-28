@@ -1,6 +1,6 @@
 // src/Incidents.js
 // CloudOps Rota — Incidents Component
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 27th May 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 29th May 2026
 
 import React, { useState, useRef, useEffect } from 'react';
 
@@ -21,18 +21,44 @@ function Tag({ label, type = 'blue' }) {
 }
 
 function Modal({ title, onClose, children, wide, fullscreen }) {
+  // Escape key closes
+  useEffect(() => {
+    const h = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, [onClose]);
+
+  const boxStyle = fullscreen
+    ? {
+        position: 'fixed', inset: 0, margin: 0, width: '100vw', height: '100vh',
+        maxWidth: '100vw', maxHeight: '100vh', borderRadius: 0,
+        display: 'flex', flexDirection: 'column',
+      }
+    : wide ? { width: 760 } : {};
+
   return (
-    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className="modal" style={
-        fullscreen
-          ? { width: '98vw', maxWidth: 1300, height: '95vh', overflowY: 'auto', display: 'flex', flexDirection: 'column' }
-          : wide ? { width: 720 } : {}
-      }>
-        <div className="modal-header">
-          <div className="modal-title">{title}</div>
-          <button className="modal-close" onClick={onClose}>✕</button>
+    <div className="modal-overlay" style={fullscreen ? { padding: 0, alignItems: 'stretch' } : {}}
+      onClick={e => !fullscreen && e.target === e.currentTarget && onClose()}>
+      <div className="modal" style={boxStyle}>
+        <div className="modal-header" style={{
+          padding: fullscreen ? '14px 20px' : undefined,
+          borderBottom: '1px solid var(--border)',
+          flexShrink: 0,
+          background: 'var(--bg-card)',
+          position: 'sticky', top: 0, zIndex: 10,
+        }}>
+          <div className="modal-title" style={{ fontSize: fullscreen ? 16 : 15 }}>{title}</div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            {fullscreen && (
+              <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>Press Esc to close</span>
+            )}
+            <button className="modal-close" onClick={onClose}>✕</button>
+          </div>
         </div>
-        <div style={{ padding: '0 20px 20px', flex: 1, overflowY: 'auto' }}>{children}</div>
+        <div style={{
+          padding: fullscreen ? '20px 28px 28px' : '0 20px 20px',
+          flex: 1, overflowY: 'auto',
+        }}>{children}</div>
       </div>
     </div>
   );
@@ -73,10 +99,13 @@ function useBulkSelect(items) {
   return { selected, toggleOne, toggleAll, clearAll };
 }
 
-// ── Rich text editor ───────────────────────────────────────────────────────
+// ── Rich text editor — Word-style ribbon ──────────────────────────────────
 function RichEditor({ value, onChange, placeholder = 'Start typing…', rows = 8, fullPage = false }) {
   const ref     = useRef(null);
   const fileRef = useRef(null);
+  const [findOpen, setFindOpen] = useState(false);
+  const [findVal,  setFindVal]  = useState('');
+  const [replVal,  setReplVal]  = useState('');
 
   const exec = (cmd, val = null) => { document.execCommand(cmd, false, val); ref.current?.focus(); };
 
@@ -84,205 +113,255 @@ function RichEditor({ value, onChange, placeholder = 'Start typing…', rows = 8
     const file = e.target.files[0];
     if (!file) return;
     const ext = file.name.split('.').pop().toLowerCase();
-
     if (ext === 'md' || ext === 'txt') {
       const text = await file.text();
       let html = text
-        .replace(/^### (.+)$/gm, '<h3>$1</h3>')
-        .replace(/^## (.+)$/gm,  '<h2>$1</h2>')
-        .replace(/^# (.+)$/gm,   '<h1>$1</h1>')
-        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-        .replace(/\*(.+?)\*/g,    '<em>$1</em>')
-        .replace(/`(.+?)`/g,      '<code>$1</code>')
-        .replace(/^- (.+)$/gm,    '<li>$1</li>')
-        .replace(/(<li>.*<\/li>)/gs, '<ul>$1</ul>')
-        .replace(/\n\n/g, '</p><p>')
-        .replace(/\n/g,   '<br>');
+        .replace(/^### (.+)$/gm, '<h3>$1</h3>').replace(/^## (.+)$/gm, '<h2>$1</h2>').replace(/^# (.+)$/gm, '<h1>$1</h1>')
+        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/\*(.+?)\*/g, '<em>$1</em>')
+        .replace(/`(.+?)`/g, '<code style="background:rgba(0,0,0,0.4);padding:2px 5px;border-radius:4px;font-family:DM Mono,monospace">$1</code>')
+        .replace(/^- (.+)$/gm, '<li>$1</li>').replace(/(<li>.*<\/li>)/gs, '<ul>$1</ul>')
+        .replace(/\n\n/g, '</p><p>').replace(/\n/g, '<br>');
       html = '<p>' + html + '</p>';
-      if (ref.current) { ref.current.innerHTML = html; onChange && onChange(html); }
+      if (ref.current) { ref.current.innerHTML = html; onChange?.(html); }
     } else if (ext === 'csv') {
       const text = await file.text();
       const rows = text.trim().split('\n').map(r => r.split(','));
       let html = '<table border="1" style="border-collapse:collapse;width:100%">';
-      rows.forEach((r, i) => {
-        html += '<tr>';
-        r.forEach(c => { html += i === 0 ? `<th style="padding:4px 8px;background:#1e3a5f">${c.trim()}</th>` : `<td style="padding:4px 8px">${c.trim()}</td>`; });
-        html += '</tr>';
-      });
+      rows.forEach((r, i) => { html += '<tr>'; r.forEach(c => { html += i === 0 ? `<th style="padding:4px 8px;background:#1e3a5f">${c.trim()}</th>` : `<td style="padding:4px 8px">${c.trim()}</td>`; }); html += '</tr>'; });
       html += '</table>';
-      if (ref.current) { ref.current.innerHTML = html; onChange && onChange(html); }
+      if (ref.current) { ref.current.innerHTML = html; onChange?.(html); }
     } else if (ext === 'docx' || ext === 'pptx' || ext === 'xlsx') {
-      const loadJSZip = () => new Promise((resolve, reject) => {
-        if (window.JSZip) { resolve(window.JSZip); return; }
-        const s = document.createElement('script');
-        s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
-        s.onload = () => resolve(window.JSZip);
-        s.onerror = reject;
-        document.head.appendChild(s);
+      const loadJSZip = () => new Promise((res, rej) => {
+        if (window.JSZip) { res(window.JSZip); return; }
+        const s = document.createElement('script'); s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+        s.onload = () => res(window.JSZip); s.onerror = rej; document.head.appendChild(s);
       });
       try {
-        const JSZip = await loadJSZip();
-        const ab    = await file.arrayBuffer();
-        const zip   = await JSZip.loadAsync(ab);
-        let text    = '';
-        const targets = ext === 'docx' ? ['word/document.xml']
-          : ext === 'pptx' ? Object.keys(zip.files).filter(n => n.startsWith('ppt/slides/slide') && n.endsWith('.xml'))
-          : ['xl/sharedStrings.xml'];
-        for (const t of targets) {
-          const f = zip.file(t);
-          if (f) { const xml = await f.async('text'); text += xml.replace(/<[^>]+>/g, ' ') + '\n'; }
-        }
+        const JSZip = await loadJSZip(); const ab = await file.arrayBuffer(); const zip = await JSZip.loadAsync(ab);
+        let text = ''; const targets = ext === 'docx' ? ['word/document.xml'] : ext === 'pptx' ? Object.keys(zip.files).filter(n => n.startsWith('ppt/slides/slide') && n.endsWith('.xml')) : ['xl/sharedStrings.xml'];
+        for (const t of targets) { const f = zip.file(t); if (f) { text += (await f.async('text')).replace(/<[^>]+>/g, ' ') + '\n'; } }
         text = text.replace(/\s+/g, ' ').trim().slice(0, 20000);
-        const lines = text.split(/(?<=[.!?])\s+/).filter(Boolean);
-        const html  = '<p>' + lines.join('</p><p>') + '</p>';
-        if (ref.current) {
-          ref.current.innerHTML = html || `<p><em>📎 ${file.name} imported (no readable text found)</em></p>`;
-          onChange && onChange(ref.current.innerHTML);
-        }
-      } catch {
-        const msg = `<p><em>📎 Imported: <strong>${file.name}</strong></em></p><p style="color:#fcd34d">⚠ Could not extract text from this file. Try saving as .txt or .md first.</p>`;
-        if (ref.current) { ref.current.innerHTML = msg; onChange && onChange(msg); }
-      }
+        const html = '<p>' + text.split(/(?<=[.!?])\s+/).filter(Boolean).join('</p><p>') + '</p>';
+        if (ref.current) { ref.current.innerHTML = html || `<p><em>📎 ${file.name} imported</em></p>`; onChange?.(ref.current.innerHTML); }
+      } catch { const msg = `<p><em>📎 ${file.name}</em></p><p style="color:#fcd34d">⚠ Could not extract text.</p>`; if (ref.current) { ref.current.innerHTML = msg; onChange?.(msg); } }
     } else {
-      const text = await file.text().catch(() => '[Binary file — cannot preview]');
+      const text = await file.text().catch(() => '[Binary file]');
       const html = `<p><em>📎 ${file.name}</em></p><pre style="font-size:11px;overflow:auto">${text.slice(0, 3000)}</pre>`;
-      if (ref.current) { ref.current.innerHTML = html; onChange && onChange(html); }
+      if (ref.current) { ref.current.innerHTML = html; onChange?.(html); }
     }
     e.target.value = '';
   };
 
-  useEffect(() => {
-    if (ref.current && ref.current.innerHTML !== value) {
-      ref.current.innerHTML = value || '';
-    }
-  }, []); // eslint-disable-line
+  useEffect(() => { if (ref.current && ref.current.innerHTML !== value) ref.current.innerHTML = value || ''; }, []); // eslint-disable-line
 
   const insertTable = () => {
-    const html = `<table border="1" style="border-collapse:collapse;width:100%;margin:8px 0"><tr><th style="padding:6px 10px;background:#1e3a5f">Header 1</th><th style="padding:6px 10px;background:#1e3a5f">Header 2</th></tr><tr><td style="padding:6px 10px">Cell 1</td><td style="padding:6px 10px">Cell 2</td></tr></table><p></p>`;
-    document.execCommand('insertHTML', false, html);
-    ref.current?.focus();
+    exec('insertHTML', `<table border="1" style="border-collapse:collapse;width:100%;margin:8px 0"><tr><th style="padding:6px 10px;background:#1e3a5f;min-width:80px">Header 1</th><th style="padding:6px 10px;background:#1e3a5f;min-width:80px">Header 2</th><th style="padding:6px 10px;background:#1e3a5f;min-width:80px">Header 3</th></tr><tr><td style="padding:6px 10px">Cell</td><td style="padding:6px 10px">Cell</td><td style="padding:6px 10px">Cell</td></tr><tr><td style="padding:6px 10px">Cell</td><td style="padding:6px 10px">Cell</td><td style="padding:6px 10px">Cell</td></tr></table><p></p>`);
   };
 
-  const insertLink = () => { const url = prompt('Enter URL:'); if (url) exec('createLink', url); };
-  const insertHR   = () => { exec('insertHTML', '<hr style="border:none;border-top:1px solid rgba(255,255,255,0.15);margin:16px 0"/><p></p>'); };
+  const insertCodeBlock = () => {
+    exec('insertHTML', `<pre style="background:rgba(0,0,0,0.55);padding:14px 16px;border-radius:8px;overflow:auto;font-size:12px;font-family:DM Mono,Courier New,monospace;color:#6ee7b7;margin:10px 0;border:1px solid rgba(110,231,183,0.2)">// paste your code here</pre><p></p>`);
+  };
 
-  const minH = fullPage ? '60vh' : rows * 22;
+  const insertCallout = (type = 'info') => {
+    const styles = {
+      info:    ['rgba(0,194,255,0.1)', 'rgba(0,194,255,0.3)', '#7dd3fc', 'ℹ️'],
+      warning: ['rgba(245,158,11,0.1)', 'rgba(245,158,11,0.3)', '#fcd34d', '⚠️'],
+      success: ['rgba(16,185,129,0.1)', 'rgba(16,185,129,0.3)', '#6ee7b7', '✅'],
+      danger:  ['rgba(239,68,68,0.1)', 'rgba(239,68,68,0.3)', '#fca5a5', '🔴'],
+    };
+    const [bg, border, color, icon] = styles[type] || styles.info;
+    exec('insertHTML', `<div style="background:${bg};border-left:4px solid ${border};padding:12px 16px;border-radius:0 8px 8px 0;margin:10px 0;color:${color}">${icon} <strong>Note:</strong> Add your callout text here.</div><p></p>`);
+  };
+
+  const insertLink = () => {
+    const url  = prompt('Enter URL:');
+    const text = prompt('Link text (leave blank to wrap selection):');
+    if (url && text) exec('insertHTML', `<a href="${url}" target="_blank" style="color:var(--accent)">${text}</a>`);
+    else if (url) exec('createLink', url);
+  };
+
+  const insertHR = () => exec('insertHTML', '<hr style="border:none;border-top:1px solid rgba(255,255,255,0.15);margin:18px 0"/><p></p>');
+
+  const insertInlineCode = () => exec('insertHTML', `<code style="background:rgba(0,0,0,0.4);padding:2px 6px;border-radius:4px;font-family:DM Mono,monospace;font-size:0.9em;color:#6ee7b7"> code </code>`);
+
+  const doFind = () => {
+    if (!findVal) return;
+    const body = ref.current;
+    if (!body) return;
+    // Simple highlight via innerHTML replace (non-destructive for plain finds)
+    const html = body.innerHTML.replace(
+      new RegExp(findVal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'),
+      m => `<mark style="background:#fbbf24;color:#000">${m}</mark>`
+    );
+    body.innerHTML = html;
+    onChange?.(body.innerHTML);
+  };
+  const doReplace = () => {
+    if (!findVal) return;
+    const body = ref.current;
+    if (!body) return;
+    const html = body.innerHTML.replace(
+      new RegExp(findVal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), replVal
+    );
+    body.innerHTML = html; onChange?.(body.innerHTML);
+  };
+
+  const minH = fullPage ? '55vh' : rows * 22;
+
+  // ── Shared button style ──────────────────────────────────────────────────
+  const TB = (extra = {}) => ({
+    padding: '4px 8px', borderRadius: 5, border: '1px solid var(--border)',
+    background: 'var(--bg-card2)', color: 'var(--text-primary)',
+    cursor: 'pointer', fontSize: 12, display: 'inline-flex',
+    alignItems: 'center', gap: 4, whiteSpace: 'nowrap', lineHeight: 1.3,
+    ...extra,
+  });
+  const SEP = <div style={{ width: 1, background: 'var(--border)', margin: '0 4px', alignSelf: 'stretch' }} />;
 
   return (
     <div style={{ border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden', background: 'var(--bg-card2)', display: 'flex', flexDirection: 'column' }}>
-      {/* Toolbar */}
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 2, padding: '8px 10px', borderBottom: '1px solid var(--border)', background: 'var(--bg-card)', position: 'sticky', top: 0, zIndex: 5 }}>
+      {/* ── Row 1: Paragraph styles, font, size, character formatting ───────── */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3, padding: '7px 10px 4px', borderBottom: '1px solid rgba(255,255,255,0.05)', background: 'var(--bg-card)', alignItems: 'center' }}>
+        {/* Styles */}
         <select onChange={e => { exec('formatBlock', e.target.value); e.target.value = ''; }} defaultValue=""
-          style={{ padding: '3px 6px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-card2)', color: 'var(--text-primary)', fontSize: 11, cursor: 'pointer', maxWidth: 90 }}>
-          <option value="" disabled>Style</option>
-          <option value="p">Paragraph</option>
+          style={{ ...TB(), padding: '4px 6px', fontSize: 11, minWidth: 110 }}>
+          <option value="" disabled>¶ Paragraph Style</option>
+          <option value="p">Normal Text</option>
           <option value="h1">Heading 1</option>
           <option value="h2">Heading 2</option>
           <option value="h3">Heading 3</option>
           <option value="h4">Heading 4</option>
+          <option value="h5">Heading 5</option>
           <option value="pre">Code Block</option>
-          <option value="blockquote">Quote</option>
+          <option value="blockquote">Block Quote</option>
         </select>
+        {/* Font */}
         <select onChange={e => { exec('fontName', e.target.value); e.target.value = ''; }} defaultValue=""
-          style={{ padding: '3px 6px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-card2)', color: 'var(--text-primary)', fontSize: 11, cursor: 'pointer', maxWidth: 90 }}>
+          style={{ ...TB(), padding: '4px 6px', fontSize: 11, minWidth: 100 }}>
           <option value="" disabled>Font</option>
-          {['Arial', 'Georgia', 'Courier New', 'Verdana', 'Times New Roman', 'Trebuchet MS'].map(f => <option key={f} value={f}>{f}</option>)}
+          {['Arial', 'Georgia', 'Courier New', 'Verdana', 'Times New Roman', 'Trebuchet MS', 'DM Sans', 'system-ui'].map(f => <option key={f} value={f}>{f}</option>)}
         </select>
+        {/* Size */}
         <select onChange={e => exec('fontSize', e.target.value)} defaultValue=""
-          style={{ padding: '3px 6px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-card2)', color: 'var(--text-primary)', fontSize: 11, cursor: 'pointer', width: 54 }}>
+          style={{ ...TB(), padding: '4px 6px', fontSize: 11, width: 60 }}>
           <option value="" disabled>Size</option>
-          {[1, 2, 3, 4, 5, 6, 7].map(s => <option key={s} value={s}>{[8, 10, 12, 14, 18, 24, 36][s - 1]}pt</option>)}
+          {[1,2,3,4,5,6,7].map(s => <option key={s} value={s}>{[8,10,12,14,18,24,36][s-1]}pt</option>)}
         </select>
-        <div style={{ width: 1, background: 'var(--border)', margin: '0 3px' }} />
-        {[
-          { cmd: 'bold',          label: 'B',  style: { fontWeight: 700 } },
-          { cmd: 'italic',        label: 'I',  style: { fontStyle: 'italic' } },
-          { cmd: 'underline',     label: 'U',  style: { textDecoration: 'underline' } },
-          { cmd: 'strikeThrough', label: 'S̶', style: {} },
-          { cmd: 'superscript',   label: 'x²', style: { fontSize: 10 } },
-          { cmd: 'subscript',     label: 'x₂', style: { fontSize: 10 } },
-        ].map(b => (
-          <button key={b.cmd} onMouseDown={e => { e.preventDefault(); exec(b.cmd); }}
-            style={{ ...b.style, padding: '3px 7px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-card2)', color: 'var(--text-primary)', cursor: 'pointer', fontSize: 12, minWidth: 28 }}>
-            {b.label}
-          </button>
-        ))}
-        <div style={{ width: 1, background: 'var(--border)', margin: '0 3px' }} />
-        {[
-          { cmd: 'justifyLeft',   label: '⬛▫▫' },
-          { cmd: 'justifyCenter', label: '▫⬛▫' },
-          { cmd: 'justifyRight',  label: '▫▫⬛' },
-          { cmd: 'justifyFull',   label: '⬛⬛⬛' },
-        ].map(b => (
-          <button key={b.cmd} onMouseDown={e => { e.preventDefault(); exec(b.cmd); }}
-            style={{ padding: '3px 6px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-card2)', color: 'var(--text-primary)', cursor: 'pointer', fontSize: 9, minWidth: 28 }}>
-            {b.label}
-          </button>
-        ))}
-        <div style={{ width: 1, background: 'var(--border)', margin: '0 3px' }} />
-        {[
-          { cmd: 'insertUnorderedList', label: '• List' },
-          { cmd: 'insertOrderedList',   label: '1. List' },
-          { cmd: 'indent',              label: '→ Indent' },
-          { cmd: 'outdent',             label: '← Outdent' },
-        ].map(b => (
-          <button key={b.label} onMouseDown={e => { e.preventDefault(); exec(b.cmd); }}
-            style={{ padding: '3px 7px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-card2)', color: 'var(--text-primary)', cursor: 'pointer', fontSize: 11 }}>
-            {b.label}
-          </button>
-        ))}
-        <div style={{ width: 1, background: 'var(--border)', margin: '0 3px' }} />
-        <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-          <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>A</span>
-          <input type="color" defaultValue="#ffffff" onChange={e => exec('foreColor', e.target.value)}
-            title="Text colour" style={{ width: 22, height: 22, border: 'none', borderRadius: 4, cursor: 'pointer', background: 'none', padding: 0 }} />
-          <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>bg</span>
-          <input type="color" defaultValue="#1e3a5f" onChange={e => exec('hiliteColor', e.target.value)}
-            title="Highlight colour" style={{ width: 22, height: 22, border: 'none', borderRadius: 4, cursor: 'pointer', background: 'none', padding: 0 }} />
+        {SEP}
+        {/* Bold, Italic, Underline, Strikethrough */}
+        <button onMouseDown={e=>{e.preventDefault();exec('bold')}}          style={{...TB(),fontWeight:700,minWidth:30}}>B</button>
+        <button onMouseDown={e=>{e.preventDefault();exec('italic')}}        style={{...TB(),fontStyle:'italic',minWidth:30}}>I</button>
+        <button onMouseDown={e=>{e.preventDefault();exec('underline')}}     style={{...TB(),textDecoration:'underline',minWidth:30}}>U</button>
+        <button onMouseDown={e=>{e.preventDefault();exec('strikeThrough')}} style={{...TB(),minWidth:30}}>S̶</button>
+        <button onMouseDown={e=>{e.preventDefault();exec('superscript')}}   style={{...TB(),fontSize:10,minWidth:28}}>x²</button>
+        <button onMouseDown={e=>{e.preventDefault();exec('subscript')}}     style={{...TB(),fontSize:10,minWidth:28}}>x₂</button>
+        {SEP}
+        {/* Colour pickers */}
+        <div style={{ display:'flex', alignItems:'center', gap:3 }}>
+          <span style={{ fontSize:10, color:'var(--text-muted)', fontWeight:700 }}>A</span>
+          <input type="color" defaultValue="#ffffff" onChange={e=>exec('foreColor',e.target.value)} title="Text colour"
+            style={{ width:22, height:22, border:'1px solid var(--border)', borderRadius:4, cursor:'pointer', padding:1 }} />
         </div>
-        <div style={{ width: 1, background: 'var(--border)', margin: '0 3px' }} />
-        <button onMouseDown={e => { e.preventDefault(); insertTable(); }}
-          style={{ padding: '3px 7px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-card2)', color: 'var(--text-primary)', cursor: 'pointer', fontSize: 11 }}>
-          ⊞ Table
-        </button>
-        <button onMouseDown={e => { e.preventDefault(); insertLink(); }}
-          style={{ padding: '3px 7px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-card2)', color: 'var(--accent)', cursor: 'pointer', fontSize: 11 }}>
-          🔗 Link
-        </button>
-        <button onMouseDown={e => { e.preventDefault(); insertHR(); }}
-          style={{ padding: '3px 7px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-card2)', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 11 }}>
-          ─ HR
-        </button>
-        <label style={{ padding: '3px 8px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-card2)', color: 'var(--accent)', cursor: 'pointer', fontSize: 11, display: 'flex', alignItems: 'center', gap: 3 }}>
-          📎 Import
-          <input ref={fileRef} type="file" accept=".txt,.md,.csv,.docx,.pptx,.xlsx,.html" onChange={handleImport} style={{ display: 'none' }} />
-        </label>
-        <button onMouseDown={e => { e.preventDefault(); exec('removeFormat'); }}
-          style={{ padding: '3px 7px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-card2)', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 11 }}>
-          ✕ Fmt
-        </button>
-        <button onMouseDown={e => { e.preventDefault(); exec('undo'); }}
-          style={{ padding: '3px 7px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-card2)', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 12 }}>↩</button>
-        <button onMouseDown={e => { e.preventDefault(); exec('redo'); }}
-          style={{ padding: '3px 7px', borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-card2)', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 12 }}>↪</button>
+        <div style={{ display:'flex', alignItems:'center', gap:3 }}>
+          <span style={{ fontSize:10, color:'var(--text-muted)', fontWeight:700 }}>BG</span>
+          <input type="color" defaultValue="#1e3a5f" onChange={e=>exec('hiliteColor',e.target.value)} title="Highlight colour"
+            style={{ width:22, height:22, border:'1px solid var(--border)', borderRadius:4, cursor:'pointer', padding:1 }} />
+        </div>
+        {SEP}
+        {/* Alignment */}
+        {[['justifyLeft','⬛▫▫','Left'],['justifyCenter','▫⬛▫','Centre'],['justifyRight','▫▫⬛','Right'],['justifyFull','⬛⬛⬛','Justify']].map(([cmd,icon,tip]) => (
+          <button key={cmd} onMouseDown={e=>{e.preventDefault();exec(cmd)}} title={tip}
+            style={{...TB(),fontSize:9,minWidth:28}}>{icon}</button>
+        ))}
+        {SEP}
+        {/* Undo / Redo */}
+        <button onMouseDown={e=>{e.preventDefault();exec('undo')}} title="Undo (Ctrl+Z)" style={{...TB(),fontSize:14}}>↩</button>
+        <button onMouseDown={e=>{e.preventDefault();exec('redo')}} title="Redo (Ctrl+Y)" style={{...TB(),fontSize:14}}>↪</button>
+        <button onMouseDown={e=>{e.preventDefault();exec('removeFormat')}} title="Clear Formatting"
+          style={{...TB(),color:'var(--text-muted)'}}>✕ Fmt</button>
       </div>
-      {/* Editable area */}
+
+      {/* ── Row 2: Lists, Insert, Find ───────────────────────────────────────── */}
+      <div style={{ display:'flex', flexWrap:'wrap', gap:3, padding:'4px 10px 6px', borderBottom:'1px solid var(--border)', background:'var(--bg-card)', alignItems:'center' }}>
+        {/* Lists & indent */}
+        <button onMouseDown={e=>{e.preventDefault();exec('insertUnorderedList')}} style={TB()}>• Bullet List</button>
+        <button onMouseDown={e=>{e.preventDefault();exec('insertOrderedList')}}   style={TB()}>1. Numbered</button>
+        <button onMouseDown={e=>{e.preventDefault();exec('indent')}}    title="Increase indent" style={TB()}>→ Indent</button>
+        <button onMouseDown={e=>{e.preventDefault();exec('outdent')}}   title="Decrease indent" style={TB()}>← Outdent</button>
+        {SEP}
+        {/* Insert blocks */}
+        <button onMouseDown={e=>{e.preventDefault();insertTable()}}     style={{...TB(),color:'var(--accent)'}}>⊞ Table</button>
+        <button onMouseDown={e=>{e.preventDefault();insertLink()}}      style={{...TB(),color:'var(--accent)'}}>🔗 Link</button>
+        <button onMouseDown={e=>{e.preventDefault();insertHR()}}        style={{...TB(),color:'var(--text-muted)'}}>─ Rule</button>
+        <button onMouseDown={e=>{e.preventDefault();insertInlineCode()}} style={{...TB(),fontFamily:'DM Mono,monospace',color:'#6ee7b7',fontSize:11}}>{`<>`} Inline Code</button>
+        <button onMouseDown={e=>{e.preventDefault();insertCodeBlock()}} style={{...TB(),fontFamily:'DM Mono,monospace',color:'#6ee7b7'}}>{`{}`} Code Block</button>
+        {SEP}
+        {/* Callouts */}
+        <button onMouseDown={e=>{e.preventDefault();insertCallout('info')}}    style={{...TB(),color:'#7dd3fc',fontSize:11}}>ℹ️ Info</button>
+        <button onMouseDown={e=>{e.preventDefault();insertCallout('warning')}} style={{...TB(),color:'#fcd34d',fontSize:11}}>⚠️ Warning</button>
+        <button onMouseDown={e=>{e.preventDefault();insertCallout('success')}} style={{...TB(),color:'#6ee7b7',fontSize:11}}>✅ Note</button>
+        <button onMouseDown={e=>{e.preventDefault();insertCallout('danger')}}  style={{...TB(),color:'#fca5a5',fontSize:11}}>🔴 Alert</button>
+        {SEP}
+        {/* Import */}
+        <label style={{ ...TB(), color:'var(--accent)', cursor:'pointer' }}>
+          📎 Import
+          <input ref={fileRef} type="file" accept=".txt,.md,.csv,.docx,.pptx,.xlsx,.html" onChange={handleImport} style={{ display:'none' }} />
+        </label>
+        {/* Find & Replace toggle */}
+        <button onMouseDown={e=>{e.preventDefault();setFindOpen(p=>!p)}}
+          style={{...TB(),color: findOpen?'var(--accent)':'var(--text-muted)'}}>
+          🔍 Find
+        </button>
+      </div>
+
+      {/* ── Find & Replace bar ────────────────────────────────────────────────── */}
+      {findOpen && (
+        <div style={{ display:'flex', gap:6, padding:'6px 10px', borderBottom:'1px solid var(--border)', background:'rgba(0,0,0,0.2)', alignItems:'center', flexWrap:'wrap' }}>
+          <input value={findVal} onChange={e=>setFindVal(e.target.value)} placeholder="Find…"
+            style={{ padding:'4px 8px', borderRadius:5, border:'1px solid var(--border)', background:'var(--bg-card2)', color:'var(--text-primary)', fontSize:12, width:160 }} />
+          <input value={replVal} onChange={e=>setReplVal(e.target.value)} placeholder="Replace with…"
+            style={{ padding:'4px 8px', borderRadius:5, border:'1px solid var(--border)', background:'var(--bg-card2)', color:'var(--text-primary)', fontSize:12, width:160 }} />
+          <button onClick={doFind}    style={{...TB(),color:'var(--accent)'}}>Find & Highlight</button>
+          <button onClick={doReplace} style={{...TB(),color:'#fcd34d'}}>Replace All</button>
+          <button onClick={()=>setFindOpen(false)} style={{...TB(),color:'var(--text-muted)'}}>✕</button>
+        </div>
+      )}
+
+      {/* ── Editable content area ─────────────────────────────────────────────── */}
       <div
         ref={ref}
         contentEditable
         suppressContentEditableWarning
-        onInput={() => onChange && onChange(ref.current.innerHTML)}
+        onInput={() => onChange?.(ref.current.innerHTML)}
         data-placeholder={placeholder}
         style={{
-          minHeight: minH, padding: fullPage ? '24px 32px' : '12px 14px', outline: 'none',
-          fontSize: 14, color: 'var(--text-primary)', lineHeight: 1.8,
-          caretColor: 'var(--accent)', flex: 1,
-          fontFamily: 'Georgia, serif',
+          minHeight: minH, padding: fullPage ? '28px 36px' : '14px 16px',
+          outline: 'none', fontSize: 14, color: 'var(--text-primary)',
+          lineHeight: 1.85, caretColor: 'var(--accent)', flex: 1,
+          fontFamily: 'Georgia, "Times New Roman", serif',
+          // Style embedded elements
         }}
       />
+      <style>{`
+        [contenteditable] h1{font-size:1.9em;font-weight:800;margin:.5em 0 .3em}
+        [contenteditable] h2{font-size:1.5em;font-weight:700;margin:.5em 0 .3em}
+        [contenteditable] h3{font-size:1.2em;font-weight:700;margin:.5em 0 .25em}
+        [contenteditable] h4{font-size:1.05em;font-weight:700;margin:.4em 0 .2em}
+        [contenteditable] blockquote{border-left:4px solid var(--accent);margin:8px 0;padding:6px 14px;background:rgba(0,194,255,0.05);border-radius:0 6px 6px 0;font-style:italic}
+        [contenteditable] pre{background:rgba(0,0,0,0.55);padding:14px 16px;border-radius:8px;font-family:'DM Mono',monospace;font-size:12px;color:#6ee7b7;overflow:auto;margin:8px 0}
+        [contenteditable] code{background:rgba(0,0,0,0.4);padding:2px 5px;border-radius:4px;font-family:'DM Mono',monospace;font-size:.9em;color:#6ee7b7}
+        [contenteditable] table{border-collapse:collapse;width:100%;margin:8px 0}
+        [contenteditable] td,[contenteditable] th{border:1px solid rgba(255,255,255,0.12);padding:6px 10px;font-size:13px}
+        [contenteditable] th{background:#1e3a5f;font-weight:700}
+        [contenteditable] ul,[contenteditable] ol{padding-left:1.5em;margin:.4em 0}
+        [contenteditable] a{color:var(--accent)}
+        [contenteditable]:empty:before{content:attr(data-placeholder);color:var(--text-muted);pointer-events:none}
+        [contenteditable] hr{border:none;border-top:1px solid rgba(255,255,255,0.15);margin:18px 0}
+      `}</style>
     </div>
   );
 }
+
 
 // ── Incident severity options ──────────────────────────────────────────────
 const INC_SEVERITIES = [
@@ -642,113 +721,114 @@ export default function Incidents({ users, incidents, setIncidents, currentUser,
 
       {/* Log / Edit modal */}
       {showModal && (
-        <Modal title={editInc ? 'Edit Incident' : 'Log New Incident'} onClose={() => setShowModal(false)} wide>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-            <FormGroup label="Alert Name">
-              <input className="input" placeholder="e.g. High CPU on prod-api-01"
-                value={form.alert_name} onChange={e => setForm({ ...form, alert_name: e.target.value })} />
-            </FormGroup>
-            <FormGroup label="VM / Service Issue">
-              <input className="input" placeholder="e.g. prod-api-01 / payment-service"
-                value={form.vm_service} onChange={e => setForm({ ...form, vm_service: e.target.value })} />
-            </FormGroup>
-            <FormGroup label="Severity">
-              <select className="select" value={form.severity} onChange={e => setForm({ ...form, severity: e.target.value })}>
-                {INC_SEVERITIES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
-              </select>
-            </FormGroup>
-            <FormGroup label="Assigned To">
-              <select className="select" value={form.assigned_to} onChange={e => setForm({ ...form, assigned_to: e.target.value })}>
-                {users.map(u => <option key={u.id} value={u.id}>{u.name} ({u.id})</option>)}
-              </select>
-            </FormGroup>
-            <FormGroup label="KB Reference (optional)">
-              <input className="input" placeholder="e.g. KB-1234"
-                value={form.kb_ref} onChange={e => setForm({ ...form, kb_ref: e.target.value })} />
-            </FormGroup>
-            <FormGroup label="Ticket Ref (optional)">
-              <input className="input" placeholder="e.g. JIRA-5678 / ServiceNow#"
-                value={form.ticket_ref} onChange={e => setForm({ ...form, ticket_ref: e.target.value })} />
-            </FormGroup>
-            <FormGroup label="Email Ref (optional)" hint="paste email subject or link">
-              <input className="input" placeholder="e.g. Alert email subject"
-                value={form.email_ref} onChange={e => setForm({ ...form, email_ref: e.target.value })} />
-            </FormGroup>
-            <FormGroup label="Duration (Hours)" hint="Auto-added to timesheets & payroll">
-              <select className="select" value={form.duration_hours} onChange={e => setForm({ ...form, duration_hours: e.target.value })}>
-                <option value="">Select duration…</option>
-                {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(h => (
-                  <option key={h} value={h}>{h} hour{h > 1 ? 's' : ''}</option>
-                ))}
-              </select>
-            </FormGroup>
-          </div>
-          <IncidentTabs form={form} setForm={setForm} />
-          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
-            <button className="btn btn-secondary" onClick={() => setShowModal(false)}>Cancel</button>
-            <button className="btn btn-primary" onClick={save}>{editInc ? 'Update Incident' : 'Log Incident'}</button>
+        <Modal title={editInc ? `✏ Edit Incident — ${form.alert_name || ''}` : '🚨 Log New Incident'} onClose={() => setShowModal(false)} fullscreen>
+          <div style={{ maxWidth: 1100, margin: '0 auto' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+              <FormGroup label="Alert Name">
+                <input className="input" placeholder="e.g. High CPU on prod-api-01"
+                  value={form.alert_name} onChange={e => setForm({ ...form, alert_name: e.target.value })} />
+              </FormGroup>
+              <FormGroup label="VM / Service Issue">
+                <input className="input" placeholder="e.g. prod-api-01 / payment-service"
+                  value={form.vm_service} onChange={e => setForm({ ...form, vm_service: e.target.value })} />
+              </FormGroup>
+              <FormGroup label="Severity">
+                <select className="select" value={form.severity} onChange={e => setForm({ ...form, severity: e.target.value })}>
+                  {INC_SEVERITIES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
+                </select>
+              </FormGroup>
+              <FormGroup label="Assigned To">
+                <select className="select" value={form.assigned_to} onChange={e => setForm({ ...form, assigned_to: e.target.value })}>
+                  {users.map(u => <option key={u.id} value={u.id}>{u.name} ({u.id})</option>)}
+                </select>
+              </FormGroup>
+              <FormGroup label="KB Reference (optional)">
+                <input className="input" placeholder="e.g. KB-1234"
+                  value={form.kb_ref} onChange={e => setForm({ ...form, kb_ref: e.target.value })} />
+              </FormGroup>
+              <FormGroup label="Ticket Ref (optional)">
+                <input className="input" placeholder="e.g. JIRA-5678 / ServiceNow#"
+                  value={form.ticket_ref} onChange={e => setForm({ ...form, ticket_ref: e.target.value })} />
+              </FormGroup>
+              <FormGroup label="Email Ref (optional)" hint="paste email subject or link">
+                <input className="input" placeholder="e.g. Alert email subject"
+                  value={form.email_ref} onChange={e => setForm({ ...form, email_ref: e.target.value })} />
+              </FormGroup>
+              <FormGroup label="Duration (Hours)" hint="Auto-added to timesheets & payroll">
+                <select className="select" value={form.duration_hours} onChange={e => setForm({ ...form, duration_hours: e.target.value })}>
+                  <option value="">Select duration…</option>
+                  {[0.5, 1, 1.5, 2, 2.5, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(h => (
+                    <option key={h} value={h}>{h} hour{h !== 1 ? 's' : ''}</option>
+                  ))}
+                </select>
+              </FormGroup>
+            </div>
+            <IncidentTabs form={form} setForm={setForm} />
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 20 }}>
+              <button className="btn btn-secondary" onClick={() => setShowModal(false)}>Cancel</button>
+              <button className="btn btn-primary" onClick={save}>{editInc ? 'Update Incident' : 'Log Incident'}</button>
+            </div>
           </div>
         </Modal>
       )}
 
-      {/* View modal */}
       {viewInc && (
-        <Modal title={`${viewInc.id} — ${viewInc.alert_name}`} onClose={() => setViewInc(null)} wide>
-          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 16 }}>
-            {(() => {
-              const s = INC_SEVERITIES.find(x => x.value === viewInc.severity);
-              return s ? <span style={{ background: s.color + '25', color: s.color, padding: '3px 8px', borderRadius: 6, fontSize: 11, fontWeight: 600 }}>{s.label}</span> : null;
-            })()}
-            <Tag label={viewInc.status} type={viewInc.status === 'Resolved' ? 'green' : 'red'} />
-            <span className="muted-xs">{viewInc.date}</span>
-          </div>
-          {viewInc.vm_service   && <div className="muted-xs" style={{ marginBottom: 8 }}>VM/Service: <strong>{viewInc.vm_service}</strong></div>}
-          {viewInc.assigned_to  && <div className="muted-xs" style={{ marginBottom: 8 }}>Assigned to: <strong>{users.find(u => u.id === viewInc.assigned_to)?.name || viewInc.assigned_to}</strong></div>}
-          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 12 }}>
-            {viewInc.kb_ref         && <div className="muted-xs">📚 KB: <span style={{ color: 'var(--accent)' }}>{viewInc.kb_ref}</span></div>}
-            {viewInc.ticket_ref     && <div className="muted-xs">🎫 Ticket: <span style={{ color: 'var(--accent)' }}>{viewInc.ticket_ref}</span></div>}
-            {viewInc.email_ref      && <div className="muted-xs">📧 Email: <span style={{ color: 'var(--accent)' }}>{viewInc.email_ref}</span></div>}
-            {viewInc.duration_hours && <div className="muted-xs">⏱ Duration: <span style={{ color: '#fcd34d' }}>{viewInc.duration_hours}h</span></div>}
-          </div>
+        <Modal title={`${viewInc.id} — ${viewInc.alert_name}`} onClose={() => setViewInc(null)} fullscreen>
+          <div style={{ maxWidth: 1000, margin: '0 auto' }}>
+            {/* Meta row */}
+            <div style={{ display:'flex', gap:10, flexWrap:'wrap', alignItems:'center', marginBottom:18 }}>
+              {(() => { const s = INC_SEVERITIES.find(x => x.value === viewInc.severity); return s ? <span style={{ background:s.color+'25', color:s.color, padding:'4px 12px', borderRadius:8, fontSize:12, fontWeight:700 }}>{s.label}</span> : null; })()}
+              <Tag label={viewInc.status} type={viewInc.status === 'Resolved' ? 'green' : 'red'} />
+              <span className="muted-xs">{viewInc.date}</span>
+              {viewInc.resolvedAt && <span style={{ fontSize:11, color:'#6ee7b7' }}>✅ Resolved: {viewInc.resolvedAt}</span>}
+            </div>
 
-          {/* Structured sections */}
-          {viewInc.issue_desc && (
-            <div style={{ marginBottom: 12, border: '1px solid rgba(239,68,68,0.3)', borderRadius: 8, overflow: 'hidden' }}>
-              <div style={{ background: 'rgba(239,68,68,0.12)', padding: '6px 12px', fontWeight: 600, fontSize: 12, color: '#fca5a5' }}>🔴 Issue</div>
-              <div style={{ padding: '10px 12px', fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.7 }} dangerouslySetInnerHTML={{ __html: viewInc.issue_desc }} />
-              {(viewInc.issue_images || []).length > 0 && (
-                <div style={{ padding: '0 12px 10px', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  {viewInc.issue_images.map((img, i) => <img key={i} src={img} alt="" style={{ maxWidth: 200, maxHeight: 150, borderRadius: 6, border: '1px solid var(--border)' }} />)}
-                </div>
-              )}
+            {/* Info grid */}
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(200px,1fr))', gap:10, marginBottom:20, padding:16, background:'var(--bg-card)', border:'1px solid var(--border)', borderRadius:10 }}>
+              {viewInc.vm_service    && <div><div style={{ fontSize:10, color:'var(--text-muted)', fontWeight:700, textTransform:'uppercase', letterSpacing:'0.08em' }}>VM / Service</div><div style={{ fontSize:13, marginTop:3 }}>{viewInc.vm_service}</div></div>}
+              {viewInc.assigned_to   && <div><div style={{ fontSize:10, color:'var(--text-muted)', fontWeight:700, textTransform:'uppercase', letterSpacing:'0.08em' }}>Assigned To</div><div style={{ fontSize:13, marginTop:3 }}>{users.find(u => u.id === viewInc.assigned_to)?.name || viewInc.assigned_to}</div></div>}
+              {viewInc.duration_hours && <div><div style={{ fontSize:10, color:'var(--text-muted)', fontWeight:700, textTransform:'uppercase', letterSpacing:'0.08em' }}>Duration</div><div style={{ fontSize:13, fontFamily:'DM Mono', color:'#fcd34d', marginTop:3 }}>⏱ {viewInc.duration_hours}h</div></div>}
+              {viewInc.kb_ref        && <div><div style={{ fontSize:10, color:'var(--text-muted)', fontWeight:700, textTransform:'uppercase', letterSpacing:'0.08em' }}>KB Ref</div><div style={{ fontSize:13, color:'var(--accent)', fontFamily:'DM Mono', marginTop:3 }}>{viewInc.kb_ref}</div></div>}
+              {viewInc.ticket_ref    && <div><div style={{ fontSize:10, color:'var(--text-muted)', fontWeight:700, textTransform:'uppercase', letterSpacing:'0.08em' }}>Ticket</div><div style={{ fontSize:13, color:'var(--accent)', fontFamily:'DM Mono', marginTop:3 }}>{viewInc.ticket_ref}</div></div>}
+              {viewInc.email_ref     && <div><div style={{ fontSize:10, color:'var(--text-muted)', fontWeight:700, textTransform:'uppercase', letterSpacing:'0.08em' }}>Email Ref</div><div style={{ fontSize:13, color:'var(--accent)', marginTop:3 }}>{viewInc.email_ref}</div></div>}
             </div>
-          )}
-          {viewInc.actions_desc && (
-            <div style={{ marginBottom: 12, border: '1px solid rgba(245,158,11,0.3)', borderRadius: 8, overflow: 'hidden' }}>
-              <div style={{ background: 'rgba(245,158,11,0.12)', padding: '6px 12px', fontWeight: 600, fontSize: 12, color: '#fcd34d' }}>⚙️ Actions Taken</div>
-              <div style={{ padding: '10px 12px', fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.7 }} dangerouslySetInnerHTML={{ __html: viewInc.actions_desc }} />
-              {viewInc.actions_code && (
-                <pre style={{ margin: '0 12px 10px', background: 'rgba(0,0,0,0.4)', padding: '10px', borderRadius: 6, fontSize: 12, overflow: 'auto', color: '#6ee7b7' }}>{viewInc.actions_code}</pre>
-              )}
-              {(viewInc.actions_images || []).length > 0 && (
-                <div style={{ padding: '0 12px 10px', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  {viewInc.actions_images.map((img, i) => <img key={i} src={img} alt="" style={{ maxWidth: 200, maxHeight: 150, borderRadius: 6, border: '1px solid var(--border)' }} />)}
-                </div>
-              )}
-            </div>
-          )}
-          {viewInc.solution_desc && (
-            <div style={{ marginBottom: 12, border: '1px solid rgba(16,185,129,0.3)', borderRadius: 8, overflow: 'hidden' }}>
-              <div style={{ background: 'rgba(16,185,129,0.12)', padding: '6px 12px', fontWeight: 600, fontSize: 12, color: '#6ee7b7' }}>✅ Solution</div>
-              <div style={{ padding: '10px 12px', fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.7 }} dangerouslySetInnerHTML={{ __html: viewInc.solution_desc }} />
-            </div>
-          )}
 
-          {/* Fallback for old-format incidents */}
-          {!viewInc.issue_desc && !viewInc.actions_desc && !viewInc.solution_desc && viewInc.desc && (
-            <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.7 }} dangerouslySetInnerHTML={{ __html: viewInc.desc || '' }} />
-          )}
-          {viewInc.resolvedAt && <div className="muted-xs" style={{ marginTop: 12 }}>Resolved: {viewInc.resolvedAt}</div>}
+            {/* Sections */}
+            {viewInc.issue_desc && (
+              <div style={{ marginBottom:16, border:'1px solid rgba(239,68,68,0.3)', borderRadius:10, overflow:'hidden' }}>
+                <div style={{ background:'rgba(239,68,68,0.12)', padding:'9px 14px', fontWeight:700, fontSize:13, color:'#fca5a5', borderBottom:'1px solid rgba(239,68,68,0.2)' }}>🔴 Issue</div>
+                <div style={{ padding:'16px 18px', fontSize:14, color:'var(--text-secondary)', lineHeight:1.8 }} dangerouslySetInnerHTML={{ __html: viewInc.issue_desc }} />
+                {(viewInc.issue_images||[]).length > 0 && <div style={{ padding:'0 18px 14px', display:'flex', gap:10, flexWrap:'wrap' }}>{viewInc.issue_images.map((img,i) => <img key={i} src={img} alt="" style={{ maxWidth:280, maxHeight:200, borderRadius:8, border:'1px solid var(--border)' }} />)}</div>}
+              </div>
+            )}
+            {viewInc.actions_desc && (
+              <div style={{ marginBottom:16, border:'1px solid rgba(245,158,11,0.3)', borderRadius:10, overflow:'hidden' }}>
+                <div style={{ background:'rgba(245,158,11,0.12)', padding:'9px 14px', fontWeight:700, fontSize:13, color:'#fcd34d', borderBottom:'1px solid rgba(245,158,11,0.2)' }}>⚙️ Actions Taken</div>
+                <div style={{ padding:'16px 18px', fontSize:14, color:'var(--text-secondary)', lineHeight:1.8 }} dangerouslySetInnerHTML={{ __html: viewInc.actions_desc }} />
+                {viewInc.actions_code && <pre style={{ margin:'0 18px 14px', background:'rgba(0,0,0,0.5)', padding:14, borderRadius:8, fontSize:12, overflow:'auto', color:'#6ee7b7', fontFamily:'DM Mono,monospace' }}>{viewInc.actions_code}</pre>}
+                {(viewInc.actions_images||[]).length > 0 && <div style={{ padding:'0 18px 14px', display:'flex', gap:10, flexWrap:'wrap' }}>{viewInc.actions_images.map((img,i) => <img key={i} src={img} alt="" style={{ maxWidth:280, maxHeight:200, borderRadius:8, border:'1px solid var(--border)' }} />)}</div>}
+              </div>
+            )}
+            {viewInc.solution_desc && (
+              <div style={{ marginBottom:16, border:'1px solid rgba(16,185,129,0.3)', borderRadius:10, overflow:'hidden' }}>
+                <div style={{ background:'rgba(16,185,129,0.12)', padding:'9px 14px', fontWeight:700, fontSize:13, color:'#6ee7b7', borderBottom:'1px solid rgba(16,185,129,0.2)' }}>✅ Solution</div>
+                <div style={{ padding:'16px 18px', fontSize:14, color:'var(--text-secondary)', lineHeight:1.8 }} dangerouslySetInnerHTML={{ __html: viewInc.solution_desc }} />
+                {(viewInc.solution_images||[]).length > 0 && <div style={{ padding:'0 18px 14px', display:'flex', gap:10, flexWrap:'wrap' }}>{viewInc.solution_images.map((img,i) => <img key={i} src={img} alt="" style={{ maxWidth:280, maxHeight:200, borderRadius:8, border:'1px solid var(--border)' }} />)}</div>}
+              </div>
+            )}
+            {/* Fallback for old-format */}
+            {!viewInc.issue_desc && !viewInc.actions_desc && !viewInc.solution_desc && viewInc.desc && (
+              <div style={{ fontSize:14, color:'var(--text-secondary)', lineHeight:1.8, padding:'4px 0' }} dangerouslySetInnerHTML={{ __html: viewInc.desc || '' }} />
+            )}
+            {/* Footer actions */}
+            <div style={{ display:'flex', gap:8, marginTop:24, paddingTop:16, borderTop:'1px solid var(--border)' }}>
+              <button className="btn btn-secondary" onClick={e => { setViewInc(null); openEdit(viewInc, e); }}>✏ Edit</button>
+              {viewInc.status !== 'Resolved' && (
+                <button className="btn btn-success" onClick={e => { resolve(viewInc.id, e); setViewInc(null); }}>✓ Resolve</button>
+              )}
+              <button className="btn btn-secondary" style={{ marginLeft:'auto' }} onClick={() => setViewInc(null)}>Close</button>
+            </div>
+          </div>
         </Modal>
       )}
     </div>
