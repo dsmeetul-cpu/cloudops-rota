@@ -1,5 +1,5 @@
 // src/Rota.js
-// CloudOps Rota — improved editing: floating cell editor, sticky toolbar, floating bulk bar 23rd May 2026
+// CloudOps Rota — improved editing: floating cell editor, sticky toolbar, floating bulk bar 30th May 2026
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -61,6 +61,15 @@ function getOnCallStatus(user, dateStr) {
   if (user.start_date && dateStr < user.start_date) return { type: 'not_started', label: 'Not started', color: '#64748b' };
   if (user.oncall_start_date && dateStr < user.oncall_start_date) return { type: 'not_ready', label: 'Not on-call yet', color: '#f59e0b' };
   return null;
+}
+
+// ── ISO week number ───────────────────────────────────────────────────────────
+function isoWeek(date) {
+  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const dow = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() + 4 - dow);
+  const jan1 = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  return Math.ceil((((d - jan1) / 86400000) + 1) / 7);
 }
 
 // ── Avatar ────────────────────────────────────────────────────────────────────
@@ -275,6 +284,7 @@ export default function RotaPage({
   const [bulkShift,       setBulkShift]       = useState('daily');
   const [swapSuggestion,  setSwapSuggestion]  = useState(null);
   const [viewMode,        setViewMode]        = useState('compact');
+  const [calendarDate,    setCalendarDate]     = useState(() => new Date());
   const [managerUnlocked, setManagerUnlocked] = useState(false);
   const [lockedCells,     setLockedCells]     = useState(new Set());
   const [showInactive,    setShowInactive]    = useState(false);
@@ -674,10 +684,133 @@ export default function RotaPage({
         {canEdit && <span style={{ fontSize:11, color:'rgba(255,255,255,0.2)', marginLeft:8 }}>Click cell to edit · Ctrl+click to bulk select</span>}
       </div>
 
-      {/* ── Week Grids ─────────────────────────────────────────────────────── */}
-      {weekStarts.map((ws, wi) => {
+      {/* View mode toggle */}
+      <div style={{ display:'flex', gap:8, marginBottom:14, alignItems:'center', flexWrap:'wrap' }}>
+        <span style={{ fontSize:12, color:'#64748b' }}>View:</span>
+        {[['compact','📋 Compact'],['hours','🕐 Timeline'],['calendar','📅 Calendar']].map(([m,l]) => (
+          <button key={m} className={`btn btn-sm ${viewMode===m?'btn-primary':'btn-secondary'}`} onClick={()=>setViewMode(m)}>{l}</button>
+        ))}
+        {viewMode==='calendar' && (
+          <div style={{ display:'flex', gap:6, alignItems:'center', marginLeft:8 }}>
+            <button className="btn btn-secondary btn-sm" onClick={()=>setCalendarDate(d=>{ const n=new Date(d); n.setMonth(n.getMonth()-1); return n; })}>◀</button>
+            <span style={{ fontSize:13, fontWeight:600, color:'#e2e8f0', minWidth:120, textAlign:'center' }}>
+              {calendarDate.toLocaleDateString('en-GB',{month:'long',year:'numeric'})}
+            </span>
+            <button className="btn btn-secondary btn-sm" onClick={()=>setCalendarDate(d=>{ const n=new Date(d); n.setMonth(n.getMonth()+1); return n; })}>▶</button>
+            <button className="btn btn-secondary btn-sm" onClick={()=>setCalendarDate(new Date())}>Today</button>
+          </div>
+        )}
+        {canEdit && viewMode !== 'calendar' && <span style={{ fontSize:11, color:'rgba(255,255,255,0.2)', marginLeft:8 }}>Click cell to edit · Ctrl+click to bulk select</span>}
+      </div>
+
+      {/* ── Calendar View ──────────────────────────────────────────────────── */}
+      {viewMode === 'calendar' && (() => {
+        const today = new Date().toISOString().slice(0,10);
+        const year  = calendarDate.getFullYear();
+        const month = calendarDate.getMonth();
+        // Build days grid: pad to start on Monday
+        const firstDay = new Date(year, month, 1);
+        const startDow = firstDay.getDay() || 7; // 1=Mon … 7=Sun
+        const daysInMonth = new Date(year, month + 1, 0).getDate();
+        const prevMonthDays = startDow - 1;
+        const totalCells = Math.ceil((prevMonthDays + daysInMonth) / 7) * 7;
+        const DAY_HDR = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+        const MON_LBL = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+        const cells = Array.from({length: totalCells}, (_, i) => {
+          const d = new Date(year, month, 1 - prevMonthDays + i);
+          return d;
+        });
+
+        return (
+          <div className="card" style={{ padding:0, overflow:'hidden' }}>
+            {/* Calendar header */}
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(7,1fr)', background:'rgba(255,255,255,0.04)', borderBottom:'1px solid rgba(255,255,255,0.08)' }}>
+              {DAY_HDR.map((d,i) => (
+                <div key={d} style={{ textAlign:'center', padding:'10px 4px', fontSize:11, fontWeight:700, color: i>=5 ? 'rgba(255,255,255,0.35)' : '#94a3b8', letterSpacing:'0.05em' }}>{d}</div>
+              ))}
+            </div>
+            {/* Weeks */}
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(7,1fr)' }}>
+              {cells.map((d, i) => {
+                const ds     = d.toISOString().slice(0,10);
+                const inMonth= d.getMonth() === month;
+                const isToday= ds === today;
+                const dow    = d.getDay();
+                const isWkd  = dow === 0 || dow === 6;
+                const bh     = (UK_BANK_HOLIDAYS||[]).find(b=>b.date===ds);
+                // Show week number on first cell of each row
+                const wNum   = i % 7 === 0 ? isoWeek(d) : null;
+
+                // Which engineers have shifts on this day?
+                const shiftsToday = visibleUsers.map(u => {
+                  if (!isOnCallActive(u, ds)) return null;
+                  const hol = holidays.find(h=>h.userId===u.id && ds>=h.start && ds<=h.end);
+                  const shift = hol ? 'holiday' : (rota[u.id]?.[ds] || 'off');
+                  if (shift === 'off') return null;
+                  return { user: u, shift };
+                }).filter(Boolean);
+
+                return (
+                  <div key={ds} style={{
+                    minHeight: 90,
+                    padding: '6px 6px 4px',
+                    borderRight: (i+1)%7!==0 ? '1px solid rgba(255,255,255,0.05)' : 'none',
+                    borderBottom: '1px solid rgba(255,255,255,0.05)',
+                    background: isToday ? 'rgba(0,194,255,0.06)' : isWkd ? 'rgba(255,255,255,0.015)' : undefined,
+                    opacity: inMonth ? 1 : 0.3,
+                    position: 'relative',
+                  }}>
+                    {/* Week number badge */}
+                    {wNum && (
+                      <div style={{ position:'absolute', top:4, left:3, fontSize:8, color:'#334155', fontFamily:'DM Mono', fontWeight:700, letterSpacing:'0.05em' }}>
+                        W{wNum}
+                      </div>
+                    )}
+                    {/* Day number */}
+                    <div style={{ textAlign:'right', fontSize:12, fontWeight: isToday?800:500,
+                      color: isToday?'var(--accent)': bh?'#fca5a5': isWkd?'rgba(255,255,255,0.3)':'#94a3b8',
+                      marginBottom:4, lineHeight:1 }}>
+                      {d.getDate()}
+                      {bh && <div style={{ fontSize:8, color:'#fca5a5', marginTop:1 }}>{bh.title?.slice(0,10)||'BH'}</div>}
+                    </div>
+                    {/* Shift badges */}
+                    <div style={{ display:'flex', flexDirection:'column', gap:2 }}>
+                      {shiftsToday.slice(0,4).map(({user:u, shift}) => {
+                        const col = SHIFT_COLORS[shift] || {};
+                        return (
+                          <div key={u.id} style={{
+                            display:'flex', alignItems:'center', gap:3,
+                            background: col.bg ? col.bg+'44' : 'transparent',
+                            border: `1px solid ${col.bg ? col.bg+'88' : 'transparent'}`,
+                            borderRadius:4, padding:'2px 4px',
+                            cursor: canEdit && isOnCallActive(u, ds) ? 'pointer' : 'default',
+                          }}
+                          onClick={e => canEdit && isOnCallActive(u,ds) && openCellEditor(u.id, ds, e)}>
+                            <div style={{ width:10, height:10, borderRadius:'50%', background:u.color||'#1d4ed8', flexShrink:0, display:'flex', alignItems:'center', justifyContent:'center', fontSize:6, fontWeight:800, color:'#fff' }}>
+                              {u.name?.charAt(0)}
+                            </div>
+                            <span style={{ fontSize:8, fontWeight:700, color:col.text||'#fff', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', maxWidth:52 }}>
+                              {SHIFT_ABBR[shift]||shift}
+                            </span>
+                          </div>
+                        );
+                      })}
+                      {shiftsToday.length > 4 && (
+                        <div style={{ fontSize:8, color:'#64748b', paddingLeft:2 }}>+{shiftsToday.length-4} more</div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
+      {viewMode !== 'calendar' && weekStarts.map((ws, wi) => {
         const wdates = Array.from({length:8},(_,d) => { const dt=new Date(ws); dt.setDate(ws.getDate()+d); return dt; });
-        const weekDateStr = ws.toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'});
+        const weekNum     = isoWeek(ws);
+        const weekDateStr = ws.toLocaleDateString('en-GB',{day:'numeric',month:'long',year:'numeric'});
         const hourCols = Array.from({length:24},(_,h)=>h);
 
         const getHourActive = (userId, dateStr, hour) => {
@@ -711,7 +844,7 @@ export default function RotaPage({
         if (viewMode==='hours') {
           return (
             <div key={wi} className="card mb-12">
-              <div className="card-title" style={{ fontSize:12, color:'#64748b', marginBottom:10 }}>Week of {weekDateStr}</div>
+              <div className="card-title" style={{ fontSize:12, color:'#64748b', marginBottom:10 }}>Week of {weekDateStr} <span style={{ color:'#475569', fontFamily:'DM Mono' }}>W{weekNum}</span></div>
               <div style={{ display:'flex', marginLeft:100, marginBottom:2 }}>
                 {hourCols.map(h=>(
                   <div key={h} style={{ flex:1, textAlign:'center', fontSize:7, color:'rgba(255,255,255,0.3)', fontFamily:'DM Mono', borderRight:h<23?'1px solid rgba(255,255,255,0.04)':'none' }}>
@@ -784,9 +917,16 @@ export default function RotaPage({
 
         // ── Compact View ─────────────────────────────────────────────────
         return (
-          <div key={wi} className="card mb-12" style={{ overflowX:'auto' }}>
-            <div className="card-title" style={{ fontSize:12, color:'#64748b' }}>Week of {weekDateStr}</div>
-            <table style={{ minWidth:540, borderCollapse:'separate', borderSpacing:0 }}>
+          <div key={wi} className="card mb-12" style={{ padding:0, overflow:'hidden' }}>
+            <div style={{ padding:'12px 16px 8px' }}>
+              <div className="card-title" style={{ fontSize:12, color:'#64748b' }}>Week of {weekDateStr} <span style={{ color:'#475569', fontFamily:'DM Mono' }}>W{weekNum}</span></div>
+            </div>
+            <div style={{ overflowX:'auto' }}>
+            <table style={{ width:'100%', borderCollapse:'separate', borderSpacing:0, tableLayout:'fixed' }}>
+              <colgroup>
+                <col style={{ width:140 }} />
+                {wdates.slice(0,7).map((_,i) => <col key={i} />)}
+              </colgroup>
               <thead>
                 <tr>
                   <th style={{ minWidth:130, paddingBottom:6 }}>Engineer</th>
@@ -797,7 +937,7 @@ export default function RotaPage({
                     return (
                       <th key={di}
                         onClick={()=>canEdit&&selectColumn(ds)}
-                        style={{ textAlign:'center', fontSize:10, paddingBottom:6, color:bh?'#fca5a5':isWkd?'rgba(255,255,255,0.35)':'#94a3b8', background:isWkd?'rgba(255,255,255,0.025)':undefined, borderBottom:'1px solid rgba(255,255,255,0.08)', minWidth:68, cursor:canEdit?'pointer':'default' }}
+                        style={{ textAlign:'center', fontSize:10, paddingBottom:6, color:bh?'#fca5a5':isWkd?'rgba(255,255,255,0.35)':'#94a3b8', background:isWkd?'rgba(255,255,255,0.025)':undefined, borderBottom:'1px solid rgba(255,255,255,0.08)', cursor:canEdit?'pointer':'default' }}
                         title={canEdit?'Click to select entire column':undefined}>
                         <div style={{ fontWeight:800, fontSize:11 }}>{DAY_NAMES[dow]}</div>
                         <div style={{ fontFamily:'DM Mono', fontSize:10, opacity:0.8 }}>{d.getDate()} {MON_SHORT[d.getMonth()]}</div>
@@ -903,6 +1043,7 @@ export default function RotaPage({
                 ))}
               </tbody>
             </table>
+            </div>
           </div>
         );
       })}
