@@ -183,14 +183,25 @@ function londonTimeStr() {
   }).format(new Date());
 }
 
+// ── Local date string ─────────────────────────────────────────────────────────
+// CRITICAL: d.toISOString() returns UTC which can be 1 day behind local time
+// in timezones ahead of UTC (e.g. BST/UTC+1). Always use local date parts.
+function localDateStr(d) {
+  const yyyy = d.getFullYear();
+  const mm   = String(d.getMonth() + 1).padStart(2, '0');
+  const dd   = String(d.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
 // ── Week/month grid helpers ───────────────────────────────────────────────────
 function getWeekDates(offset = 0) {
   const base = new Date();
-  const dow  = (base.getDay() + 6) % 7;
+  const dow  = (base.getDay() + 6) % 7;   // Monday = 0
   base.setDate(base.getDate() - dow + offset * 7);
   return Array.from({ length: 7 }, (_, i) => {
-    const d = new Date(base); d.setDate(base.getDate() + i);
-    return d.toISOString().slice(0, 10);
+    const d = new Date(base);
+    d.setDate(base.getDate() + i);
+    return localDateStr(d);  // ← was d.toISOString().slice(0,10) — UTC shift bug
   });
 }
 function getMonthDates(year, month) {
@@ -199,15 +210,16 @@ function getMonthDates(year, month) {
   const startDow = (first.getDay() + 6) % 7;
   const days     = [];
   for (let pre = startDow - 1; pre >= 0; pre--) {
-    const d = new Date(first); d.setDate(1 - pre);
-    days.push({ date: d.toISOString().slice(0, 10), isCurrentMonth: false });
+    const d = new Date(first);
+    d.setDate(1 - pre);
+    days.push({ date: localDateStr(d), isCurrentMonth: false }); // ← UTC fix
   }
-  for (let d = 1; d <= last.getDate(); d++)
-    days.push({ date: new Date(year, month, d).toISOString().slice(0, 10), isCurrentMonth: true });
+  for (let day = 1; day <= last.getDate(); day++)
+    days.push({ date: localDateStr(new Date(year, month, day)), isCurrentMonth: true }); // ← UTC fix
   while (days.length % 7 !== 0) {
-    const prev = new Date(days[days.length - 1].date + 'T00:00:00');
+    const prev = new Date(days[days.length - 1].date + 'T12:00:00');
     prev.setDate(prev.getDate() + 1);
-    days.push({ date: prev.toISOString().slice(0, 10), isCurrentMonth: false });
+    days.push({ date: localDateStr(prev), isCurrentMonth: false }); // ← UTC fix
   }
   return days;
 }
