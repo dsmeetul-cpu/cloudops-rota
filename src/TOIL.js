@@ -51,16 +51,57 @@ function Input({ label, children }) {
 const IS = { width: '100%', boxSizing: 'border-box', padding: '9px 12px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 7, color: '#e2e8f0', fontSize: 13, outline: 'none' };
 
 // ── TOIL balance calculator ────────────────────────────────────────────────────
-function calcTOILBalance(timesheets, toilEntries, userId) {
-  const ts     = Array.isArray(timesheets) ? timesheets : [];
-  const toil   = Array.isArray(toilEntries) ? toilEntries : Object.values(toilEntries || {});
-  const userTs = ts; // timesheets[uid] is already per-user
-  const workedOC     = userTs.reduce((a, t) => a + (t.weekend_oncall || 0), 0);
-  const autoToil     = Math.min(workedOC, TOIL_MAX_CARRYOVER);
-  const manualAccrued= toil.filter(t => t.userId === userId && t.type === 'Accrued' && t.status === 'approved').reduce((a,t) => a + (+t.hours||0), 0);
-  const used         = toil.filter(t => t.userId === userId && t.type === 'Used'    && t.status === 'approved').reduce((a,t) => a + (+t.hours||0), 0);
-  const balance      = Math.min(autoToil + manualAccrued - used, TOIL_MAX_CARRYOVER);
-  return { workedOC, autoToil, manualAccrued, used, balance, cappedAt: TOIL_MAX_CARRYOVER };
+// Auto-TOIL accrues at 1:1 on WORKED on-call hours (UK WTR 1998).
+// "Worked" = active callouts during on-call (incidents, upgrades, callouts).
+// Standby hours (weekend_oncall, weekday_oncall) do NOT accrue TOIL.
+//
+// Sources of worked on-call hours in timesheets:
+//   t.worked_wd  — weekday callout hours (incidents logged Mon–Fri)
+//   t.worked_we  — weekend callout hours (incidents / upgrades Sat–Sun)
+//   t.upgradeHrs — upgrade day hours (may be stored separately)
+//
+// Manual TOIL entries (type='Accrued', status='approved') add directly.
+// TOIL Used entries (type='Used', status='approved') subtract.
+// Balance is floored at 0 and capped at TOIL_MAX_CARRYOVER (40h).
+function calcTOILBalance(timesheetEntries, toilEntries, userId) {
+  const ts   = Array.isArray(timesheetEntries) ? timesheetEntries : [];
+  const toil = Array.isArray(toilEntries)      ? toilEntries      : Object.values(toilEntries || {});
+
+  // ── Step 1: auto-accrual from worked on-call hours (1:1 per UK WTR) ─────
+  const workedOC = ts.reduce((a, t) => {
+    // Worked hours: active callouts (incidents use worked_wd / worked_we)
+    const wd = t.worked_wd  || 0;
+    const we = t.worked_we  || 0;
+    // Upgrade day hours may be stored in a separate field
+    const upg = t.upgradeHrs || 0;
+    return a + wd + we + upg;
+  }, 0);
+
+  const autoToil = Math.round(workedOC * 10) / 10; // 1:1, no cap yet
+
+  // ── Step 2: manual accrued entries added by manager ─────────────────────
+  const manualAccrued = toil
+    .filter(t => t.userId === userId && t.type === 'Accrued' && t.status === 'approved')
+    .reduce((a, t) => a + (+t.hours || 0), 0);
+
+  // ── Step 3: TOIL used (booked time off, approved) ────────────────────────
+  const used = toil
+    .filter(t => t.userId === userId && t.type === 'Used' && t.status === 'approved')
+    .reduce((a, t) => a + (+t.hours || 0), 0);
+
+  // ── Step 4: balance = accrued − used, floored at 0, capped at 40h ───────
+  const totalAccrued = autoToil + manualAccrued;
+  const balance = Math.min(Math.max(totalAccrued - used, 0), TOIL_MAX_CARRYOVER);
+
+  return {
+    workedOC:      Math.round(workedOC      * 10) / 10,
+    autoToil:      Math.round(autoToil      * 10) / 10,
+    manualAccrued: Math.round(manualAccrued * 10) / 10,
+    used:          Math.round(used          * 10) / 10,
+    totalAccrued:  Math.round(totalAccrued  * 10) / 10,
+    balance:       Math.round(balance       * 10) / 10,
+    cappedAt:      TOIL_MAX_CARRYOVER,
+  };
 }
 
 // ── Main export ───────────────────────────────────────────────────────────────
@@ -207,17 +248,27 @@ export default function TOIL({ users, timesheets, toil, setToil, currentUser, is
                 {/* Stats grid */}
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
                   {[
-                    { l: 'Auto (1:1)', v: `${b.autoToil}h`, c: '#38bdf8' },
-                    { l: 'Manual',     v: `${b.manualAccrued}h`, c: '#93c5fd' },
-                    { l: 'Used',       v: `${b.used}h`, c: '#fcd34d' },
-                    { l: 'Balance',    v: `${b.balance}h`, c: color },
+                    { l: 'Auto (1:1)', v: `${b.autoToil}h`,      c: '#38bdf8', tip: 'From incidents & upgrades' },
+                    { l: 'Manual',     v: `${b.manualAccrued}h`,  c: '#93c5fd', tip: 'Manager-added entries' },
+                    { l: 'Used',       v: `${b.used}h`,           c: '#fcd34d', tip: 'Booked TOIL taken' },
+                    { l: 'Balance',    v: `${b.balance}h`,        c: color,     tip: `Max ${TOIL_MAX_CARRYOVER}h cap` },
                   ].map(s => (
-                    <div key={s.l} style={{ textAlign: 'center' }}>
+                    <div key={s.l} style={{ textAlign: 'center' }} title={s.tip}>
                       <div style={{ fontSize: 9, color: '#475569', marginBottom: 2 }}>{s.l}</div>
                       <div style={{ fontSize: 15, fontWeight: 700, color: s.c, fontFamily: 'DM Mono' }}>{s.v}</div>
                     </div>
                   ))}
                 </div>
+                {b.workedOC > 0 && (
+                  <div style={{ marginTop: 8, fontSize: 10, color: '#475569', fontFamily: 'DM Mono', textAlign: 'center' }}>
+                    {b.workedOC}h worked on-call → {b.autoToil}h TOIL accrued (1:1)
+                  </div>
+                )}
+                {b.workedOC === 0 && b.autoToil === 0 && b.manualAccrued === 0 && (
+                  <div style={{ marginTop: 8, fontSize: 10, color: '#334155', textAlign: 'center' }}>
+                    No worked on-call hours recorded yet
+                  </div>
+                )}
                 {b.balance >= TOIL_MAX_CARRYOVER && (
                   <div style={{ marginTop: 10, background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.25)', borderRadius: 6, padding: '6px 10px', fontSize: 11, color: '#f59e0b' }}>
                     ⚠ At WTR carryover cap — use before year end
