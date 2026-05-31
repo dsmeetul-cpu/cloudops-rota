@@ -203,16 +203,24 @@ export function calcOncallPay(timesheetEntries, hourlyRate, upgradeHrs = 0, bank
 
 // ── calcTOILBalance ───────────────────────────────────────────────────────────
 export function calcTOILBalance(timesheetEntries, toilEntries, userId) {
-  const workedOC = (timesheetEntries || []).reduce((a, e) => a + (e.worked_wd||0) + (e.worked_we||0), 0);
-  const autoToil = workedOC * TOIL_ACCRUAL_RATE;
-  const safeEntries = Array.isArray(toilEntries) ? toilEntries : Object.values(toilEntries || {});
-  const manualAccrued = safeEntries.filter(t => t.userId === userId && t.type === 'Accrued').reduce((a,t) => a + t.hours, 0);
-  const used  = safeEntries.filter(t => t.userId === userId && t.type === 'Used').reduce((a,t) => a + t.hours, 0);
-  const total = autoToil + manualAccrued;
+  const ts   = Array.isArray(timesheetEntries) ? timesheetEntries : [];
+  const safe = Array.isArray(toilEntries) ? toilEntries : Object.values(toilEntries || {});
+  const workedOC      = ts.reduce((a, e) => a + (e.worked_wd||0) + (e.worked_we||0) + (e.upgradeHrs||0), 0);
+  const autoToil      = Math.round(workedOC * 10) / 10;
+  const manualAccrued = safe.filter(t => t.userId===userId && t.type==='Accrued' && t.status==='approved').reduce((a,t)=>a+(+t.hours||0),0);
+  const used          = safe.filter(t => t.userId===userId && t.type==='Used'    && t.status==='approved').reduce((a,t)=>a+(+t.hours||0),0);
+  const totalAccrued  = autoToil + manualAccrued;
+  const balance       = Math.min(Math.max(totalAccrued - used, 0), TOIL_MAX_CARRYOVER);
   return {
-    accrued: Math.round(total * 10) / 10,
-    used:    Math.round(used  * 10) / 10,
-    balance: Math.round((total - used) * 10) / 10,
+    workedOC:      Math.round(workedOC      * 10) / 10,
+    autoToil:      Math.round(autoToil      * 10) / 10,
+    manualAccrued: Math.round(manualAccrued * 10) / 10,
+    used:          Math.round(used          * 10) / 10,
+    totalAccrued:  Math.round(totalAccrued  * 10) / 10,
+    accrued:       Math.round(totalAccrued  * 10) / 10,
+    total:         Math.round(totalAccrued  * 10) / 10,
+    balance:       Math.round(balance       * 10) / 10,
+    cappedAt:      TOIL_MAX_CARRYOVER,
   };
 }
 
