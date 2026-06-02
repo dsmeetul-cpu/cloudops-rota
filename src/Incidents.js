@@ -1,6 +1,6 @@
 // src/Incidents.js
 // CloudOps Rota — Incidents Component
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 29th May 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 2nd June 2026
 
 import React, { useState, useRef, useEffect } from 'react';
 
@@ -587,11 +587,13 @@ export default function Incidents({ users, incidents, setIncidents, currentUser,
       // ── New incident path ──────────────────────────────────────────────────
       const trigram = (currentUser || 'UNK').toUpperCase();
       const id      = `${trigram}-${Date.now()}`;
-      const incDate = new Date().toISOString().slice(0, 10);
+      // Use local date (not UTC) to avoid timezone-shift at midnight
+      const _now    = new Date();
+      const incDate = `${_now.getFullYear()}-${String(_now.getMonth()+1).padStart(2,'0')}-${String(_now.getDate()).padStart(2,'0')}`;
       const newInc  = {
         id, ...form, desc: combinedDesc,
         status: 'Investigating', reporter: currentUser,
-        date: new Date().toISOString().slice(0, 16).replace('T', ' '),
+        date: `${incDate} ${String(_now.getHours()).padStart(2,'0')}:${String(_now.getMinutes()).padStart(2,'0')}`,
         updates: [],
       };
       setIncidents(prev => {
