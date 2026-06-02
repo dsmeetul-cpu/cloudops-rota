@@ -1,6 +1,6 @@
 // src/App.js
 // CloudOps Rota — Full Production Build v2
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 29th May 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 11th May 2026
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
@@ -6240,9 +6240,26 @@ export default function App() {
       if (own === 'manager' && !isManager) { setSyncing(false); return; }
 
       if (own === 'engineer') {
-        // Timesheets/toil/overtime: each engineer owns only their own slice
+        // ── Per-user scoped save ─────────────────────────────────────────────
+        // Engineers only write their own slice to avoid overwriting each other.
+        // Managers write ALL slices — they modify entries for other engineers
+        // (via incidents and upgrade days) and must persist those changes.
+        // We always read Drive first and merge so we never lose entries that
+        // were added by another session since this user loaded the page.
         const driveVal = await driveRead(driveToken, key).catch(() => null);
-        const merged = { ...(driveVal || {}), [currentUser]: (data || {})[currentUser] };
+        const drive = driveVal || {};
+        let merged;
+        if (isManager) {
+          // Manager: merge all local user slices into Drive, local wins per-user
+          // Drive retains any user slices not present in local state
+          merged = { ...drive };
+          Object.keys(data || {}).forEach(uid => {
+            merged[uid] = (data || {})[uid];
+          });
+        } else {
+          // Engineer: only update own slice
+          merged = { ...drive, [currentUser]: (data || {})[currentUser] };
+        }
         await driveWrite(driveToken, key, merged);
       } else {
         // ── Shared / manager keys ─────────────────────────────────────────
@@ -6330,10 +6347,17 @@ export default function App() {
     // Manager-only keys: engineers skip entirely
     if (own === 'manager' && !isManager) return;
 
-    // Engineer-owned keys: only write caller's uid slice
+    // Engineer-owned keys: manager writes all slices, engineer writes only own slice
     if (own === 'engineer') {
       const driveVal = await driveRead(driveToken, key).catch(() => null);
-      const merged = { ...(driveVal || {}), [currentUser]: (localVal || {})[currentUser] };
+      const drive = driveVal || {};
+      let merged;
+      if (isManager) {
+        merged = { ...drive };
+        Object.keys(localVal || {}).forEach(uid => { merged[uid] = (localVal || {})[uid]; });
+      } else {
+        merged = { ...drive, [currentUser]: (localVal || {})[currentUser] };
+      }
       await driveWrite(driveToken, key, merged);
       return;
     }
