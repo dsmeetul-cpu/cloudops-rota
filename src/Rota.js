@@ -272,7 +272,8 @@ function CellEditorPopover({ cell, users, rota, holidays, UK_BANK_HOLIDAYS, upgr
 }
 
 // ── Main Rota Component ───────────────────────────────────────────────────────
-export default function RotaPage({
+// ── Rota content (schedule views) ────────────────────────────────────────────
+function RotaContent({
   users, rota, setRota, holidays, upgrades, swapRequests, setSwapRequests,
   isManager, UK_BANK_HOLIDAYS, generateRota, generateICalFeed, downloadIcal,
 }) {
@@ -288,6 +289,18 @@ export default function RotaPage({
   const [managerUnlocked, setManagerUnlocked] = useState(false);
   const [lockedCells,     setLockedCells]     = useState(new Set());
   const [showInactive,    setShowInactive]    = useState(false);
+  const [activeTab,       setActiveTab]       = useState('rota');
+  const [filterUser,      setFilterUser]      = useState('all');
+  const [filterShift,     setFilterShift]     = useState('all');
+  const [anaReport,       setAnaReport]       = useState('heatmap');
+  const [anaStart,        setAnaStart]        = useState(() => {
+    const d = new Date(); d.setMonth(d.getMonth() - 3);
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  });
+  const [anaEnd, setAnaEnd] = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  });
 
   const toggleLock  = (userId, date) => {
     const key = `${userId}::${date}`;
@@ -675,23 +688,18 @@ export default function RotaPage({
 
       <ShiftLegend />
 
-      {/* View mode toggle */}
-      <div style={{ display:'flex', gap:8, marginBottom:14, alignItems:'center' }}>
-        <span style={{ fontSize:12, color:'#64748b' }}>View:</span>
-        {[['compact','📋 Compact'],['hours','🕐 Timeline']].map(([m,l]) => (
-          <button key={m} className={`btn btn-sm ${viewMode===m?'btn-primary':'btn-secondary'}`} onClick={()=>setViewMode(m)}>{l}</button>
-        ))}
-        {canEdit && <span style={{ fontSize:11, color:'rgba(255,255,255,0.2)', marginLeft:8 }}>Click cell to edit · Ctrl+click to bulk select</span>}
-      </div>
-
-      {/* View mode toggle */}
-      <div style={{ display:'flex', gap:8, marginBottom:14, alignItems:'center', flexWrap:'wrap' }}>
-        <span style={{ fontSize:12, color:'#64748b' }}>View:</span>
+      {/* ── Unified filter + view bar ──────────────────────────────────────── */}
+      <div style={{ display:'flex', gap:8, marginBottom:14, alignItems:'center', flexWrap:'wrap',
+        padding:'10px 14px', background:'var(--bg-card)', border:'1px solid var(--border)',
+        borderRadius:10 }}>
+        {/* View mode */}
+        <span style={{ fontSize:11, color:'#64748b', fontWeight:600 }}>View:</span>
         {[['compact','📋 Compact'],['hours','🕐 Timeline'],['calendar','📅 Calendar']].map(([m,l]) => (
-          <button key={m} className={`btn btn-sm ${viewMode===m?'btn-primary':'btn-secondary'}`} onClick={()=>setViewMode(m)}>{l}</button>
+          <button key={m} className={`btn btn-sm ${viewMode===m?'btn-primary':'btn-secondary'}`}
+            onClick={()=>setViewMode(m)}>{l}</button>
         ))}
         {viewMode==='calendar' && (
-          <div style={{ display:'flex', gap:6, alignItems:'center', marginLeft:8 }}>
+          <div style={{ display:'flex', gap:6, alignItems:'center', marginLeft:4 }}>
             <button className="btn btn-secondary btn-sm" onClick={()=>setCalendarDate(d=>{ const n=new Date(d); n.setMonth(n.getMonth()-1); return n; })}>◀</button>
             <span style={{ fontSize:13, fontWeight:600, color:'#e2e8f0', minWidth:120, textAlign:'center' }}>
               {calendarDate.toLocaleDateString('en-GB',{month:'long',year:'numeric'})}
@@ -700,7 +708,62 @@ export default function RotaPage({
             <button className="btn btn-secondary btn-sm" onClick={()=>setCalendarDate(new Date())}>Today</button>
           </div>
         )}
-        {canEdit && viewMode !== 'calendar' && <span style={{ fontSize:11, color:'rgba(255,255,255,0.2)', marginLeft:8 }}>Click cell to edit · Ctrl+click to bulk select</span>}
+
+        <div style={{ width:1, height:22, background:'rgba(255,255,255,0.1)' }} />
+
+        {/* Date navigation */}
+        <button className="btn btn-secondary btn-sm" onClick={()=>setStartDate(d=>{
+          const dt=new Date(d+'T12:00:00'); dt.setDate(dt.getDate()-7*weeks); return dt.toISOString().slice(0,10);
+        })}>◀◀ {weeks}w</button>
+        <button className="btn btn-secondary btn-sm" onClick={()=>setStartDate(d=>{
+          const dt=new Date(d+'T12:00:00'); dt.setDate(dt.getDate()-7); return dt.toISOString().slice(0,10);
+        })}>◀ Week</button>
+        <button className="btn btn-secondary btn-sm" onClick={()=>{
+          const d=new Date(); const dow=d.getDay()||7;
+          d.setDate(d.getDate()-(dow-1));
+          setStartDate(d.toISOString().slice(0,10));
+        }} style={{ color:'var(--accent)', borderColor:'var(--accent)' }}>Today</button>
+        <button className="btn btn-secondary btn-sm" onClick={()=>setStartDate(d=>{
+          const dt=new Date(d+'T12:00:00'); dt.setDate(dt.getDate()+7); return dt.toISOString().slice(0,10);
+        })}>Week ▶</button>
+        <button className="btn btn-secondary btn-sm" onClick={()=>setStartDate(d=>{
+          const dt=new Date(d+'T12:00:00'); dt.setDate(dt.getDate()+7*weeks); return dt.toISOString().slice(0,10);
+        })}>{weeks}w ▶▶</button>
+
+        <div style={{ width:1, height:22, background:'rgba(255,255,255,0.1)' }} />
+
+        {/* Engineer filter */}
+        <select className="select" value={filterUser} onChange={e=>setFilterUser(e.target.value)}
+          style={{ fontSize:11, padding:'4px 8px', width:140 }}>
+          <option value="all">All Engineers</option>
+          {[...activeUsers, ...inactiveUsers].map(u=>(
+            <option key={u.id} value={u.id}>{u.name.split(' ')[0]} ({u.id})</option>
+          ))}
+        </select>
+
+        {/* Shift type filter */}
+        <select className="select" value={filterShift} onChange={e=>setFilterShift(e.target.value)}
+          style={{ fontSize:11, padding:'4px 8px', width:140 }}>
+          <option value="all">All Shifts</option>
+          <option value="daily">Daily Shift</option>
+          <option value="evening">Weekday On-Call</option>
+          <option value="weekend">Weekend On-Call</option>
+          <option value="upgrade">Upgrade Day</option>
+          <option value="holiday">Holiday</option>
+          <option value="bankholiday">Bank Holiday</option>
+          <option value="off">Off / Empty</option>
+        </select>
+
+        {(filterUser !== 'all' || filterShift !== 'all') && (
+          <button className="btn btn-secondary btn-sm" onClick={()=>{setFilterUser('all');setFilterShift('all');}}
+            style={{ color:'#fca5a5' }}>✕ Clear filters</button>
+        )}
+
+        {canEdit && viewMode !== 'calendar' && (
+          <span style={{ fontSize:10, color:'rgba(255,255,255,0.2)', marginLeft:4 }}>
+            Click cell to edit · Ctrl+click to bulk select
+          </span>
+        )}
       </div>
 
       {/* ── Calendar View ──────────────────────────────────────────────────── */}
@@ -811,6 +874,23 @@ export default function RotaPage({
         const wdates = Array.from({length:8},(_,d) => { const dt=new Date(ws); dt.setDate(ws.getDate()+d); return dt; });
         const weekNum     = isoWeek(ws);
         const weekDateStr = ws.toLocaleDateString('en-GB',{day:'numeric',month:'long',year:'numeric'});
+
+        // Apply engineer + shift filters
+        const filteredUsers = visibleUsers.filter(u => {
+          if (filterUser !== 'all' && u.id !== filterUser) return false;
+          if (filterShift !== 'all') {
+            // Show row only if engineer has that shift on at least one day this week
+            const hasShift = wdates.slice(0,7).some(d => {
+              const ds = d.toISOString().slice(0,10);
+              const hol = holidays.find(h=>h.userId===u.id && ds>=h.start && ds<=h.end);
+              const shift = hol ? 'holiday' : (rota[u.id]?.[ds] || 'off');
+              return shift === filterShift;
+            });
+            if (!hasShift) return false;
+          }
+          return true;
+        });
+        if (filteredUsers.length === 0) return null;
         const hourCols = Array.from({length:24},(_,h)=>h);
 
         const getHourActive = (userId, dateStr, hour) => {
@@ -867,7 +947,7 @@ export default function RotaPage({
                       </div>
                       <div style={{ flex:1, height:1, background:'rgba(255,255,255,0.06)' }} />
                     </div>
-                    {visibleUsers.map(u => {
+                    {filteredUsers.map(u => {
                       const hol   = holidays.find(h=>h.userId===u.id && ds>=h.start && ds<=h.end);
                       const active= isOnCallActive(u, ds);
                       const status= getOnCallStatus(u, ds);
@@ -950,7 +1030,7 @@ export default function RotaPage({
                 </tr>
               </thead>
               <tbody>
-                {visibleUsers.map(u => (
+                {filteredUsers.map(u => (
                   <tr key={u.id}>
                     <td style={{ paddingRight:8, paddingTop:3, paddingBottom:3 }}>
                       <div style={{ display:'flex', alignItems:'center', gap:6 }}>
@@ -1048,11 +1128,494 @@ export default function RotaPage({
         );
       })}
 
-      {canEdit && bulkSelected.size === 0 && (
+      {canEdit && bulkSelected.size === 0 && activeTab === 'rota' && (
         <div style={{ fontSize:11, color:'#334155', marginTop:8, textAlign:'center', padding:'8px 0', letterSpacing:'0.02em' }}>
-          💡 <strong style={{ color:'#475569' }}>Click</strong> cell to edit · <strong style={{ color:'#475569' }}>Ctrl+click</strong> to bulk select · <strong style={{ color:'#475569' }}>Click column header</strong> to select day · <strong style={{ color:'#475569' }}>Click name</strong> to select row
+          💡 <strong style={{ color:'#475569' }}>Click</strong> cell to edit · <strong style={{ color:'#475569' }}>Ctrl+click</strong> bulk select · <strong style={{ color:'#475569' }}>Click column header</strong> to select day · <strong style={{ color:'#475569' }}>Click name</strong> to select row
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Rota Analytics ────────────────────────────────────────────────────────────
+function RotaAnalytics({ users, rota, holidays, UK_BANK_HOLIDAYS, upgrades }) {
+  const today = (() => { const d=new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; })();
+  const [report, setReport] = React.useState('heatmap');
+  const [start, setStart]   = React.useState(() => { const d=new Date(); d.setMonth(d.getMonth()-3); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; });
+  const [end, setEnd]       = React.useState(today);
+  const [selUser, setSelUser] = React.useState('all');
+
+  const activeUsers = users.filter(u => !u.termination_date || u.termination_date >= start);
+
+  // ── Build date range ───────────────────────────────────────────────────────
+  const allDates = React.useMemo(() => {
+    const dates = []; const d = new Date(start+'T12:00:00');
+    const e = new Date(end+'T12:00:00');
+    while (d <= e) {
+      dates.push(d.toISOString().slice(0,10));
+      d.setDate(d.getDate()+1);
+    }
+    return dates;
+  }, [start, end]);
+
+  // ── Per-user, per-date shift ───────────────────────────────────────────────
+  const getShift = (uid, ds) => {
+    const hol = (holidays||[]).find(h=>h.userId===uid && ds>=h.start && ds<=h.end);
+    if (hol) return 'holiday';
+    const bh = (UK_BANK_HOLIDAYS||[]).find(b=>b.date===ds);
+    const r  = rota[uid]?.[ds] || 'off';
+    if (bh && r !== 'off') return r;
+    if (bh) return 'bankholiday';
+    return r;
+  };
+
+  // ── Aggregated stats ──────────────────────────────────────────────────────
+  const SHIFT_HRS = { daily:9, evening:12, weekend:12, upgrade:8, holiday:0, bankholiday:22, off:0 };
+  const stats = React.useMemo(() => {
+    return activeUsers.map(u => {
+      const counts = {}; const hrs = {};
+      const weeklyHrs = {};
+      allDates.forEach(ds => {
+        const s = getShift(u.id, ds);
+        counts[s] = (counts[s]||0)+1;
+        hrs[s]    = (hrs[s]||0)+(SHIFT_HRS[s]||0);
+        const wk  = ds.slice(0,8)+'01'; // rough week bucket
+        weeklyHrs[ds.slice(0,7)] = (weeklyHrs[ds.slice(0,7)]||0)+(SHIFT_HRS[s]||0);
+      });
+      const totalShifts = allDates.filter(ds=>getShift(u.id,ds)!=='off').length;
+      const totalHrs    = Object.values(hrs).reduce((a,b)=>a+b,0);
+      return { user:u, counts, hrs, totalShifts, totalHrs, weeklyHrs };
+    });
+  }, [activeUsers, allDates]); // eslint-disable-line
+
+  // ── Colour map ─────────────────────────────────────────────────────────────
+  const C = { daily:'#1e40af', evening:'#166534', weekend:'#854d0e', upgrade:'#991b1b', holiday:'#92400e', bankholiday:'#7f1d1d', off:'transparent' };
+  const TXT = { daily:'#bfdbfe', evening:'#bbf7d0', weekend:'#fef08a', upgrade:'#fecaca', holiday:'#fde68a', bankholiday:'#fca5a5', off:'#334155' };
+
+  const REPORTS = [
+    { id:'heatmap',      label:'🗓 Coverage Heatmap' },
+    { id:'distribution', label:'📊 Shift Distribution' },
+    { id:'workload',     label:'⚡ Engineer Workload' },
+    { id:'trends',       label:'📈 Weekly Trends' },
+    { id:'gaps',         label:'⚠️ Coverage Gaps' },
+    { id:'summary',      label:'📋 Summary Table' },
+  ];
+
+  return (
+    <div>
+      {/* ── Controls ──────────────────────────────────────────────────────── */}
+      <div style={{ display:'flex', gap:10, flexWrap:'wrap', alignItems:'flex-end', padding:'12px 16px',
+        background:'var(--bg-card)', border:'1px solid var(--border)', borderRadius:10, marginBottom:16 }}>
+        <div>
+          <div style={{ fontSize:10, color:'#475569', marginBottom:4, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.06em' }}>From</div>
+          <input className="input" type="date" value={start} onChange={e=>setStart(e.target.value)} style={{ width:148 }}/>
+        </div>
+        <div>
+          <div style={{ fontSize:10, color:'#475569', marginBottom:4, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.06em' }}>To</div>
+          <input className="input" type="date" value={end} onChange={e=>setEnd(e.target.value)} style={{ width:148 }}/>
+        </div>
+        {/* Quick ranges */}
+        <div style={{ display:'flex', flexDirection:'column', gap:3 }}>
+          <div style={{ fontSize:10, color:'#475569', fontWeight:700, textTransform:'uppercase', letterSpacing:'0.06em' }}>Quick Range</div>
+          <div style={{ display:'flex', gap:4 }}>
+            {[['Last 30d',30],['Last 90d',90],['Last 6mo',182],['Last year',365]].map(([lbl,days])=>(
+              <button key={lbl} className="btn btn-secondary btn-sm" onClick={()=>{
+                const e=new Date(); const s=new Date(); s.setDate(s.getDate()-days);
+                const fmt=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+                setStart(fmt(s)); setEnd(fmt(e));
+              }}>{lbl}</button>
+            ))}
+          </div>
+        </div>
+        <div style={{ width:1, height:40, background:'rgba(255,255,255,0.08)' }}/>
+        <div>
+          <div style={{ fontSize:10, color:'#475569', marginBottom:4, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.06em' }}>Engineer</div>
+          <select className="select" value={selUser} onChange={e=>setSelUser(e.target.value)} style={{ width:160 }}>
+            <option value="all">All Engineers</option>
+            {activeUsers.map(u=><option key={u.id} value={u.id}>{u.name}</option>)}
+          </select>
+        </div>
+        <div style={{ marginLeft:'auto', fontSize:11, color:'#475569', fontFamily:'DM Mono' }}>
+          {allDates.length} days · {activeUsers.length} engineers
+        </div>
+      </div>
+
+      {/* ── Report tabs ───────────────────────────────────────────────────── */}
+      <div style={{ display:'flex', gap:4, marginBottom:16, flexWrap:'wrap', borderBottom:'1px solid var(--border)', paddingBottom:8 }}>
+        {REPORTS.map(r=>(
+          <button key={r.id} onClick={()=>setReport(r.id)}
+            style={{ padding:'6px 14px', borderRadius:8, border:`1px solid ${report===r.id?'var(--accent)':'var(--border)'}`,
+              background:report===r.id?'rgba(0,194,255,0.1)':'transparent',
+              color:report===r.id?'var(--accent)':'#64748b', fontSize:12, fontWeight:600, cursor:'pointer' }}>
+            {r.label}
+          </button>
+        ))}
+      </div>
+
+      {/* ── Coverage Heatmap ─────────────────────────────────────────────── */}
+      {report==='heatmap' && (() => {
+        const usersToShow = selUser==='all' ? activeUsers : activeUsers.filter(u=>u.id===selUser);
+        // Show max 90 days to keep it readable
+        const showDates = allDates.length > 90 ? allDates.slice(-90) : allDates;
+        const cellW = Math.max(12, Math.min(28, Math.floor((window.innerWidth - 280) / showDates.length)));
+        return (
+          <div className="card" style={{ overflowX:'auto' }}>
+            <div style={{ marginBottom:10, fontSize:13, fontWeight:700 }}>Coverage Heatmap
+              <span style={{ fontSize:11, color:'#475569', fontWeight:400, marginLeft:8 }}>
+                {allDates.length > 90 ? `Showing last 90 of ${allDates.length} days` : `${allDates.length} days`}
+              </span>
+            </div>
+            {/* Month headers */}
+            <div style={{ display:'flex', marginLeft:140, marginBottom:2 }}>
+              {showDates.reduce((acc,ds,i)=>{
+                const m=ds.slice(0,7);
+                if (!acc.length||acc[acc.length-1].m!==m) acc.push({m,start:i,count:1});
+                else acc[acc.length-1].count++;
+                return acc;
+              },[]).map(({m,count})=>(
+                <div key={m} style={{ width:count*cellW, fontSize:9, color:'#475569', fontFamily:'DM Mono', fontWeight:700, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', paddingLeft:2 }}>
+                  {new Date(m+'-01T12:00:00').toLocaleDateString('en-GB',{month:'short',year:'2-digit'})}
+                </div>
+              ))}
+            </div>
+            {/* Engineer rows */}
+            {usersToShow.map(u=>(
+              <div key={u.id} style={{ display:'flex', alignItems:'center', marginBottom:3 }}>
+                <div style={{ width:140, display:'flex', alignItems:'center', gap:6, flexShrink:0, paddingRight:8 }}>
+                  <Avatar user={u} size={18}/>
+                  <span style={{ fontSize:11, color:'#94a3b8', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{u.name.split(' ')[0]}</span>
+                </div>
+                <div style={{ display:'flex', gap:1 }}>
+                  {showDates.map(ds=>{
+                    const s=getShift(u.id,ds);
+                    const dow=new Date(ds+'T12:00:00').getDay();
+                    return <div key={ds} title={`${ds} — ${s}`} style={{ width:cellW-1, height:18, background:s==='off'?(dow===0||dow===6?'rgba(255,255,255,0.03)':'rgba(255,255,255,0.06)'):C[s]||'#334155', borderRadius:2, flexShrink:0, border: ds===today?'1px solid #00c2ff':'none' }}/>;
+                  })}
+                </div>
+              </div>
+            ))}
+            {/* Legend */}
+            <div style={{ display:'flex', gap:10, marginTop:10, flexWrap:'wrap' }}>
+              {Object.entries(C).filter(([k])=>k!=='off').map(([k,bg])=>(
+                <div key={k} style={{ display:'flex', alignItems:'center', gap:4, fontSize:10, color:'#64748b' }}>
+                  <div style={{ width:12, height:12, background:bg, borderRadius:2 }}/>
+                  {SHIFT_COLORS[k]?.label||k}
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ── Shift Distribution ───────────────────────────────────────────── */}
+      {report==='distribution' && (() => {
+        const usersToShow = selUser==='all' ? activeUsers : activeUsers.filter(u=>u.id===selUser);
+        const shiftTypes  = ['daily','evening','weekend','upgrade','holiday','bankholiday'];
+        const maxVal = Math.max(...usersToShow.map(u=>{
+          const d = stats.find(s=>s.user.id===u.id); return d ? Math.max(...shiftTypes.map(t=>d.counts[t]||0)) : 0;
+        }), 1);
+        return (
+          <div className="card">
+            <div style={{ marginBottom:14, fontSize:13, fontWeight:700 }}>Shift Distribution per Engineer</div>
+            {/* Legend */}
+            <div style={{ display:'flex', gap:10, marginBottom:14, flexWrap:'wrap' }}>
+              {shiftTypes.map(t=><div key={t} style={{ display:'flex', alignItems:'center', gap:4, fontSize:10, color:'#64748b' }}>
+                <div style={{ width:10, height:10, background:C[t], borderRadius:2 }}/>{SHIFT_COLORS[t]?.label||t}
+              </div>)}
+            </div>
+            {usersToShow.map(u=>{
+              const d=stats.find(s=>s.user.id===u.id);
+              if (!d) return null;
+              return (
+                <div key={u.id} style={{ marginBottom:12 }}>
+                  <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:4 }}>
+                    <Avatar user={u} size={20}/>
+                    <span style={{ fontSize:12, color:'#94a3b8', width:120 }}>{u.name.split(' ')[0]}</span>
+                    <span style={{ fontSize:11, color:'#475569', fontFamily:'DM Mono' }}>{d.totalShifts} shifts · {d.totalHrs}h</span>
+                  </div>
+                  <div style={{ display:'flex', gap:2, height:20 }}>
+                    {shiftTypes.map(t=>{
+                      const cnt=d.counts[t]||0; if (!cnt) return null;
+                      const w=Math.round((cnt/maxVal)*400);
+                      return <div key={t} title={`${SHIFT_COLORS[t]?.label||t}: ${cnt} days`}
+                        style={{ width:w, height:'100%', background:C[t], borderRadius:3, display:'flex', alignItems:'center', justifyContent:'center', overflow:'hidden', minWidth:cnt?4:0 }}>
+                        {w>20&&<span style={{ fontSize:9, color:'#fff', fontWeight:700 }}>{cnt}</span>}
+                      </div>;
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        );
+      })()}
+
+      {/* ── Engineer Workload ─────────────────────────────────────────────── */}
+      {report==='workload' && (() => {
+        const usersToShow = selUser==='all' ? activeUsers : activeUsers.filter(u=>u.id===selUser);
+        const maxHrs = Math.max(...usersToShow.map(u=>stats.find(s=>s.user.id===u.id)?.totalHrs||0), 1);
+        const sorted = [...usersToShow].sort((a,b)=>(stats.find(s=>s.user.id===b.id)?.totalHrs||0)-(stats.find(s=>s.user.id===a.id)?.totalHrs||0));
+        return (
+          <div className="card">
+            <div style={{ marginBottom:14, fontSize:13, fontWeight:700 }}>Engineer On-Call Workload ({start} → {end})</div>
+            <svg width="100%" height={Math.max(sorted.length*52+60, 200)} style={{ overflow:'visible' }}>
+              {sorted.map((u,i)=>{
+                const d=stats.find(s=>s.user.id===u.id);
+                const totalH=d?.totalHrs||0;
+                const barW=Math.round((totalH/maxHrs)*560);
+                const y=i*52+10;
+                return (
+                  <g key={u.id}>
+                    <text x={130} y={y+14} textAnchor="end" fontSize={11} fill="#94a3b8">{u.name.split(' ')[0]}</text>
+                    {/* Total bar */}
+                    <rect x={140} y={y} width={barW} height={20} rx={4} fill={u.color||'#1d4ed8'} opacity={0.7}/>
+                    {/* Worked hours segment */}
+                    {d && (() => {
+                      const workedH=(d.hrs.daily||0)+(d.hrs.upgrade||0);
+                      const workedW=Math.round((workedH/maxHrs)*560);
+                      const standbyH=(d.hrs.evening||0)+(d.hrs.weekend||0)+(d.hrs.bankholiday||0);
+                      const standbyW=Math.round((standbyH/maxHrs)*560);
+                      return <>
+                        <rect x={140} y={y} width={workedW} height={10} rx={4} fill="#166534" opacity={0.9}/>
+                        <rect x={140} y={y+10} width={standbyW} height={10} rx={4} fill="#854d0e" opacity={0.9}/>
+                      </>;
+                    })()}
+                    <text x={148+barW} y={y+14} fontSize={11} fill="#94a3b8" fontFamily="DM Mono">{totalH}h</text>
+                    {/* Breakdown sub-label */}
+                    {d && <text x={140} y={y+34} fontSize={9} fill="#475569">
+                      {`Daily: ${d.hrs.daily||0}h  |  Standby: ${(d.hrs.evening||0)+(d.hrs.weekend||0)}h  |  Upgrades: ${d.hrs.upgrade||0}h  |  Shifts: ${d.totalShifts}`}
+                    </text>}
+                  </g>
+                );
+              })}
+              <text x={140} y={sorted.length*52+50} fontSize={9} fill="#334155">■ Worked (blue)  ■ Daily (green top)  ■ Standby (amber bottom)</text>
+            </svg>
+          </div>
+        );
+      })()}
+
+      {/* ── Weekly Trends ────────────────────────────────────────────────── */}
+      {report==='trends' && (() => {
+        const usersToShow = selUser==='all' ? activeUsers.slice(0,6) : activeUsers.filter(u=>u.id===selUser);
+        // Build weekly buckets
+        const weeks = [];
+        const tmp = {}; // weekLabel → { uid: hrs }
+        allDates.forEach(ds => {
+          const d=new Date(ds+'T12:00:00'); const dow=(d.getDay()+6)%7; const mon=new Date(d); mon.setDate(d.getDate()-dow);
+          const wk=mon.toISOString().slice(0,10);
+          if (!tmp[wk]) { tmp[wk]={}; weeks.push(wk); }
+          usersToShow.forEach(u => {
+            const s=getShift(u.id,ds);
+            tmp[wk][u.id]=(tmp[wk][u.id]||0)+(SHIFT_HRS[s]||0);
+          });
+        });
+        const wkList=Object.keys(tmp).sort();
+        const maxV=Math.max(...wkList.flatMap(w=>usersToShow.map(u=>tmp[w][u.id]||0)),1);
+        const W=600; const H=200; const padL=40; const padB=30;
+        const xStep=wkList.length>1?(W-padL)/(wkList.length-1):W-padL;
+        const COLORS=['#3b82f6','#22c55e','#f59e0b','#ef4444','#a855f7','#14b8a6'];
+        return (
+          <div className="card">
+            <div style={{ marginBottom:14, fontSize:13, fontWeight:700 }}>Weekly On-Call Hours Trend</div>
+            <div style={{ overflowX:'auto' }}>
+              <svg width={Math.max(W+padL+20, wkList.length*30+padL)} height={H+padB+40} style={{ minWidth:400 }}>
+                {/* Y gridlines */}
+                {[0,0.25,0.5,0.75,1].map(p=>{
+                  const y=H-p*H;
+                  return <g key={p}>
+                    <line x1={padL} y1={y} x2={padL+W} y2={y} stroke="rgba(255,255,255,0.06)" strokeWidth={1}/>
+                    <text x={padL-4} y={y+4} fontSize={9} fill="#475569" textAnchor="end">{Math.round(p*maxV)}h</text>
+                  </g>;
+                })}
+                {/* Lines per user */}
+                {usersToShow.map((u,ui)=>{
+                  const pts=wkList.map((w,i)=>({x:padL+i*xStep, y:H-((tmp[w][u.id]||0)/maxV)*H}));
+                  const path=pts.map((p,i)=>`${i===0?'M':'L'}${p.x},${p.y}`).join(' ');
+                  return <g key={u.id}>
+                    <path d={path} stroke={COLORS[ui%COLORS.length]} strokeWidth={2} fill="none"/>
+                    {pts.map((p,i)=><circle key={i} cx={p.x} cy={p.y} r={3} fill={COLORS[ui%COLORS.length]}/>)}
+                  </g>;
+                })}
+                {/* X axis labels */}
+                {wkList.filter((_,i)=>i%Math.max(1,Math.floor(wkList.length/8))===0).map((w,i)=>{
+                  const idx=wkList.indexOf(w);
+                  return <text key={w} x={padL+idx*xStep} y={H+16} fontSize={8} fill="#475569" textAnchor="middle" transform={`rotate(-30,${padL+idx*xStep},${H+16})`}>{w.slice(5)}</text>;
+                })}
+                {/* Legend */}
+                {usersToShow.map((u,ui)=>(
+                  <g key={u.id}>
+                    <rect x={padL+ui*90} y={H+padB+16} width={10} height={10} rx={2} fill={COLORS[ui%COLORS.length]}/>
+                    <text x={padL+ui*90+14} y={H+padB+25} fontSize={10} fill="#94a3b8">{u.name.split(' ')[0]}</text>
+                  </g>
+                ))}
+              </svg>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ── Coverage Gaps ────────────────────────────────────────────────── */}
+      {report==='gaps' && (() => {
+        const gaps = allDates.filter(ds=>{
+          const dow=new Date(ds+'T12:00:00').getDay();
+          const bh=(UK_BANK_HOLIDAYS||[]).find(b=>b.date===ds);
+          const covered=activeUsers.some(u=>{
+            const s=getShift(u.id,ds); return s!=='off'&&s!=='holiday';
+          });
+          return !covered;
+        }).slice(0,60);
+        const lowCoverage=allDates.filter(ds=>{
+          const count=activeUsers.filter(u=>{ const s=getShift(u.id,ds); return s!=='off'&&s!=='holiday'; }).length;
+          return count===1;
+        }).slice(0,60);
+        return (
+          <div className="card">
+            <div style={{ marginBottom:14, fontSize:13, fontWeight:700 }}>Coverage Gaps Analysis</div>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }}>
+              <div>
+                <div style={{ fontSize:12, fontWeight:700, color:'#fca5a5', marginBottom:8 }}>
+                  🔴 Zero Coverage ({gaps.length} days)
+                </div>
+                {gaps.length===0?<div style={{ fontSize:12, color:'#6ee7b7' }}>✅ No gaps found in this period</div>:
+                  <div style={{ display:'flex', flexWrap:'wrap', gap:4 }}>
+                    {gaps.map(ds=>{
+                      const d=new Date(ds+'T12:00:00');
+                      return <div key={ds} style={{ background:'rgba(239,68,68,0.15)', border:'1px solid rgba(239,68,68,0.3)', borderRadius:5, padding:'3px 8px', fontSize:11, fontFamily:'DM Mono', color:'#fca5a5' }}>
+                        {d.toLocaleDateString('en-GB',{day:'numeric',month:'short'})}
+                      </div>;
+                    })}
+                  </div>
+                }
+              </div>
+              <div>
+                <div style={{ fontSize:12, fontWeight:700, color:'#fcd34d', marginBottom:8 }}>
+                  ⚠️ Single Cover ({lowCoverage.length} days)
+                </div>
+                {lowCoverage.length===0?<div style={{ fontSize:12, color:'#6ee7b7' }}>✅ No single-cover days found</div>:
+                  <div style={{ display:'flex', flexWrap:'wrap', gap:4 }}>
+                    {lowCoverage.map(ds=>{
+                      const d=new Date(ds+'T12:00:00');
+                      const who=activeUsers.find(u=>getShift(u.id,ds)!=='off'&&getShift(u.id,ds)!=='holiday');
+                      return <div key={ds} title={who?.name} style={{ background:'rgba(245,158,11,0.12)', border:'1px solid rgba(245,158,11,0.3)', borderRadius:5, padding:'3px 8px', fontSize:11, fontFamily:'DM Mono', color:'#fcd34d' }}>
+                        {d.toLocaleDateString('en-GB',{day:'numeric',month:'short'})} <span style={{ fontSize:9 }}>({who?.name?.split(' ')[0]||'?'})</span>
+                      </div>;
+                    })}
+                  </div>
+                }
+              </div>
+            </div>
+            {/* Coverage % chart */}
+            <div style={{ marginTop:20 }}>
+              <div style={{ fontSize:12, fontWeight:700, color:'#e2e8f0', marginBottom:10 }}>📊 Daily Coverage Count</div>
+              <div style={{ display:'flex', alignItems:'flex-end', gap:1, height:80, overflowX:'auto' }}>
+                {allDates.slice(-60).map(ds=>{
+                  const count=activeUsers.filter(u=>{ const s=getShift(u.id,ds); return s!=='off'&&s!=='holiday'; }).length;
+                  const maxC=Math.max(activeUsers.length,1);
+                  const h=Math.round((count/maxC)*80);
+                  const col=count===0?'#ef4444':count===1?'#f59e0b':'#22c55e';
+                  return <div key={ds} title={`${ds}: ${count} engineers`} style={{ width:8, height:h||2, background:col, borderRadius:'2px 2px 0 0', flexShrink:0, opacity:0.85 }}/>;
+                })}
+              </div>
+              <div style={{ fontSize:9, color:'#334155', marginTop:4, fontFamily:'DM Mono' }}>
+                🔴 = 0 engineers  🟡 = 1 engineer  🟢 = 2+ engineers  (last 60 days shown)
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ── Summary Table ────────────────────────────────────────────────── */}
+      {report==='summary' && (() => {
+        const usersToShow = selUser==='all' ? activeUsers : activeUsers.filter(u=>u.id===selUser);
+        const shiftTypes=['daily','evening','weekend','upgrade','holiday','bankholiday'];
+        return (
+          <div className="card" style={{ overflowX:'auto' }}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:14 }}>
+              <div style={{ fontSize:13, fontWeight:700 }}>Summary Report: {start} → {end}</div>
+              <button className="btn btn-secondary btn-sm" onClick={()=>{
+                const rows=[['Engineer','Daily','WD OC','WE OC','Upgrade','Holiday','BH','Total Shifts','Total Hours']];
+                usersToShow.forEach(u=>{
+                  const d=stats.find(s=>s.user.id===u.id);
+                  rows.push([u.name,...shiftTypes.map(t=>d?.counts[t]||0),d?.totalShifts||0,d?.totalHrs||0]);
+                });
+                const csv=rows.map(r=>r.join(',')).join('\n');
+                const b=new Blob([csv],{type:'text/csv'}); const a=document.createElement('a'); a.href=URL.createObjectURL(b); a.download=`rota-report-${start}-${end}.csv`; a.click();
+              }}>📥 Export CSV</button>
+            </div>
+            <table style={{ width:'100%', borderCollapse:'collapse' }}>
+              <thead>
+                <tr>
+                  <th style={{ textAlign:'left', padding:'8px 10px', fontSize:10, fontWeight:700, textTransform:'uppercase', color:'#475569', borderBottom:'1px solid rgba(255,255,255,0.08)', letterSpacing:'0.06em' }}>Engineer</th>
+                  {shiftTypes.map(t=><th key={t} style={{ textAlign:'center', padding:'8px 6px', fontSize:10, fontWeight:700, textTransform:'uppercase', color:'#475569', borderBottom:'1px solid rgba(255,255,255,0.08)', letterSpacing:'0.06em' }}>
+                    <div style={{ width:8, height:8, background:C[t], borderRadius:2, margin:'0 auto 2px' }}/>
+                    {t==='daily'?'Daily':t==='evening'?'WD OC':t==='weekend'?'WE OC':t==='upgrade'?'Upg':t==='holiday'?'Hol':'BH'}
+                  </th>)}
+                  <th style={{ textAlign:'center', padding:'8px 6px', fontSize:10, fontWeight:700, textTransform:'uppercase', color:'#475569', borderBottom:'1px solid rgba(255,255,255,0.08)', letterSpacing:'0.06em' }}>Shifts</th>
+                  <th style={{ textAlign:'center', padding:'8px 6px', fontSize:10, fontWeight:700, textTransform:'uppercase', color:'#475569', borderBottom:'1px solid rgba(255,255,255,0.08)', letterSpacing:'0.06em' }}>Hours</th>
+                  <th style={{ textAlign:'center', padding:'8px 6px', fontSize:10, fontWeight:700, textTransform:'uppercase', color:'#475569', borderBottom:'1px solid rgba(255,255,255,0.08)', letterSpacing:'0.06em' }}>Distribution</th>
+                </tr>
+              </thead>
+              <tbody>
+                {usersToShow.map((u,idx)=>{
+                  const d=stats.find(s=>s.user.id===u.id);
+                  return (
+                    <tr key={u.id} style={{ background:idx%2===0?'transparent':'rgba(255,255,255,0.015)' }}>
+                      <td style={{ padding:'8px 10px', borderBottom:'1px solid rgba(255,255,255,0.04)' }}>
+                        <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                          <Avatar user={u} size={22}/>
+                          <div>
+                            <div style={{ fontSize:12, fontWeight:600, color:'#e2e8f0' }}>{u.name}</div>
+                            <div style={{ fontSize:10, color:'#475569', fontFamily:'DM Mono' }}>{u.id}</div>
+                          </div>
+                        </div>
+                      </td>
+                      {shiftTypes.map(t=><td key={t} style={{ textAlign:'center', padding:'8px 6px', fontSize:12, color:d?.counts[t]?TXT[t]:'#334155', fontFamily:'DM Mono', fontWeight:d?.counts[t]?700:400, borderBottom:'1px solid rgba(255,255,255,0.04)' }}>
+                        {d?.counts[t]||'—'}
+                      </td>)}
+                      <td style={{ textAlign:'center', padding:'8px 6px', fontSize:12, color:'#94a3b8', fontFamily:'DM Mono', borderBottom:'1px solid rgba(255,255,255,0.04)' }}>{d?.totalShifts||0}</td>
+                      <td style={{ textAlign:'center', padding:'8px 6px', fontSize:13, color:'var(--accent)', fontFamily:'DM Mono', fontWeight:700, borderBottom:'1px solid rgba(255,255,255,0.04)' }}>{d?.totalHrs||0}h</td>
+                      <td style={{ padding:'8px 6px', borderBottom:'1px solid rgba(255,255,255,0.04)', minWidth:120 }}>
+                        <div style={{ display:'flex', height:12, borderRadius:6, overflow:'hidden', gap:1 }}>
+                          {d && shiftTypes.map(t=>{ const cnt=d.counts[t]||0; if(!cnt) return null;
+                            return <div key={t} title={`${SHIFT_COLORS[t]?.label||t}: ${cnt}`} style={{ flex:cnt, background:C[t], minWidth:2 }}/>;
+                          })}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        );
+      })()}
+    </div>
+  );
+}
+
+// ── Main RotaPage with tabs ────────────────────────────────────────────────────
+export default function RotaPage(props) {
+  const [activeTab, setActiveTab] = React.useState('rota');
+  return (
+    <div>
+      {/* ── Top tab nav ─────────────────────────────────────────────────── */}
+      <div style={{ display:'flex', gap:0, marginBottom:16, borderBottom:'2px solid var(--border)' }}>
+        {[['rota','📅 Rota','Schedule & manage on-call shifts'],['analytics','📊 Analytics','Reports, trends & coverage insights']].map(([id,label,hint])=>(
+          <button key={id} onClick={()=>setActiveTab(id)} style={{
+            padding:'10px 20px', border:'none', background:'none', cursor:'pointer',
+            fontSize:13, fontWeight:700,
+            color: activeTab===id ? 'var(--accent)' : '#64748b',
+            borderBottom: activeTab===id ? '2px solid var(--accent)' : '2px solid transparent',
+            marginBottom:-2, transition:'all 0.15s', fontFamily:'inherit',
+            display:'flex', flexDirection:'column', alignItems:'flex-start', gap:2,
+          }}>
+            {label}
+            <span style={{ fontSize:9, fontWeight:400, color: activeTab===id?'rgba(0,194,255,0.6)':'#334155' }}>{hint}</span>
+          </button>
+        ))}
+      </div>
+      {activeTab === 'rota'      && <RotaContent {...props} />}
+      {activeTab === 'analytics' && <RotaAnalytics {...props} />}
     </div>
   );
 }
