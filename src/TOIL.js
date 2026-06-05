@@ -106,6 +106,14 @@ function calcTOILBalance(timesheetEntries, toilEntries, userId) {
 
 // ── Main export ───────────────────────────────────────────────────────────────
 export default function TOIL({ users, timesheets, toil, setToil, currentUser, isManager }) {
+  // Normalise timesheets: it arrives as { uid: [...entries] } from App.js.
+  // Guard against it being null/undefined (Drive not yet loaded) or an array
+  // (corrupted save). Always work with a plain object keyed by uid.
+  const safeTimesheets = useMemo(() => {
+    if (!timesheets || typeof timesheets !== 'object' || Array.isArray(timesheets)) return {};
+    return timesheets;
+  }, [timesheets]);
+
   const safeToil = useMemo(() => Array.isArray(toil) ? toil : Object.values(toil || {}), [toil]);
 
   const [showModal,   setShowModal]   = useState(false);
@@ -217,7 +225,7 @@ export default function TOIL({ users, timesheets, toil, setToil, currentUser, is
       {activeTab === 'overview' && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 14 }}>
           {visibleUsers.map(u => {
-            const b = calcTOILBalance(timesheets[u.id], safeToil, u.id);
+            const b = calcTOILBalance(safeTimesheets[u.id], safeToil, u.id);
             const pct = TOIL_MAX_CARRYOVER > 0 ? Math.min(Math.max(b.balance / TOIL_MAX_CARRYOVER, 0), 1) * 100 : 0;
             const color = b.balance >= TOIL_MAX_CARRYOVER ? '#f59e0b' : b.balance > 0 ? '#38bdf8' : '#fca5a5';
             const myPending = safeToil.filter(t => t.userId === u.id && t.status === 'pending').length;
