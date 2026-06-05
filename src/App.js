@@ -1,6 +1,6 @@
 // src/App.js
 // CloudOps Rota — Full Production Build v2
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 2nd June 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 5th June 2026
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
@@ -6257,8 +6257,24 @@ export default function App() {
             merged[uid] = (data || {})[uid];
           });
         } else {
-          // Engineer: only update own slice
+          // Engineer: write own slice PLUS any autoLogged entries (incident /
+          // upgrade responses) that were written into OTHER engineers' slices by
+          // this session (e.g. manager-assigned incident logged while engineer
+          // was the reporter). Without this, those entries are silently dropped
+          // because only [currentUser] would be merged back.
           merged = { ...drive, [currentUser]: (data || {})[currentUser] };
+          Object.keys(data || {}).forEach(uid => {
+            if (uid === currentUser) return;
+            const autoEntries = (data[uid] || []).filter(e => e.autoLogged);
+            if (autoEntries.length === 0) return;
+            // Upsert by week label so we never duplicate entries
+            const base = drive[uid] || [];
+            const autoWeeks = new Set(autoEntries.map(e => e.week));
+            merged[uid] = [
+              ...base.filter(e => !autoWeeks.has(e.week)),
+              ...autoEntries,
+            ];
+          });
         }
         await driveWrite(driveToken, key, merged);
       } else {
@@ -6356,7 +6372,20 @@ export default function App() {
         merged = { ...drive };
         Object.keys(localVal || {}).forEach(uid => { merged[uid] = (localVal || {})[uid]; });
       } else {
+        // Engineer: write own slice + any autoLogged entries for other users
+        // (incident / upgrade auto-entries created in this session)
         merged = { ...drive, [currentUser]: (localVal || {})[currentUser] };
+        Object.keys(localVal || {}).forEach(uid => {
+          if (uid === currentUser) return;
+          const autoEntries = (localVal[uid] || []).filter(e => e.autoLogged);
+          if (autoEntries.length === 0) return;
+          const base = drive[uid] || [];
+          const autoWeeks = new Set(autoEntries.map(e => e.week));
+          merged[uid] = [
+            ...base.filter(e => !autoWeeks.has(e.week)),
+            ...autoEntries,
+          ];
+        });
       }
       await driveWrite(driveToken, key, merged);
       return;
