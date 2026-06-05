@@ -84,11 +84,15 @@ async function getOrCreateFolder(token) {
     `name='${FOLDER_NAME}' and mimeType='application/vnd.google-apps.folder' and trashed=false`
   );
   const searchRes = await fetch(
-    `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`,
+    `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,createdTime)&orderBy=createdTime`,
     { headers: { Authorization: `Bearer ${token}` } }
   );
   const searchData = await searchRes.json();
   if (searchData.files && searchData.files.length > 0) {
+    // Always use the OLDEST folder — it contains the most historical data.
+    // Multiple folders can exist if the URL-encoding bug previously caused the
+    // search to fail silently and created a fresh empty folder each session.
+    // orderBy=createdTime returns ascending, so files[0] is the oldest.
     return searchData.files[0].id;
   }
   // Create folder
