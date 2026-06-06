@@ -4635,7 +4635,7 @@ function nthBusinessDay(year, month, n, bhDates = []) {
 
 // ── Payroll (Manager only) ─────────────────────────────────────────────────
 function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents, upgrades, rota, holidays, isManager, overtime: overtimeArr, driveToken }) {
-  const [tab,         setTab]         = React.useState('overview');  // 'overview' | 'takehome' | 'log'
+  const [tab,         setTab]         = React.useState('overview');  // 'overview' | 'takehome' | 'log' | 'reports'
   const [showExport, setShowExport]   = React.useState(false);
   const [exporting,   setExporting]   = React.useState(false);
   const [exportLogs,  setExportLogs]  = React.useState([]);
@@ -5311,7 +5311,7 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
   const [viewCycleEnd,   setViewCycleEnd]   = React.useState(cycleEnd);
   const viewCycleLabel = `${fmtD(viewCycleStart)} – ${fmtD(viewCycleEnd)}`;
 
-  const tabIcons = { overview: '📋', takehome: '💷', log: '📁' };
+  const tabIcons = { overview: '📋', takehome: '💷', log: '📁', reports: '📊' };
 
   return (
     <div>
@@ -5359,6 +5359,7 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
           { id:'overview', label:'Hours Summary' },
           { id:'takehome', label:'Take-Home' },
           { id:'log',      label:'Export Log', badge: exportLogs.length || null },
+          { id:'reports',  label:'Reports' },
         ].map(({ id, label, badge }) => (
           <div key={id} className={`payroll-tab${tab === id ? ' active' : ''}`} onClick={() => setTab(id)}>
             <span>{tabIcons[id]}</span>
@@ -5570,6 +5571,26 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
         </div>
       )}
 
+      {/* ── TAB: Reports ──────────────────────────────────────────────────── */}
+      {tab === 'reports' && (
+        <PayrollReports
+          users={safeUsers}
+          timesheets={safeTS}
+          incidents={safeInc}
+          upgrades={safeUpgrades}
+          overtime={safeOT}
+          toil={safeToil}
+          rota={safeRota}
+          holidays={safeHolidays}
+          payconfig={safePay}
+          allCycles={allCycles}
+          cycleStart={cycleStart}
+          cycleEnd={cycleEnd}
+          getUserData={getUserData}
+          fmtD={fmtD}
+        />
+      )}
+
       {/* Export date-range modal */}
       {showExport && (
         <Modal title="Export Payroll to Excel" onClose={() => setShowExport(false)}>
@@ -5623,6 +5644,351 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
           </div>
         </Modal>
       )}
+    </div>
+  );
+}
+
+// ── PayrollReports ─────────────────────────────────────────────────────────
+function PayrollReports({ users, timesheets, incidents, upgrades, overtime, toil, rota, holidays,
+                          payconfig, allCycles, cycleStart, cycleEnd, getUserData, fmtD }) {
+
+  const [view,          setView]          = React.useState('overview');
+  const [selCycleStart, setSelCycleStart] = React.useState(cycleStart);
+  const [selCycleEnd,   setSelCycleEnd]   = React.useState(cycleEnd);
+  const [engFilter,     setEngFilter]     = React.useState('all');
+  const [chartLoaded,   setChartLoaded]   = React.useState(false);
+  const chartRefs = React.useRef({});
+
+  React.useEffect(() => {
+    if (window.Chart) { setChartLoaded(true); return; }
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js';
+    s.onload = () => setChartLoaded(true);
+    document.head.appendChild(s);
+  }, []);
+
+  const visUsers  = engFilter === 'all' ? users : users.filter(u => u.id === engFilter);
+
+  const cycleData = React.useMemo(() => visUsers.map(u => ({ u, ...getUserData(u, selCycleStart, selCycleEnd) })),
+    [visUsers, selCycleStart, selCycleEnd, getUserData]);
+
+  const totals = React.useMemo(() => ({
+    standbyWD: cycleData.reduce((a,r)=>a+(r.oc.standbyWD||0),0),
+    workedWD:  cycleData.reduce((a,r)=>a+(r.oc.workedWD||0),0),
+    standbyWE: cycleData.reduce((a,r)=>a+(r.oc.standbyWE||0),0),
+    workedWE:  cycleData.reduce((a,r)=>a+(r.oc.workedWE||0),0),
+    incidents: cycleData.reduce((a,r)=>a+(r.incHrs||0),0),
+    upgrades:  cycleData.reduce((a,r)=>a+(r.upgradeHrs||0),0),
+    bankHol:   cycleData.reduce((a,r)=>a+(r.bankHolHrs||0),0),
+    overtime:  cycleData.reduce((a,r)=>a+(r.overtimeHrs||0),0),
+    toil:      cycleData.reduce((a,r)=>a+(r.tb?.balance||0),0),
+  }), [cycleData]);
+
+  const totalHrs = totals.standbyWD+totals.workedWD+totals.standbyWE+totals.workedWE+totals.incidents+totals.upgrades+totals.bankHol+totals.overtime;
+
+  const trendCycles = React.useMemo(() => allCycles.slice(0,4).reverse(), [allCycles]);
+  const trendData   = React.useMemo(() => trendCycles.map(c => {
+    const rows = users.map(u => getUserData(u, c.start, c.end));
+    return {
+      label:     c.label.split(' (')[0],
+      standby:   rows.reduce((a,r)=>a+(r.oc.standbyWD||0)+(r.oc.standbyWE||0)+(r.bankHolHrs||0),0),
+      incidents: rows.reduce((a,r)=>a+(r.incHrs||0),0),
+      overtime:  rows.reduce((a,r)=>a+(r.overtimeHrs||0),0),
+      upgrades:  rows.reduce((a,r)=>a+(r.upgradeHrs||0),0),
+    };
+  }), [trendCycles, users, getUserData]);
+
+  const mkChart = React.useCallback((id, config) => {
+    if (!window.Chart) return;
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (chartRefs.current[id]) { try { chartRefs.current[id].destroy(); } catch(e){} }
+    chartRefs.current[id] = new window.Chart(el, config);
+  }, []);
+
+  React.useEffect(() => {
+    if (!chartLoaded) return;
+    const grid = 'rgba(148,163,184,0.1)';
+    const tick = '#64748b';
+    const base = { responsive:true, maintainAspectRatio:false, plugins:{ legend:{ display:false }, tooltip:{ callbacks:{ label: ctx=>`${ctx.raw}h` } } } };
+
+    if (view === 'overview') {
+      mkChart('rpt-mix',{ type:'doughnut',
+        data:{ labels:['Standby WD','Worked WD','Standby WE','Worked WE','Incidents','Upgrades','Bank Hol','Overtime'],
+          datasets:[{ data:[totals.standbyWD,totals.workedWD,totals.standbyWE,totals.workedWE,totals.incidents,totals.upgrades,totals.bankHol,totals.overtime],
+            backgroundColor:['#93C5FD','#60A5FA','#A78BFA','#818CF8','#FCD34D','#6EE7B7','#FCA5A5','#F472B6'], borderWidth:0 }] },
+        options:{ ...base, cutout:'60%', plugins:{ legend:{ display:false }, tooltip:{ callbacks:{ label:ctx=>`${ctx.label}: ${ctx.raw}h` } } } } });
+
+      mkChart('rpt-eng',{ type:'bar',
+        data:{ labels:cycleData.map(r=>r.u.name.split(' ')[0]),
+          datasets:[{ data:cycleData.map(r=>Math.round(((r.oc.standbyWD||0)+(r.oc.workedWD||0)+(r.oc.standbyWE||0)+(r.oc.workedWE||0)+(r.incHrs||0)+(r.upgradeHrs||0)+(r.bankHolHrs||0)+(r.overtimeHrs||0))*10)/10),
+            backgroundColor:cycleData.map(r=>r.u.color||'#378ADD'), borderRadius:4, borderWidth:0 }] },
+        options:{ ...base, indexAxis:'y', scales:{ x:{ grid:{ color:grid }, ticks:{ color:tick, font:{ size:11 } } }, y:{ grid:{ display:false }, ticks:{ color:tick, font:{ size:11 } } } } } });
+
+      mkChart('rpt-stack',{ type:'bar',
+        data:{ labels:cycleData.map(r=>r.u.name.split(' ').map((w,i)=>i===0?w:w[0]+'.').join(' ')),
+          datasets:[
+            { label:'Standby WD', data:cycleData.map(r=>r.oc.standbyWD||0), backgroundColor:'#93C5FD', borderWidth:0 },
+            { label:'Standby WE', data:cycleData.map(r=>r.oc.standbyWE||0), backgroundColor:'#A78BFA', borderWidth:0 },
+            { label:'Worked WD',  data:cycleData.map(r=>r.oc.workedWD||0),  backgroundColor:'#60A5FA', borderWidth:0 },
+            { label:'Incidents',  data:cycleData.map(r=>r.incHrs||0),        backgroundColor:'#FCD34D', borderWidth:0 },
+            { label:'Overtime',   data:cycleData.map(r=>r.overtimeHrs||0),   backgroundColor:'#F472B6', borderWidth:0 },
+            { label:'Upgrades',   data:cycleData.map(r=>r.upgradeHrs||0),    backgroundColor:'#6EE7B7', borderWidth:0 },
+            { label:'Bank Hol',   data:cycleData.map(r=>r.bankHolHrs||0),    backgroundColor:'#FCA5A5', borderWidth:0 },
+          ] },
+        options:{ ...base, indexAxis:'y',
+          plugins:{ legend:{ display:false }, tooltip:{ callbacks:{ label:ctx=>`${ctx.dataset.label}: ${ctx.raw}h` } } },
+          scales:{ x:{ stacked:true, grid:{ color:grid }, ticks:{ color:tick, font:{ size:11 } } }, y:{ stacked:true, grid:{ display:false }, ticks:{ color:tick, font:{ size:11 } } } } } });
+    }
+
+    if (view === 'trend') {
+      mkChart('rpt-trend',{ type:'line',
+        data:{ labels:trendData.map(d=>d.label),
+          datasets:[
+            { label:'Standby',   data:trendData.map(d=>d.standby),   borderColor:'#93C5FD', backgroundColor:'rgba(147,197,253,.1)', fill:true,  tension:.35, borderWidth:2, pointRadius:4 },
+            { label:'Incidents', data:trendData.map(d=>d.incidents),  borderColor:'#FCD34D', borderDash:[5,4], fill:false, tension:.35, borderWidth:2, pointRadius:4 },
+            { label:'Overtime',  data:trendData.map(d=>d.overtime),   borderColor:'#F472B6', fill:false, tension:.35, borderWidth:2, pointRadius:4 },
+            { label:'Upgrades',  data:trendData.map(d=>d.upgrades),   borderColor:'#6EE7B7', fill:false, tension:.35, borderWidth:2, pointRadius:4 },
+          ] },
+        options:{ ...base, scales:{ x:{ grid:{ color:grid }, ticks:{ color:tick } }, y:{ grid:{ color:grid }, ticks:{ color:tick, callback:v=>v+'h' } } } } });
+
+      mkChart('rpt-eng-trend',{ type:'line',
+        data:{ labels:trendData.map(d=>d.label),
+          datasets:users.map(u=>({
+            label:u.name.split(' ')[0],
+            data:trendCycles.map(c=>{ const d=getUserData(u,c.start,c.end); return Math.round(((d.oc.standbyWD||0)+(d.oc.standbyWE||0)+(d.incHrs||0)+(d.overtimeHrs||0))*10)/10; }),
+            borderColor:u.color||'#94a3b8', fill:false, tension:.35, borderWidth:1.5, pointRadius:3,
+          })) },
+        options:{ ...base, scales:{ x:{ grid:{ color:grid }, ticks:{ color:tick } }, y:{ grid:{ color:grid }, ticks:{ color:tick, callback:v=>v+'h' } } } } });
+    }
+
+    if (view === 'incidents') {
+      const fi = engFilter==='all' ? (Array.isArray(incidents)?incidents:[]) : (Array.isArray(incidents)?incidents:[]).filter(i=>i.assigned_to===engFilter);
+      const bySev = {};
+      fi.forEach(i=>{ bySev[i.severity||'Unknown']=(bySev[i.severity||'Unknown']||0)+1; });
+      const sevKeys   = Object.keys(bySev);
+      const sevColors = { Disaster:'#D85A30', Critical:'#BA7517', High:'#378ADD', Medium:'#1D9E75', Low:'#888780', Unknown:'#888780' };
+      mkChart('rpt-inc-sev',{ type:'doughnut',
+        data:{ labels:sevKeys, datasets:[{ data:sevKeys.map(k=>bySev[k]), backgroundColor:sevKeys.map(k=>sevColors[k]||'#888780'), borderWidth:0 }] },
+        options:{ ...base, cutout:'55%', plugins:{ legend:{ display:false }, tooltip:{ callbacks:{ label:ctx=>`${ctx.label}: ${ctx.raw}` } } } } });
+      mkChart('rpt-inc-eng',{ type:'bar',
+        data:{ labels:users.map(u=>u.name.split(' ')[0]),
+          datasets:[{ data:users.map(u=>fi.filter(i=>i.assigned_to===u.id).length), backgroundColor:users.map(u=>u.color||'#378ADD'), borderRadius:4, borderWidth:0 }] },
+        options:{ ...base, indexAxis:'y', scales:{ x:{ grid:{ color:grid }, ticks:{ color:tick, stepSize:1 } }, y:{ grid:{ display:false }, ticks:{ color:tick } } } } });
+    }
+  }, [chartLoaded, view, cycleData, totals, trendData, trendCycles, users, engFilter, incidents, mkChart, getUserData]);
+
+  const fmt = n => Math.round((n||0)*10)/10;
+  const SEV_PILL = { Disaster:['rgba(216,90,48,0.2)','#fca5a5'], Critical:['rgba(186,117,23,0.2)','#fcd34d'], High:['rgba(55,138,221,0.2)','#93c5fd'], Medium:['rgba(29,158,117,0.2)','#6ee7b7'], Low:['rgba(136,135,128,0.2)','#94a3b8'] };
+  const selLabel = allCycles.find(c=>c.start===selCycleStart)?.label?.split(' (')[0] || selCycleStart;
+
+  const card  = { background:'rgba(15,22,41,0.6)', border:'1px solid rgba(148,163,184,0.1)', borderRadius:10, padding:16, marginBottom:14 };
+  const kpiG  = { display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(130px,1fr))', gap:10, marginBottom:18 };
+  const kpiC  = { background:'rgba(15,22,41,0.6)', border:'1px solid rgba(148,163,184,0.1)', borderRadius:8, padding:'12px 14px' };
+  const g2    = { display:'grid', gridTemplateColumns:'1fr 1fr', gap:14, marginBottom:14 };
+  const tblS  = { width:'100%', fontSize:12, borderCollapse:'collapse' };
+  const thS   = { textAlign:'left', fontWeight:500, fontSize:11, color:'var(--text-muted)', padding:'4px 8px', borderBottom:'1px solid rgba(148,163,184,0.12)' };
+  const tdS   = { padding:'7px 8px', borderBottom:'1px solid rgba(148,163,184,0.08)', color:'var(--text-primary)' };
+  const tdNum = { padding:'7px 8px', borderBottom:'1px solid rgba(148,163,184,0.08)', textAlign:'right', fontFamily:'DM Mono,monospace', fontSize:11 };
+  const leg   = { display:'flex', flexWrap:'wrap', gap:10, marginBottom:10, fontSize:11, color:'var(--text-muted)' };
+  const dot   = bg => ({ width:10, height:10, borderRadius:2, background:bg, display:'inline-block', marginRight:4 });
+  const pillS = (bg,fg) => ({ display:'inline-block', fontSize:10, padding:'2px 7px', borderRadius:10, background:bg, color:fg, fontWeight:600 });
+
+  const KPI = ({ label, val, color }) => (
+    <div style={kpiC}>
+      <div style={{ fontSize:11, color:'var(--text-muted)', marginBottom:4 }}>{label}</div>
+      <div style={{ fontSize:22, fontWeight:700, color:color||'var(--text-primary)', lineHeight:1 }}>{val}</div>
+    </div>
+  );
+
+  const ChartCard = ({ title, sub, legend, height, id }) => (
+    <div style={card}>
+      <div style={{ fontSize:13, fontWeight:600, color:'var(--text-primary)', marginBottom:3 }}>{title}</div>
+      <div style={{ fontSize:11, color:'var(--text-muted)', marginBottom:10 }}>{sub}</div>
+      {legend && <div style={leg}>{legend.map(([l,c])=><span key={l} style={{ display:'flex', alignItems:'center' }}><span style={dot(c)}/>{l}</span>)}</div>}
+      <div style={{ position:'relative', height:height||220 }}><canvas id={id}/></div>
+    </div>
+  );
+
+  const renderOverview = () => (
+    <>
+      <div style={kpiG}>
+        <KPI label="Standby total"  val={`${fmt(totals.standbyWD+totals.standbyWE+totals.bankHol)}h`} color="#93c5fd"/>
+        <KPI label="Incident hours" val={`${fmt(totals.incidents)}h`} color="#fcd34d"/>
+        <KPI label="Upgrade hours"  val={`${fmt(totals.upgrades)}h`}  color="#6ee7b7"/>
+        <KPI label="Overtime"       val={`${fmt(totals.overtime)}h`}  color="#f472b6"/>
+        <KPI label="TOIL balance"   val={`${fmt(totals.toil)}h`}      color="#a78bfa"/>
+        <KPI label="Total hrs"      val={`${fmt(totalHrs)}h`}/>
+      </div>
+      <div style={g2}>
+        <ChartCard title="Hours mix" sub={`${selLabel} — all categories`} id="rpt-mix" height={200}
+          legend={[['Standby WD','#93C5FD'],['Standby WE','#A78BFA'],['Incidents','#FCD34D'],['Overtime','#F472B6'],['Upgrades','#6EE7B7'],['Bank Hol','#FCA5A5']]}/>
+        <ChartCard title="Hours by engineer" sub="Total on-call hours this cycle" id="rpt-eng" height={Math.max(160,visUsers.length*40+60)}/>
+      </div>
+      <ChartCard title="Category breakdown" sub="Stacked hours per category per engineer" id="rpt-stack" height={Math.max(180,visUsers.length*46+60)}
+        legend={[['Standby WD','#93C5FD'],['Standby WE','#A78BFA'],['Worked WD','#60A5FA'],['Incidents','#FCD34D'],['Overtime','#F472B6'],['Upgrades','#6EE7B7'],['Bank Hol','#FCA5A5']]}/>
+    </>
+  );
+
+  const renderEngineers = () => {
+    const maxT = Math.max(...cycleData.map(r=>fmt((r.oc.standbyWD||0)+(r.oc.workedWD||0)+(r.oc.standbyWE||0)+(r.oc.workedWE||0)+(r.incHrs||0)+(r.upgradeHrs||0)+(r.bankHolHrs||0)+(r.overtimeHrs||0))),1);
+    return (
+      <div style={card}>
+        <div style={{ fontSize:13, fontWeight:600, color:'var(--text-primary)', marginBottom:3 }}>Engineer breakdown — {selLabel}</div>
+        <div style={{ fontSize:11, color:'var(--text-muted)', marginBottom:12 }}>Full breakdown per team member</div>
+        <div style={{ overflowX:'auto' }}>
+          <table style={tblS}>
+            <thead><tr>
+              {['Engineer','Standby WD','Standby WE','Worked WD','Incidents','Overtime','TOIL','Total'].map(h=>(
+                <th key={h} style={{ ...thS, textAlign:h==='Engineer'?'left':'right' }}>{h}</th>
+              ))}
+            </tr></thead>
+            <tbody>
+              {cycleData.map(({ u, oc, incHrs, upgradeHrs, bankHolHrs, overtimeHrs, tb }) => {
+                const total = fmt((oc.standbyWD||0)+(oc.workedWD||0)+(oc.standbyWE||0)+(oc.workedWE||0)+(incHrs||0)+(upgradeHrs||0)+(bankHolHrs||0)+(overtimeHrs||0));
+                const barW  = Math.round(total/maxT*70);
+                const ini   = u.name.split(' ').map(w=>w[0]).join('').slice(0,2);
+                return (
+                  <React.Fragment key={u.id}>
+                    <tr>
+                      <td style={tdS}>
+                        <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                          <div style={{ width:28, height:28, borderRadius:'50%', background:`${u.color||'#1d4ed8'}22`, border:`1.5px solid ${u.color||'#1d4ed8'}`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:10, fontWeight:700, color:u.color||'#1d4ed8', flexShrink:0 }}>{ini}</div>
+                          <div><div style={{ fontSize:12, fontWeight:500 }}>{u.name}</div><div style={{ fontSize:10, color:'var(--text-muted)', fontFamily:'DM Mono,monospace' }}>{u.id}</div></div>
+                        </div>
+                      </td>
+                      <td style={tdNum}>{oc.standbyWD||0}h</td>
+                      <td style={tdNum}>{oc.standbyWE||0}h</td>
+                      <td style={tdNum}>{oc.workedWD||0}h</td>
+                      <td style={{ ...tdNum, color:incHrs>0?'#fcd34d':'var(--text-muted)' }}>{incHrs>0?`${incHrs}h`:'—'}</td>
+                      <td style={{ ...tdNum, color:overtimeHrs>0?'#f472b6':'var(--text-muted)' }}>{overtimeHrs>0?`${overtimeHrs}h`:'—'}</td>
+                      <td style={{ ...tdNum, color:(tb?.balance||0)>0?'#38bdf8':'var(--text-muted)' }}>{tb?.balance||0}h</td>
+                      <td style={tdNum}>
+                        <div style={{ display:'flex', alignItems:'center', justifyContent:'flex-end', gap:6 }}>
+                          <span style={{ fontWeight:700 }}>{total}h</span>
+                          <div style={{ width:70, height:6, background:'rgba(148,163,184,0.15)', borderRadius:3 }}>
+                            <div style={{ width:barW, height:6, borderRadius:3, background:u.color||'#378ADD' }}/>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td colSpan={8} style={{ padding:'2px 8px 10px 44px', borderBottom:'1px solid rgba(148,163,184,0.08)', fontSize:11 }}>
+                        {[incHrs>0     && <span key="i" style={pillS('rgba(252,211,77,0.15)','#fcd34d')}>{incHrs}h incidents</span>,
+                          overtimeHrs>0 && <span key="o" style={pillS('rgba(244,114,182,0.15)','#f472b6')}>{overtimeHrs}h overtime</span>,
+                          (tb?.balance||0)>0 && <span key="t" style={pillS('rgba(56,189,248,0.15)','#38bdf8')}>{tb.balance}h TOIL</span>,
+                          upgradeHrs>0  && <span key="u" style={pillS('rgba(110,231,183,0.15)','#6ee7b7')}>{upgradeHrs}h upgrades</span>,
+                          bankHolHrs>0  && <span key="b" style={pillS('rgba(252,165,165,0.15)','#fca5a5')}>{bankHolHrs}h bank hol</span>,
+                        ].filter(Boolean).map((el,i,a)=>[el,i<a.length-1&&<span key={`s${i}`}> </span>]).flat().filter(Boolean)}
+                        {[incHrs,overtimeHrs,tb?.balance,upgradeHrs,bankHolHrs].every(v=>!v) && <span style={{ color:'var(--text-muted)' }}>No flagged items</span>}
+                      </td>
+                    </tr>
+                  </React.Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  };
+
+  const renderTrend = () => (
+    <>
+      <div style={kpiG}>
+        <KPI label="Avg standby / cycle"   val={`${fmt(trendData.reduce((a,d)=>a+d.standby,0)/Math.max(trendData.length,1))}h`}   color="#93c5fd"/>
+        <KPI label="Avg incidents / cycle" val={`${fmt(trendData.reduce((a,d)=>a+d.incidents,0)/Math.max(trendData.length,1))}h`} color="#fcd34d"/>
+        <KPI label="Avg overtime / cycle"  val={`${fmt(trendData.reduce((a,d)=>a+d.overtime,0)/Math.max(trendData.length,1))}h`}  color="#f472b6"/>
+        <KPI label="Cycles tracked"        val={trendData.length}/>
+      </div>
+      <ChartCard title={`Hours trend — last ${trendData.length} cycles`} sub="Standby, incidents, overtime and upgrades" id="rpt-trend" height={260}
+        legend={[['Standby','#93C5FD'],['Incidents','#FCD34D'],['Overtime','#F472B6'],['Upgrades','#6EE7B7']]}/>
+      <ChartCard title="Per-engineer trend" sub="Total on-call hours per engineer across cycles" id="rpt-eng-trend" height={280}/>
+    </>
+  );
+
+  const renderIncidents = () => {
+    const safeInc = Array.isArray(incidents) ? incidents : [];
+    const fi      = engFilter==='all' ? safeInc : safeInc.filter(i=>i.assigned_to===engFilter);
+    const sevOrd  = { Disaster:0, Critical:1, High:2, Medium:3, Low:4 };
+    const sorted  = [...fi].sort((a,b)=>(sevOrd[a.severity]??9)-(sevOrd[b.severity]??9));
+    const bySev   = {};
+    fi.forEach(i=>{ bySev[i.severity||'Unknown']=(bySev[i.severity||'Unknown']||0)+1; });
+    const totIncHrs = fi.reduce((a,i)=>a+(i.hours_worked||0),0);
+    return (
+      <>
+        <div style={kpiG}>
+          <KPI label="Disasters"          val={bySev.Disaster||0} color="#fca5a5"/>
+          <KPI label="Critical"           val={bySev.Critical||0} color="#fcd34d"/>
+          <KPI label="High"               val={bySev.High||0}     color="#93c5fd"/>
+          <KPI label="Total incident hrs" val={`${totIncHrs}h`}   color="#6ee7b7"/>
+        </div>
+        <div style={g2}>
+          <ChartCard title="Incidents by engineer" sub="Total count assigned" id="rpt-inc-eng" height={Math.max(140,users.length*38+50)}/>
+          <ChartCard title="Severity distribution" sub="All incidents logged" id="rpt-inc-sev" height={200}
+            legend={Object.keys(bySev).map(k=>[`${k}: ${bySev[k]}`, SEV_PILL[k]?.[1]||'#888'])}/>
+        </div>
+        <div style={card}>
+          <div style={{ fontSize:13, fontWeight:600, color:'var(--text-primary)', marginBottom:3 }}>Incident log</div>
+          <div style={{ fontSize:11, color:'var(--text-muted)', marginBottom:12 }}>{sorted.length} incidents — sorted by severity</div>
+          <div style={{ overflowX:'auto' }}>
+            <table style={tblS}>
+              <thead><tr>
+                {['Date','Severity','Title','Assignee','Hours','Status'].map(h=>(
+                  <th key={h} style={{ ...thS, textAlign:h==='Hours'?'right':'left' }}>{h}</th>
+                ))}
+              </tr></thead>
+              <tbody>
+                {sorted.map(inc => {
+                  const eng = users.find(u=>u.id===inc.assigned_to);
+                  const [bg,fg] = SEV_PILL[inc.severity]||['rgba(136,135,128,0.15)','#94a3b8'];
+                  const d = (inc.date||inc.created_at||'').slice(0,10);
+                  return (
+                    <tr key={inc.id}>
+                      <td style={{ ...tdS, fontSize:11, color:'var(--text-muted)', whiteSpace:'nowrap' }}>{d?fmtD(d):'—'}</td>
+                      <td style={tdS}><span style={pillS(bg,fg)}>{inc.severity||'Unknown'}</span></td>
+                      <td style={{ ...tdS, maxWidth:200, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{inc.title||'—'}</td>
+                      <td style={{ ...tdS, fontSize:11 }}>{eng?.name?.split(' ')[0]||inc.assigned_to||'—'}</td>
+                      <td style={{ ...tdNum, color:(inc.hours_worked||0)>0?'#fcd34d':'var(--text-muted)' }}>{(inc.hours_worked||0)>0?`${inc.hours_worked}h`:'—'}</td>
+                      <td style={tdS}><span style={{ fontSize:11, color:inc.status==='resolved'||inc.status==='Resolved'?'#6ee7b7':'#fcd34d' }}>{inc.status||'—'}</span></td>
+                    </tr>
+                  );
+                })}
+                {sorted.length===0 && <tr><td colSpan={6} style={{ ...tdS, textAlign:'center', color:'var(--text-muted)', padding:'24px 0' }}>No incidents found</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </>
+    );
+  };
+
+  return (
+    <div>
+      <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap', padding:'14px 0', borderBottom:'1px solid rgba(148,163,184,0.15)', marginBottom:16 }}>
+        <span style={{ fontSize:12, color:'var(--text-muted)' }}>View</span>
+        <div style={{ display:'flex', border:'1px solid rgba(148,163,184,0.2)', borderRadius:6, overflow:'hidden' }}>
+          {[['overview','Overview'],['engineers','By engineer'],['trend','Trend'],['incidents','Incidents']].map(([v,l])=>(
+            <button key={v} onClick={()=>setView(v)} style={{ fontSize:12, padding:'5px 12px', border:'none', borderRight:'1px solid rgba(148,163,184,0.15)',
+              background:view===v?'rgba(59,130,246,0.15)':'transparent', color:view===v?'#60a5fa':'var(--text-secondary)',
+              cursor:'pointer', fontWeight:view===v?600:400 }}>{l}</button>
+          ))}
+        </div>
+        <span style={{ fontSize:12, color:'var(--text-muted)', marginLeft:8 }}>Cycle</span>
+        <select className="input" style={{ fontSize:12, padding:'5px 8px', minWidth:220, fontFamily:'DM Mono,monospace' }}
+          value={selCycleStart} onChange={e=>{ const c=allCycles.find(c=>c.start===e.target.value); if(c){setSelCycleStart(c.start);setSelCycleEnd(c.end);} }}>
+          {allCycles.map(c=><option key={c.start} value={c.start}>{c.start===cycleStart?'▶ ':''}{c.label}</option>)}
+        </select>
+        <span style={{ fontSize:12, color:'var(--text-muted)', marginLeft:8 }}>Engineer</span>
+        <select className="input" style={{ fontSize:12, padding:'5px 8px' }} value={engFilter} onChange={e=>setEngFilter(e.target.value)}>
+          <option value="all">All engineers</option>
+          {users.map(u=><option key={u.id} value={u.id}>{u.name}</option>)}
+        </select>
+      </div>
+      {view==='overview'  && renderOverview()}
+      {view==='engineers' && renderEngineers()}
+      {view==='trend'     && renderTrend()}
+      {view==='incidents' && renderIncidents()}
     </div>
   );
 }
