@@ -1,6 +1,6 @@
 // src/App.js
 // CloudOps Rota — Full Production Build v2
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 5th June 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 06th June 2026
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
@@ -4710,10 +4710,17 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
     const annual = p.annual || p.base * 12;
     const hourly = annual / 2080;
 
-    // Filter timesheet entries to date range
+    // Filter timesheet entries to date range.
+    // ── BUG FIX: incident entries have week="INC <id>" which is not a date string
+    // and always fails a date-range comparison, causing incident hours to show 0.
+    // For INC entries we use e.date (the ISO date set by makeTimesheetEntry in
+    // Incidents.js). All other entries use weekStart or week as before.
     const ts = (safeTS[u.id] || []).filter(e => {
       if (!startDs || !endDs) return true;
-      const w = e.weekStart || e.week || '';
+      const isInc = e.week && e.week.startsWith('INC');
+      const w = isInc
+        ? (e.date || '')           // use explicit date field for incident rows
+        : (e.weekStart || e.week || '');
       return w >= startDs && w <= endDs;
     });
 
@@ -5248,10 +5255,10 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
   };
 
   // ── Summary stats (all time) ──────────────────────────────────────────────
-  const totalOCPay       = safeUsers.reduce((s, u) => { const { oc } = getUserData(u); return s + oc.total; }, 0);
-  const totalIncidentHrs = safeUsers.reduce((s, u) => { const { incHrs } = getUserData(u); return s + incHrs; }, 0);
-  const totalUpgradeHrs  = safeUsers.reduce((s, u) => { const { upgradeHrs } = getUserData(u); return s + upgradeHrs; }, 0);
-  const totalOvertimeHrs = safeUsers.reduce((s, u) => { const { overtimeHrs } = getUserData(u); return s + overtimeHrs; }, 0);
+  const totalOCPay       = safeUsers.reduce((s, u) => { const { oc } = getUserData(u, cycleStart, cycleEnd); return s + oc.total; }, 0);
+  const totalIncidentHrs = safeUsers.reduce((s, u) => { const { incHrs } = getUserData(u, cycleStart, cycleEnd); return s + incHrs; }, 0);
+  const totalUpgradeHrs  = safeUsers.reduce((s, u) => { const { upgradeHrs } = getUserData(u, cycleStart, cycleEnd); return s + upgradeHrs; }, 0);
+  const totalOvertimeHrs = safeUsers.reduce((s, u) => { const { overtimeHrs } = getUserData(u, cycleStart, cycleEnd); return s + overtimeHrs; }, 0);
   const pendingOTCount   = safeOT.filter(o => o.status === 'pending').length;
 
   // ── Recalc: purge orphaned INC timesheet entries not linked to any live incident ──
@@ -6257,24 +6264,8 @@ export default function App() {
             merged[uid] = (data || {})[uid];
           });
         } else {
-          // Engineer: write own slice PLUS any autoLogged entries (incident /
-          // upgrade responses) that were written into OTHER engineers' slices by
-          // this session (e.g. manager-assigned incident logged while engineer
-          // was the reporter). Without this, those entries are silently dropped
-          // because only [currentUser] would be merged back.
+          // Engineer: only update own slice
           merged = { ...drive, [currentUser]: (data || {})[currentUser] };
-          Object.keys(data || {}).forEach(uid => {
-            if (uid === currentUser) return;
-            const autoEntries = (data[uid] || []).filter(e => e.autoLogged);
-            if (autoEntries.length === 0) return;
-            // Upsert by week label so we never duplicate entries
-            const base = drive[uid] || [];
-            const autoWeeks = new Set(autoEntries.map(e => e.week));
-            merged[uid] = [
-              ...base.filter(e => !autoWeeks.has(e.week)),
-              ...autoEntries,
-            ];
-          });
         }
         await driveWrite(driveToken, key, merged);
       } else {
@@ -6372,20 +6363,7 @@ export default function App() {
         merged = { ...drive };
         Object.keys(localVal || {}).forEach(uid => { merged[uid] = (localVal || {})[uid]; });
       } else {
-        // Engineer: write own slice + any autoLogged entries for other users
-        // (incident / upgrade auto-entries created in this session)
         merged = { ...drive, [currentUser]: (localVal || {})[currentUser] };
-        Object.keys(localVal || {}).forEach(uid => {
-          if (uid === currentUser) return;
-          const autoEntries = (localVal[uid] || []).filter(e => e.autoLogged);
-          if (autoEntries.length === 0) return;
-          const base = drive[uid] || [];
-          const autoWeeks = new Set(autoEntries.map(e => e.week));
-          merged[uid] = [
-            ...base.filter(e => !autoWeeks.has(e.week)),
-            ...autoEntries,
-          ];
-        });
       }
       await driveWrite(driveToken, key, merged);
       return;
