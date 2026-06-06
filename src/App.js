@@ -4711,16 +4711,13 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
     const hourly = annual / 2080;
 
     // Filter timesheet entries to date range.
-    // ── BUG FIX: incident entries have week="INC <id>" which is not a date string
-    // and always fails a date-range comparison, causing incident hours to show 0.
-    // For INC entries we use e.date (the ISO date set by makeTimesheetEntry in
-    // Incidents.js). All other entries use weekStart or week as before.
+    // FIX: incident rows have week="INC <id>" — not a date string — so they
+    // always failed the range comparison and showed 0h in payroll.
+    // For INC entries we use e.date (set by makeTimesheetEntry in Incidents.js).
     const ts = (safeTS[u.id] || []).filter(e => {
       if (!startDs || !endDs) return true;
       const isInc = e.week && e.week.startsWith('INC');
-      const w = isInc
-        ? (e.date || '')           // use explicit date field for incident rows
-        : (e.weekStart || e.week || '');
+      const w = isInc ? (e.date || '') : (e.weekStart || e.week || '');
       return w >= startDs && w <= endDs;
     });
 
