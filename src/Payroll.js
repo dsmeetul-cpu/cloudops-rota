@@ -878,11 +878,11 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
     finally { setDeletingLog(null); }
   };
 
-  // ── Summary stats (all time) ──────────────────────────────────────────────
-  const totalOCPay       = safeUsers.reduce((s, u) => { const { oc } = getUserData(u); return s + oc.total; }, 0);
-  const totalIncidentHrs = safeUsers.reduce((s, u) => { const { incHrs } = getUserData(u); return s + incHrs; }, 0);
-  const totalUpgradeHrs  = safeUsers.reduce((s, u) => { const { upgradeHrs } = getUserData(u); return s + upgradeHrs; }, 0);
-  const totalOvertimeHrs = safeUsers.reduce((s, u) => { const { overtimeHrs } = getUserData(u); return s + overtimeHrs; }, 0);
+  // ── Summary stats (current payroll cycle) ────────────────────────────────
+  const totalOCPay       = safeUsers.reduce((s, u) => { const { oc } = getUserData(u, cycleStart, cycleEnd); return s + oc.total; }, 0);
+  const totalIncidentHrs = safeUsers.reduce((s, u) => { const { incHrs } = getUserData(u, cycleStart, cycleEnd); return s + incHrs; }, 0);
+  const totalUpgradeHrs  = safeUsers.reduce((s, u) => { const { upgradeHrs } = getUserData(u, cycleStart, cycleEnd); return s + upgradeHrs; }, 0);
+  const totalOvertimeHrs = safeUsers.reduce((s, u) => { const { overtimeHrs } = getUserData(u, cycleStart, cycleEnd); return s + overtimeHrs; }, 0);
   const pendingOTCount   = safeOT.filter(o => o.status === 'pending').length;
 
   // ── Recalc: purge orphaned INC timesheet entries not linked to any live incident ──
