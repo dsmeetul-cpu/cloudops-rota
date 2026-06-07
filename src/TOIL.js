@@ -52,39 +52,48 @@ const IS = { width: '100%', boxSizing: 'border-box', padding: '9px 12px', backgr
 
 // ── TOIL balance calculator ────────────────────────────────────────────────────
 // Auto-TOIL accrues at 1:1 on WORKED on-call hours (UK WTR 1998).
-// "Worked" = active callouts during on-call (incidents, upgrades, callouts).
-// Standby hours (weekend_oncall, weekday_oncall) do NOT accrue TOIL.
+// "Worked" = active callouts during on-call (incidents, upgrades).
+// Standby-only hours (weekday_oncall / weekend_oncall without a worked_ pair) do NOT accrue TOIL.
 //
-// Sources of worked on-call hours in timesheets:
-//   t.worked_wd  — weekday callout hours (incidents logged Mon–Fri)
-//   t.worked_we  — weekend callout hours (incidents / upgrades Sat–Sun)
-//   t.upgradeHrs — upgrade day hours (may be stored separately)
+// Timesheet entry field conventions:
+//   Incident entries  (autoLogged:true, week:"INC …"):
+//     worked_wd / worked_we  — hours actively worked during the incident
+//     weekday_oncall / weekend_oncall are 0 on these entries
+//
+//   Upgrade entries   (upgradeId set, week:"UPG …"):
+//     worked_wd / worked_we  — upgrade hours (same value as weekday/weekend_oncall)
+//     weekday_oncall / weekend_oncall are ALSO set to the same value
+//     → we read worked_wd/worked_we to avoid double-counting
+//
+//   Manual Timesheets (no autoLogged, no upgradeId):
+//     weekday_oncall / weekend_oncall  — standby hours only, do NOT accrue TOIL
+//     worked_wd / worked_we are absent / 0 on these entries  ← correct, no TOIL
 //
 // Manual TOIL entries (type='Accrued', status='approved') add directly.
-// TOIL Used entries (type='Used', status='approved') subtract.
+// TOIL Used entries   (type='Used',    status='approved') subtract.
 // Balance is floored at 0 and capped at TOIL_MAX_CARRYOVER (40h).
 function calcTOILBalance(timesheetEntries, toilEntries, userId) {
   const ts   = Array.isArray(timesheetEntries) ? timesheetEntries : [];
   const toil = Array.isArray(toilEntries)      ? toilEntries      : Object.values(toilEntries || {});
 
   // ── Step 1: auto-accrual from worked on-call hours (1:1 per UK WTR) ─────
+  // Only read worked_wd / worked_we — these are set exclusively on incident and
+  // upgrade entries. Standard standby timesheets leave these fields at 0 / absent,
+  // so standby hours correctly do not accrue any TOIL.
   const workedOC = ts.reduce((a, t) => {
-    // Worked hours: active callouts (incidents use worked_wd / worked_we)
-    const wd = t.worked_wd  || 0;
-    const we = t.worked_we  || 0;
-    // Upgrade day hours may be stored in a separate field
-    const upg = t.upgradeHrs || 0;
-    return a + wd + we + upg;
+    const wd = t.worked_wd || 0;
+    const we = t.worked_we || 0;
+    return a + wd + we;
   }, 0);
 
   const autoToil = Math.round(workedOC * 10) / 10; // 1:1, no cap yet
 
-  // ── Step 2: manual accrued entries added by manager ─────────────────────
+  // ── Step 2: manual accrued entries added by manager (approved only) ─────
   const manualAccrued = toil
     .filter(t => t.userId === userId && t.type === 'Accrued' && t.status === 'approved')
     .reduce((a, t) => a + (+t.hours || 0), 0);
 
-  // ── Step 3: TOIL used (booked time off, approved) ────────────────────────
+  // ── Step 3: TOIL used (booked time off, approved only) ───────────────────
   const used = toil
     .filter(t => t.userId === userId && t.type === 'Used' && t.status === 'approved')
     .reduce((a, t) => a + (+t.hours || 0), 0);
