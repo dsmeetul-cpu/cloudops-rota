@@ -108,28 +108,23 @@ export function buildDefaultPerms(role) {
  * Rendered inside the Settings page under the "Permissions" tab.
  *
  * Props:
- *   users        - array of user objects
- *   permissions  - { [uid]: { [sectionId]: { read, write, delete } } }
- *   setPermissions - state setter
+ *   users           - array of user objects
+ *   permissions     - { [uid]: { [sectionId]: { read, write, delete } } }
+ *   setPermissions  - state setter
+ *   permTemplates   - { [templateName]: { [sectionId]: { read, write, delete } } } — persisted to Drive
+ *   setPermTemplates - state setter (triggers Drive save via App.js useEffect)
  */
-export function PermissionsManager({ users, permissions, setPermissions }) {
-  const [selectedUser, setSelectedUser]       = useState(null);
-  const [tab, setTab]                         = useState('matrix'); // 'matrix' | 'templates'
-  const [templateName, setTemplateName]       = useState('');
-  const [copySourceId, setCopySourceId]       = useState('');
+export function PermissionsManager({ users, permissions, setPermissions, permTemplates, setPermTemplates }) {
+  const [selectedUser, setSelectedUser]         = useState(null);
+  const [tab, setTab]                           = useState('matrix'); // 'matrix' | 'templates'
+  const [templateName, setTemplateName]         = useState('');
+  const [copySourceId, setCopySourceId]         = useState('');
   const [applyTemplateKey, setApplyTemplateKey] = useState('');
-  const [flashMsg, setFlashMsg]               = useState('');
+  const [flashMsg, setFlashMsg]                 = useState('');
 
-  // ── Template storage (localStorage — not Drive, intentionally lightweight) ─
-  const loadTemplates = () => {
-    try { return JSON.parse(localStorage.getItem('cr_perm_templates') || '{}'); } catch { return {}; }
-  };
-  const [templates, setTemplates] = useState(loadTemplates);
-
-  const persistTemplates = (t) => {
-    setTemplates(t);
-    try { localStorage.setItem('cr_perm_templates', JSON.stringify(t)); } catch {}
-  };
+  // ── Templates come from Drive via props — no localStorage needed ──────────
+  const templates    = permTemplates  || {};
+  const persistTemplates = (t) => setPermTemplates(t);
 
   const flash = (msg) => { setFlashMsg(msg); setTimeout(() => setFlashMsg(''), 2500); };
 
@@ -498,8 +493,8 @@ export function PermissionsManager({ users, permissions, setPermissions }) {
                   {/* Tip */}
                   <div style={{ padding: '10px 14px', borderRadius: 8, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)' }}>
                     <p style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.7 }}>
-                      💡 <strong style={{ color: 'var(--text-secondary)' }}>Tip:</strong> When you add a new engineer in Settings → Team & Drive,
-                      you can copy from an existing engineer or apply a saved template directly in the Add Engineer modal —
+                      💡 <strong style={{ color: 'var(--text-secondary)' }}>Tip:</strong> Templates are saved to Google Drive and sync across all devices automatically.
+                      When you add a new engineer in Settings → Team & Drive, you can apply a saved template directly in the Add Engineer modal —
                       no need to come back here to set them up from scratch.
                     </p>
                   </div>
