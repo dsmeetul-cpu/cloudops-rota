@@ -1783,16 +1783,24 @@ function calcOncallPay(timesheetEntries, hourlyRate, upgradeHrs = 0, bankHolHrs 
 }
 
 function calcTOILBalance(timesheetEntries, toilEntries, userId) {
-  // Accrual: worked on-call hours beyond contracted hours → TOIL at 1:1 (UK WTR)
+  // Accrual: worked on-call hours → TOIL at 1:1 (UK WTR 1998).
+  // Only worked_wd / worked_we accrue TOIL — set on incident and upgrade entries.
+  // Standard standby timesheets leave these at 0 / absent, so no TOIL accrues.
   const workedOC = (timesheetEntries || []).reduce((a, e) => a + (e.worked_wd||0) + (e.worked_we||0), 0);
   const autoToil = workedOC * TOIL_ACCRUAL_RATE;
-  // Guard: toilEntries must be an array — it can be corrupted to a plain object if
-  // the user-ID remap code ran on a previous version. Recover with Object.values().
+  // Guard: toilEntries must be an array — recover with Object.values() if corrupted.
   const safeEntries = Array.isArray(toilEntries) ? toilEntries : Object.values(toilEntries || {});
-  const manualAccrued = safeEntries.filter(t => t.userId === userId && t.type === 'Accrued').reduce((a,t) => a + t.hours, 0);
-  const used  = safeEntries.filter(t => t.userId === userId && t.type === 'Used').reduce((a,t) => a + t.hours, 0);
+  // FIX: filter by status === 'approved' so pending entries don't inflate the
+  // balance. This makes Payroll TOIL figures match the TOIL tab display exactly.
+  const manualAccrued = safeEntries
+    .filter(t => t.userId === userId && t.type === 'Accrued' && t.status === 'approved')
+    .reduce((a,t) => a + (+t.hours || 0), 0);
+  const used = safeEntries
+    .filter(t => t.userId === userId && t.type === 'Used' && t.status === 'approved')
+    .reduce((a,t) => a + (+t.hours || 0), 0);
   const total = autoToil + manualAccrued;
-  const balance = Math.min(total - used, TOIL_MAX_CARRYOVER_HOURS); // cap at WTR max carryover
+  // FIX: floor at 0 (balance can't go negative) then cap at WTR max carryover
+  const balance = Math.min(Math.max(total - used, 0), TOIL_MAX_CARRYOVER_HOURS);
   return { autoToil, manualAccrued, total, used, balance, workedOC, cappedAt: TOIL_MAX_CARRYOVER_HOURS };
 }
 
