@@ -1,6 +1,6 @@
 // src/App.js
 // CloudOps Rota — Full Production Build v2
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 06th June 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 07th June 2026
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
@@ -1783,24 +1783,16 @@ function calcOncallPay(timesheetEntries, hourlyRate, upgradeHrs = 0, bankHolHrs 
 }
 
 function calcTOILBalance(timesheetEntries, toilEntries, userId) {
-  // Accrual: worked on-call hours → TOIL at 1:1 (UK WTR 1998).
-  // Only worked_wd / worked_we accrue TOIL — set on incident and upgrade entries.
-  // Standard standby timesheets leave these at 0 / absent, so no TOIL accrues.
+  // Accrual: worked on-call hours beyond contracted hours → TOIL at 1:1 (UK WTR)
   const workedOC = (timesheetEntries || []).reduce((a, e) => a + (e.worked_wd||0) + (e.worked_we||0), 0);
   const autoToil = workedOC * TOIL_ACCRUAL_RATE;
-  // Guard: toilEntries must be an array — recover with Object.values() if corrupted.
+  // Guard: toilEntries must be an array — it can be corrupted to a plain object if
+  // the user-ID remap code ran on a previous version. Recover with Object.values().
   const safeEntries = Array.isArray(toilEntries) ? toilEntries : Object.values(toilEntries || {});
-  // FIX: filter by status === 'approved' so pending entries don't inflate the
-  // balance. This makes Payroll TOIL figures match the TOIL tab display exactly.
-  const manualAccrued = safeEntries
-    .filter(t => t.userId === userId && t.type === 'Accrued' && t.status === 'approved')
-    .reduce((a,t) => a + (+t.hours || 0), 0);
-  const used = safeEntries
-    .filter(t => t.userId === userId && t.type === 'Used' && t.status === 'approved')
-    .reduce((a,t) => a + (+t.hours || 0), 0);
+  const manualAccrued = safeEntries.filter(t => t.userId === userId && t.type === 'Accrued').reduce((a,t) => a + t.hours, 0);
+  const used  = safeEntries.filter(t => t.userId === userId && t.type === 'Used').reduce((a,t) => a + t.hours, 0);
   const total = autoToil + manualAccrued;
-  // FIX: floor at 0 (balance can't go negative) then cap at WTR max carryover
-  const balance = Math.min(Math.max(total - used, 0), TOIL_MAX_CARRYOVER_HOURS);
+  const balance = Math.min(total - used, TOIL_MAX_CARRYOVER_HOURS); // cap at WTR max carryover
   return { autoToil, manualAccrued, total, used, balance, workedOC, cappedAt: TOIL_MAX_CARRYOVER_HOURS };
 }
 
@@ -6399,7 +6391,8 @@ export default function App() {
   const [obsidianNotes, setObsidianNotes] = useState([]);
   const [whatsappChats, setWhatsappChats] = useState([]);
   const [secureLinks, setSecureLinks] = useState([]);
-  const [permissions, setPermissions] = useState({});
+  const [permissions,    setPermissions]    = useState({});
+  const [permTemplates,  setPermTemplates]  = useState({});
 
   const isManager = currentUser === 'MBA47';
   const [connectingDrive, setConnectingDrive] = useState(false);
@@ -6554,9 +6547,7 @@ export default function App() {
       }
       if (data.whatsappChats != null) { const wc = data.whatsappChats; setWhatsappChats(wc?.chats ?? (Array.isArray(wc) ? wc : [])); }
       if (data.permissions     != null) setPermissions(data.permissions);
-
-      setLastSync(new Date());
-      driveDataLoaded.current = true;
+      if (data.permTemplates   != null) setPermTemplates(data.permTemplates);
       setDriveReady(true);       // ← ONLY here, after real data confirmed
       setDriveToken(token);      // ← after driveDataLoaded, safe to trigger saves
       console.log('Drive: loaded successfully, driveReady = true');
@@ -6687,6 +6678,7 @@ export default function App() {
   useEffect(() => { save('obsidianNotes', obsidianNotes); },[obsidianNotes]);
   useEffect(() => { save('whatsappChats', whatsappChats); },[whatsappChats]);
   useEffect(() => { save('permissions',   permissions);   },[permissions]);
+  useEffect(() => { save('permTemplates', permTemplates); },[permTemplates]);
 
   const [manualSyncing, setManualSyncing] = useState(false);
   const [syncProgress, setSyncProgress]   = useState(0);
@@ -6701,6 +6693,8 @@ export default function App() {
     users:         'manager',
     rota:          'manager',
     payconfig:     'manager',
+    permissions:   'manager',
+    permTemplates: 'manager',
     holidays:      'shared',
     incidents:     'shared',
     upgrades:      'shared',
@@ -6767,10 +6761,10 @@ export default function App() {
 
     const allKeys = ['users','holidays','incidents','timesheets','upgrades','wiki','glossary',
                      'contacts','payconfig','rota','swapRequests','toil','absences','overtime',
-                     'logbook','documents','obsidianNotes','whatsappChats','permissions'];
+                     'logbook','documents','obsidianNotes','whatsappChats','permissions','permTemplates'];
     const vals = { users, holidays, incidents, timesheets, upgrades, wiki, glossary,
                    contacts, payconfig, rota, swapRequests, toil, absences, overtime,
-                   logbook, documents, obsidianNotes, whatsappChats, permissions };
+                   logbook, documents, obsidianNotes, whatsappChats, permissions, permTemplates };
 
     // Engineers only touch shared + their own engineer-owned keys
     // Managers sync everything
@@ -6876,6 +6870,7 @@ export default function App() {
         if (data.obsidianNotes != null) setObsidianNotes(data.obsidianNotes);
         if (data.whatsappChats != null) { const wc = data.whatsappChats; setWhatsappChats(wc?.chats ?? (Array.isArray(wc) ? wc : [])); }
         if (data.permissions   != null) setPermissions(data.permissions);
+        if (data.permTemplates != null) setPermTemplates(data.permTemplates);
         setLastSync(new Date());
         // Mark data loaded BEFORE setting token so saves don't fire with stale state
         driveDataLoaded.current = true;
@@ -7018,6 +7013,7 @@ export default function App() {
     whatsappChats, setWhatsappChats,
     secureLinks, setSecureLinks,
     permissions, setPermissions,
+    permTemplates, setPermTemplates,
     driveToken,
     searchQ,
     isManager,
@@ -7064,6 +7060,7 @@ export default function App() {
         profilePics={profilePics} setProfilePicsState={setProfilePicsState}
         rota={rota} setRota={setRota}
         permissions={permissions} setPermissions={setPermissions}
+        permTemplates={permTemplates} setPermTemplates={setPermTemplates}
         uploadProfilePicture={uploadProfilePicture}
         generateTrigramId={generateTrigramId}
         TRICOLORS={TRICOLORS}
@@ -7288,6 +7285,7 @@ export default function App() {
                       if (has(data.obsidianNotes)) setObsidianNotes(data.obsidianNotes);
                       if (has(data.whatsappChats)) { const wc = data.whatsappChats; setWhatsappChats(wc?.chats ?? (Array.isArray(wc) ? wc : [])); }
                       if (has(data.permissions))   setPermissions(data.permissions);
+                      if (has(data.permTemplates)) setPermTemplates(data.permTemplates);
                       setLastSync(new Date());
                     } catch(e) { console.warn('Refresh failed:', e); }
                     finally { setSyncing(false); }
