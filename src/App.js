@@ -25,6 +25,7 @@ import Dashboard from './Dashboard';
 import OnCall from './OnCall';
 import Incidents from './Incidents';
 import UpgradeDays from './UpgradeDays';
+import Holidays from './Holidays';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Google Drive auto-connects on page load using the OAuth Client ID below.
@@ -1142,110 +1143,6 @@ function Timesheets({ users, timesheets, setTimesheets, currentUser, isManager, 
   );
 }
 
-// ── Holiday Tracker (Manager only) ─────────────────────────────────────────
-function Holidays({ users, holidays, setHolidays, currentUser, isManager }) {
-  const [showModal, setShowModal] = useState(false);
-  const [editId, setEditId]       = useState(null);
-  const [form, setForm]           = useState({ userId: '', start: '', end: '', type: 'Annual Leave', note: '' });
-  const { selected, toggleOne, toggleAll, clearAll } = useBulkSelect(holidays);
-
-  if (!isManager) return <Alert type="warning">⚠ Holiday management is restricted to managers.</Alert>;
-
-  const leaveTypes = ['Annual Leave', 'Sick Leave', 'Compassionate Leave', 'Study Leave', 'Unpaid Leave', 'Other'];
-
-  const openAdd = () => { setForm({ userId: users[0]?.id || '', start: '', end: '', type: 'Annual Leave', note: '' }); setEditId(null); setShowModal(true); };
-  const openEdit = (h, e) => { e.stopPropagation(); setForm({ ...h }); setEditId(h.id); setShowModal(true); };
-
-  const save = () => {
-    if (!form.start || !form.end || !form.userId) return;
-    if (editId) {
-      setHolidays(holidays.map(h => h.id === editId ? { ...h, ...form, status: 'approved' } : h));
-    } else {
-      setHolidays([...holidays, { id: 'h' + Date.now(), ...form, status: 'approved' }]);
-    }
-    setShowModal(false);
-  };
-
-  const deleteOne  = (id, e) => { e.stopPropagation(); if (window.confirm('Delete this holiday?')) setHolidays(holidays.filter(h => h.id !== id)); };
-  const deleteBulk = () => { if (window.confirm(`Delete ${selected.size} records?`)) { setHolidays(holidays.filter(h => !selected.has(h.id))); clearAll(); } };
-
-  const remainingDays = (userId) => {
-    const used = holidays.filter(h => h.userId === userId && h.type === 'Annual Leave')
-      .reduce((acc, h) => acc + Math.ceil((new Date(h.end) - new Date(h.start)) / 86400000) + 1, 0);
-    return 25 - used;
-  };
-
-  return (
-    <div>
-      <PageHeader title="Holiday Tracker" sub="Manage approved team leave"
-        actions={<>
-          {selected.size > 0 && <button className="btn btn-danger btn-sm" onClick={deleteBulk}>🗑 Delete {selected.size}</button>}
-          <button className="btn btn-primary" onClick={openAdd}>+ Add Holiday</button>
-        </>} />
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 16 }}>
-        {users.map(u => (
-          <StatCard key={u.id} label={u.name?.split(' ')[0] || u.id} value={remainingDays(u.id) + ' days'} sub="Annual leave left" accent="#10b981" />
-        ))}
-      </div>
-      <div className="card" style={{ overflowX: 'auto' }}>
-        <table>
-          <thead>
-            <tr>
-              <th style={{ width: 32 }}><input type="checkbox" checked={selected.size === holidays.length && holidays.length > 0} onChange={toggleAll} /></th>
-              <th>Engineer</th><th>Type</th><th>Start</th><th>End</th><th>Days</th><th>Notes</th><th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {holidays.map(h => {
-              const u = users.find(x => x.id === h.userId) || users.find(x => x.id?.toLowerCase() === h.userId?.toLowerCase());
-              const d = h.end ? Math.ceil((new Date(h.end) - new Date(h.start)) / 86400000) + 1 : 1;
-              const displayName = u?.name || h.userId || '—';
-              return (
-                <tr key={h.id}>
-                  <td><input type="checkbox" checked={selected.has(h.id)} onChange={() => toggleOne(h.id)} /></td>
-                  <td><div style={{ display: 'flex', alignItems: 'center', gap: 8 }}><Avatar user={u || { avatar: (h.userId||'?').slice(0,2).toUpperCase(), color: '#475569' }} size={24} /><span style={{ fontSize: 12 }}>{displayName}</span></div></td>
-                  <td style={{ fontSize: 12 }}>{h.type || 'Annual Leave'}</td>
-                  <td style={{ fontFamily: 'DM Mono', fontSize: 12 }}>{h.start}</td>
-                  <td style={{ fontFamily: 'DM Mono', fontSize: 12 }}>{h.end}</td>
-                  <td style={{ fontFamily: 'DM Mono', fontSize: 12 }}>{d}</td>
-                  <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>{h.note || '—'}</td>
-                  <td>
-                    <div style={{ display: 'flex', gap: 4 }}>
-                      <button className="btn btn-secondary btn-sm" onClick={e => openEdit(h, e)}>✏</button>
-                      <button className="btn btn-danger btn-sm" onClick={e => deleteOne(h.id, e)}>🗑</button>
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-      {showModal && (
-        <Modal title={editId ? 'Edit Holiday' : 'Add Holiday'} onClose={() => setShowModal(false)}>
-          <FormGroup label="Engineer">
-            <select className="select" value={form.userId} onChange={e => setForm({ ...form, userId: e.target.value })}>
-              {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
-            </select>
-          </FormGroup>
-          <FormGroup label="Leave Type">
-            <select className="select" value={form.type} onChange={e => setForm({ ...form, type: e.target.value })}>
-              {leaveTypes.map(t => <option key={t}>{t}</option>)}
-            </select>
-          </FormGroup>
-          <FormGroup label="Start Date"><input className="input" type="date" value={form.start} onChange={e => setForm({ ...form, start: e.target.value })} /></FormGroup>
-          <FormGroup label="End Date"><input className="input" type="date" value={form.end} onChange={e => setForm({ ...form, end: e.target.value })} /></FormGroup>
-          <FormGroup label="Notes (optional)"><input className="input" value={form.note} onChange={e => setForm({ ...form, note: e.target.value })} /></FormGroup>
-          <Alert style={{ marginTop: 8 }}>Holidays added here are already approved in the HR system.</Alert>
-          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
-            <button className="btn btn-secondary" onClick={() => setShowModal(false)}>Cancel</button>
-            <button className="btn btn-primary" onClick={save}>{editId ? 'Update' : 'Add Holiday'}</button>
-          </div>
-        </Modal>
-      )}
-    </div>
-  );
-}
 
 // ── Shift Swaps ────────────────────────────────────────────────────────────
 function ShiftSwaps({ users, swapRequests, setSwapRequests, rota, setRota, currentUser, isManager, driveToken }) {
