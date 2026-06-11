@@ -1462,7 +1462,7 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
                             )}
                           </td>
                           <td style={{ padding:'9px 12px' }}>
-                            <div style={{ display:'flex', gap:4' }}>
+                            <div style={{ display:'flex', gap:4 }}>
                               <button onClick={() => openEditAdj(adj)}
                                 style={{ padding:'3px 8px', background:'rgba(255,255,255,0.05)', border:'1px solid rgba(255,255,255,0.1)', borderRadius:5, color:'var(--text-secondary)', fontSize:11, cursor:'pointer' }}>✏</button>
                               <button onClick={() => setAdjConfirmDel(adj.id)}
