@@ -94,6 +94,27 @@ async function driveUploadBlob(token, name, blob, parentId) {
   return fetch(url, { method: existing ? 'PATCH' : 'POST', headers: { Authorization: `Bearer ${token}` }, body: form }).then(r => r.json());
 }
 
+
+// ── Modal ─────────────────────────────────────────────────────────────────────
+function Modal({ title, onClose, children, wide }) {
+  useEffect(() => {
+    const h = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, [onClose]);
+  return (
+    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal" style={wide ? { width: 720 } : {}}>
+        <div className="modal-header" style={{ borderBottom: '1px solid var(--border)', flexShrink: 0, background: 'var(--bg-card)', position: 'sticky', top: 0, zIndex: 10 }}>
+          <div className="modal-title">{title}</div>
+          <button className="modal-close" onClick={onClose}>✕</button>
+        </div>
+        <div style={{ padding: '0 20px 20px', flex: 1, overflowY: 'auto' }}>{children}</div>
+      </div>
+    </div>
+  );
+}
+
 // ── Shared UI primitives ──────────────────────────────────────────────────────
 function Alert({ type = 'info', children, style }) {
   const colours = { info: ['rgba(0,194,255,0.08)','rgba(0,194,255,0.22)','#7dd3fc'], success: ['rgba(16,185,129,0.08)','rgba(16,185,129,0.22)','#6ee7b7'], warning: ['rgba(245,158,11,0.08)','rgba(245,158,11,0.22)','#fcd34d'], danger: ['rgba(239,68,68,0.08)','rgba(239,68,68,0.22)','#fca5a5'] };
