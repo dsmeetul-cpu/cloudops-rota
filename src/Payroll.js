@@ -257,14 +257,21 @@ function nthBusinessDay(year, month, n, bhDates = []) {
 }
 
 // ── Payroll (Manager only) ─────────────────────────────────────────────────
-function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents, upgrades, rota, holidays, isManager, overtime: overtimeArr, driveToken }) {
-  const [tab,         setTab]         = useState('overview');  // 'overview' | 'takehome' | 'log' | 'reports'
+function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents, upgrades, rota, holidays, isManager, overtime: overtimeArr, driveToken, payrollAdjustments, setPayrollAdjustments }) {
+  const [tab,         setTab]         = useState('overview');  // 'overview' | 'takehome' | 'log' | 'reports' | 'adjustments'
   const [showExport, setShowExport]   = useState(false);
   const [exporting,   setExporting]   = useState(false);
   const [exportLogs,  setExportLogs]  = useState([]);
   const [logMsg,      setLogMsg]      = useState('');
   const [deletingLog, setDeletingLog] = useState(null);
   const [autoExportBanner, setAutoExportBanner] = useState(null);
+
+  // ── Manual adjustments state ────────────────────────────────────────────────
+  const [showAdjModal,  setShowAdjModal]  = useState(false);
+  const [editAdjId,     setEditAdjId]     = useState(null);
+  const [adjForm,       setAdjForm]       = useState({ userId: '', date: '', category: 'standbyWD', hours: '', reason: '', note: '', cycleStart: '' });
+  const [adjFilter,     setAdjFilter]     = useState({ user: 'all', category: 'all' });
+  const [adjConfirmDel, setAdjConfirmDel] = useState(null);
 
   // Default date range = current payroll cycle (11th prev → 10th curr)
   const { cycleStart, cycleEnd } = useMemo(payrollCycleDates, []);
@@ -282,6 +289,7 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
   const safeHolidays  = Array.isArray(holidays) ? holidays : [];
   const safeInc       = Array.isArray(incidents) ? incidents : [];
   const bhList        = (typeof UK_BANK_HOLIDAYS !== 'undefined') ? UK_BANK_HOLIDAYS : [];
+  const safeAdj       = Array.isArray(payrollAdjustments) ? payrollAdjustments : [];
 
   // Load export logs from Drive on mount — MUST be before early return
   useEffect(() => {
@@ -423,7 +431,33 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
     const oc = calcOncallPay(ts, hourly, upgradeHrs, bankHolHrs, rotaForUser, userHols, bhList, startDs, endDs, liveIncidentIds);
     const tb = calcTOILBalance(safeTS[u.id], safeToil, u.id);
     const incHrs = oc.incidentHrs || 0;
-    return { p, annual, hourly, oc, tb, incHrs, upgradeHrs, bankHolHrs, overtimeHrs };
+
+    // ── Apply manual hour adjustments for this user in this date range ─────
+    const userAdj = safeAdj.filter(a => {
+      if (a.userId !== u.id) return false;
+      if (startDs && a.date < startDs) return false;
+      if (endDs   && a.date > endDs)   return false;
+      return true;
+    });
+    const adjTotals = {};
+    const ADJ_CATEGORIES = ['standbyWD','workedWD','standbyWE','workedWE','incidentHrs','upgradeHrs','bankHolHrs','overtimeHrs'];
+    ADJ_CATEGORIES.forEach(cat => {
+      adjTotals[cat] = userAdj.filter(a => a.category === cat).reduce((s, a) => s + (+a.hours || 0), 0);
+    });
+    const ocAdj = {
+      ...oc,
+      standbyWD:  Math.round(Math.max((oc.standbyWD  || 0) + (adjTotals.standbyWD  || 0), 0) * 10) / 10,
+      workedWD:   Math.round(Math.max((oc.workedWD   || 0) + (adjTotals.workedWD   || 0), 0) * 10) / 10,
+      standbyWE:  Math.round(Math.max((oc.standbyWE  || 0) + (adjTotals.standbyWE  || 0), 0) * 10) / 10,
+      workedWE:   Math.round(Math.max((oc.workedWE   || 0) + (adjTotals.workedWE   || 0), 0) * 10) / 10,
+      incidentHrs:Math.round(Math.max((oc.incidentHrs|| 0) + (adjTotals.incidentHrs|| 0), 0) * 10) / 10,
+    };
+    const adjBankHolHrs  = Math.round(Math.max(bankHolHrs  + (adjTotals.bankHolHrs  || 0), 0) * 10) / 10;
+    const adjUpgradeHrs  = Math.round(Math.max(upgradeHrs  + (adjTotals.upgradeHrs  || 0), 0) * 10) / 10;
+    const adjOvertimeHrs = Math.round(Math.max(overtimeHrs + (adjTotals.overtimeHrs || 0), 0) * 10) / 10;
+    const adjIncHrs      = ocAdj.incidentHrs;
+
+    return { p, annual, hourly, oc: ocAdj, tb, incHrs: adjIncHrs, upgradeHrs: adjUpgradeHrs, bankHolHrs: adjBankHolHrs, overtimeHrs: adjOvertimeHrs, userAdj };
   };
 
   // ── Excel export ──────────────────────────────────────────────────────────
@@ -463,12 +497,17 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
         'Employment ID', 'Trigram', 'Full Name', 'Export Date', 'Period',
         'Standby WD (h)', 'Worked WD (h)', 'Standby WE (h)', 'Worked WE (h)',
         'Incident Hrs', 'Upgrade Hrs', 'Bank Hol Hrs', 'Overtime Hrs', 'TOIL Bal (h)',
+        'Manual Adj (h)', 'Adj Reasons',
       ];
       const s1Rows = safeUsers.map(u => {
         const { oc, tb, incHrs, upgradeHrs, bankHolHrs, overtimeHrs } = getUserData(u, exportStart, exportEnd);
+        const uAdj = safeAdj.filter(a => a.userId === u.id && (!exportStart || a.date >= exportStart) && (!exportEnd || a.date <= exportEnd));
+        const netAdj = Math.round(uAdj.reduce((s, a) => s + (+a.hours || 0), 0) * 10) / 10;
+        const adjReasons = uAdj.map(a => `[${a.date}] ${a.category} ${a.hours >= 0 ? '+' : ''}${a.hours}h: ${a.reason}`).join(' | ');
         return [u.employment_id||'—', u.id, u.name, today, rangeLabel,
           oc.standbyWD, oc.workedWD, oc.standbyWE, oc.workedWE,
-          incHrs, upgradeHrs, bankHolHrs, overtimeHrs||0, tb.balance];
+          incHrs, upgradeHrs, bankHolHrs, overtimeHrs||0, tb.balance,
+          netAdj || 0, adjReasons || ''];
       });
       const s1TotRow = ['', 'TOTAL', `${safeUsers.length} engineers`, today, rangeLabel,
         ...Array.from({length:9}, (_,i) => s1Rows.reduce((a,r)=>a+(parseFloat(r[5+i])||0),0)), ''];
@@ -791,10 +830,52 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
       // ─────────────────────────────────────────────────────────────────────
       // Build workbook — 4 sheets
       // ─────────────────────────────────────────────────────────────────────
+      // ─────────────────────────────────────────────────────────────────────
+      // SHEET 5 — Manual Adjustments Audit Trail
+      // ─────────────────────────────────────────────────────────────────────
+      const s5Hdrs = ['Employment ID','Trigram','Full Name','Date','Category','Hours (+/-)','Reason','Internal Note','Created At'];
+      const s5Rows = safeAdj
+        .filter(a => (!exportStart || a.date >= exportStart) && (!exportEnd || a.date <= exportEnd))
+        .sort((a,b) => (a.date||'').localeCompare(b.date||''))
+        .map(a => {
+          const u = safeUsers.find(x => x.id === a.userId);
+          const cat = [
+            { value:'standbyWD', label:'Standby Weekday' }, { value:'workedWD', label:'Worked Weekday' },
+            { value:'standbyWE', label:'Standby Weekend' }, { value:'workedWE', label:'Worked Weekend' },
+            { value:'incidentHrs', label:'Incident Hours' }, { value:'upgradeHrs', label:'Upgrade Hours' },
+            { value:'bankHolHrs', label:'Bank Holiday' },   { value:'overtimeHrs', label:'Overtime' },
+          ].find(c => c.value === a.category)?.label || a.category;
+          return [
+            u?.employment_id || '—', a.userId, u?.name || a.userId,
+            fmtUK(a.date), cat,
+            (a.hours >= 0 ? '+' : '') + a.hours,
+            a.reason || '', a.note || '',
+            a.createdAt ? new Date(a.createdAt).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}) : '—',
+          ];
+        });
+
+      const ws5Data = [s5Hdrs, ...s5Rows];
+      if (s5Rows.length === 0) ws5Data.push(['No manual adjustments in this period', '', '', '', '', '', '', '', '']);
+      const ws5 = XLSX.utils.aoa_to_sheet(ws5Data);
+      ws5['!cols'] = [14,8,22,12,18,12,50,30,18].map(w=>({wch:w}));
+      ws5['!freeze'] = { xSplit: 3, ySplit: 1 };
+      const H5 = { font:{bold:true,color:{rgb:'FFFFFF'}}, fill:{fgColor:{rgb:'78350F'}}, alignment:{horizontal:'center',wrapText:true}, border:{bottom:{style:'medium',color:{rgb:'F59E0B'}}} };
+      styleRow(ws5, 0, s5Hdrs.length, H5);
+      s5Rows.forEach((r, i) => {
+        const bg = i % 2 === 0 ? '0F1629' : '131D35';
+        styleRow(ws5, i+1, s5Hdrs.length, { fill:{fgColor:{rgb:bg}}, font:{color:{rgb:'E2E8F0'}} });
+        const hrsCell = XLSX.utils.encode_cell({r:i+1, c:5});
+        if (ws5[hrsCell]) {
+          const isPos = !String(r[5]).startsWith('-');
+          ws5[hrsCell].s = { font:{bold:true, color:{rgb: isPos ? '22C55E' : 'EF4444'}}, fill:{fgColor:{rgb:bg}} };
+        }
+      });
+
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws3, '📊 Dashboard');
       XLSX.utils.book_append_sheet(wb, ws1, '📋 Hours Summary');
       XLSX.utils.book_append_sheet(wb, ws4, 'Standby & Worked Hours Payroll');
+      XLSX.utils.book_append_sheet(wb, ws5, '✏️ Adjustments Audit');
       XLSX.utils.book_append_sheet(wb, ws2, '📅 Daily Detail');
 
       const fname = `CloudOps-Hours-${(exportStart||'all').replace(/-/g,'')}-${(exportEnd||'time').replace(/-/g,'')}.xlsx`;
@@ -878,6 +959,55 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
     finally { setDeletingLog(null); }
   };
 
+  // ── Adjustment CRUD ──────────────────────────────────────────────────────
+  const ADJ_CATEGORIES = [
+    { value: 'standbyWD',   label: 'Standby Weekday',   color: '#93c5fd' },
+    { value: 'workedWD',    label: 'Worked Weekday',    color: '#60a5fa' },
+    { value: 'standbyWE',   label: 'Standby Weekend',   color: '#a78bfa' },
+    { value: 'workedWE',    label: 'Worked Weekend',    color: '#c084fc' },
+    { value: 'incidentHrs', label: 'Incident Hours',    color: '#fcd34d' },
+    { value: 'upgradeHrs',  label: 'Upgrade Hours',     color: '#6ee7b7' },
+    { value: 'bankHolHrs',  label: 'Bank Holiday',      color: '#fca5a5' },
+    { value: 'overtimeHrs', label: 'Overtime',          color: '#f472b6' },
+  ];
+
+  const openAddAdj = (userId = '') => {
+    setEditAdjId(null);
+    setAdjForm({ userId: userId || (users[0]?.id || ''), date: new Date().toISOString().slice(0,10), category: 'standbyWD', hours: '', reason: '', note: '' });
+    setShowAdjModal(true);
+  };
+
+  const openEditAdj = (adj) => {
+    setEditAdjId(adj.id);
+    setAdjForm({ userId: adj.userId, date: adj.date, category: adj.category, hours: String(adj.hours), reason: adj.reason || '', note: adj.note || '' });
+    setShowAdjModal(true);
+  };
+
+  const saveAdj = () => {
+    if (!adjForm.userId || !adjForm.date || !adjForm.hours || !adjForm.reason.trim()) return;
+    const entry = {
+      id:          editAdjId || 'adj-' + Date.now(),
+      userId:      adjForm.userId,
+      date:        adjForm.date,
+      category:    adjForm.category,
+      hours:       parseFloat(adjForm.hours),
+      reason:      adjForm.reason.trim(),
+      note:        adjForm.note.trim(),
+      createdAt:   editAdjId ? (safeAdj.find(a => a.id === editAdjId)?.createdAt || new Date().toISOString()) : new Date().toISOString(),
+      updatedAt:   new Date().toISOString(),
+    };
+    const updated = editAdjId
+      ? safeAdj.map(a => a.id === editAdjId ? entry : a)
+      : [...safeAdj, entry];
+    if (setPayrollAdjustments) setPayrollAdjustments(updated);
+    setShowAdjModal(false);
+  };
+
+  const deleteAdj = (id) => {
+    if (setPayrollAdjustments) setPayrollAdjustments(safeAdj.filter(a => a.id !== id));
+    setAdjConfirmDel(null);
+  };
+
   // ── Summary stats (all time) ──────────────────────────────────────────────
   const totalOCPay       = safeUsers.reduce((s, u) => { const { oc } = getUserData(u); return s + oc.total; }, 0);
   const totalIncidentHrs = safeUsers.reduce((s, u) => { const { incHrs } = getUserData(u); return s + incHrs; }, 0);
@@ -938,7 +1068,7 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
   const [viewCycleEnd,   setViewCycleEnd]   = useState(cycleEnd);
   const viewCycleLabel = `${fmtD(viewCycleStart)} – ${fmtD(viewCycleEnd)}`;
 
-  const tabIcons = { overview: '📋', takehome: '💷', log: '📁', reports: '📊' };
+  const tabIcons = { overview: '📋', takehome: '💷', adjustments: '✏️', log: '📁', reports: '📊' };
 
   return (
     <div>
@@ -983,10 +1113,11 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
       {/* ── Tab buttons ───────────────────────────────────────────────────── */}
       <div className="payroll-tab-bar">
         {[
-          { id:'overview', label:'Hours Summary' },
-          { id:'takehome', label:'Take-Home' },
-          { id:'log',      label:'Export Log', badge: exportLogs.length || null },
-          { id:'reports',  label:'Reports' },
+          { id:'overview',     label:'Hours Summary' },
+          { id:'takehome',     label:'Take-Home' },
+          { id:'adjustments',  label:'Adjustments', badge: safeAdj.length || null },
+          { id:'log',          label:'Export Log', badge: exportLogs.length || null },
+          { id:'reports',      label:'Reports' },
         ].map(({ id, label, badge }) => (
           <div key={id} className={`payroll-tab${tab === id ? ' active' : ''}`} onClick={() => setTab(id)}>
             <span>{tabIcons[id]}</span>
@@ -1052,10 +1183,12 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
             </thead>
             <tbody>
               {safeUsers.map(u => {
-                const { oc, tb, incHrs, upgradeHrs, bankHolHrs, overtimeHrs } = getUserData(u, viewCycleStart, viewCycleEnd);
+                const { oc, tb, incHrs, upgradeHrs, bankHolHrs, overtimeHrs, userAdj } = getUserData(u, viewCycleStart, viewCycleEnd);
+                const hasAdj = userAdj && userAdj.length > 0;
+                const netAdj = hasAdj ? userAdj.reduce((s,a) => s + (+a.hours||0), 0) : 0;
                 return (
                   <tr key={u.id}>
-                    <td><div style={{ display:'flex', gap:8, alignItems:'center' }}><Avatar user={u} size={24} /><div><div style={{ fontSize:12 }}>{u.name}</div><div style={{ fontSize:10, color:'var(--text-muted)', fontFamily:'DM Mono' }}>{u.id}</div></div></div></td>
+                    <td><div style={{ display:'flex', gap:8, alignItems:'center' }}><Avatar user={u} size={24} /><div><div style={{ display:'flex', gap:5, alignItems:'center', fontSize:12 }}>{u.name}{hasAdj && <span title={`${userAdj.length} manual adjustment(s): net ${netAdj >= 0 ? '+' : ''}${Math.round(netAdj*10)/10}h`} style={{ background:'rgba(245,158,11,0.15)', color:'#fcd34d', border:'1px solid rgba(245,158,11,0.3)', padding:'1px 5px', borderRadius:4, fontSize:9, fontWeight:700, cursor:'pointer' }} onClick={() => setTab('adjustments')}>✎ {userAdj.length}</span>}</div><div style={{ fontSize:10, color:'var(--text-muted)', fontFamily:'DM Mono' }}>{u.id}</div></div></div></td>
                     <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#93c5fd', textAlign:'right' }}>{oc.standbyWD}h</td>
                     <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#93c5fd', textAlign:'right' }}>{oc.workedWD}h</td>
                     <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#a78bfa', textAlign:'right' }}>{oc.standbyWE}h</td>
@@ -1216,6 +1349,283 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
           getUserData={getUserData}
           fmtD={fmtD}
         />
+      )}
+
+      {/* ── TAB: Adjustments ──────────────────────────────────────────────── */}
+      {tab === 'adjustments' && (
+        <div>
+          {/* Header row */}
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:16, flexWrap:'wrap', gap:10 }}>
+            <div>
+              <div style={{ fontSize:15, fontWeight:700, color:'var(--text-primary)' }}>Manual Hour Adjustments</div>
+              <div style={{ fontSize:11, color:'var(--text-muted)', marginTop:3 }}>
+                Add or correct hours for any category. Each adjustment requires a written justification and is shown as an audit trail.
+              </div>
+            </div>
+            <button className="btn btn-primary" onClick={() => openAddAdj()}>
+              ＋ Add Adjustment
+            </button>
+          </div>
+
+          {/* Info banner */}
+          <div style={{ background:'rgba(245,158,11,0.08)', border:'1px solid rgba(245,158,11,0.22)', borderRadius:8, padding:'10px 14px', marginBottom:16, fontSize:12, color:'#fcd34d', display:'flex', gap:10, alignItems:'flex-start' }}>
+            <span style={{ fontSize:18, flexShrink:0 }}>⚠️</span>
+            <div>
+              <strong>Adjustments directly modify payroll figures.</strong> Use only to correct genuine errors (e.g. missed rota entries, system import failures). Every adjustment is logged with the reason and timestamp and appears in Excel exports.
+            </div>
+          </div>
+
+          {/* Filters */}
+          <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center', marginBottom:14, background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.08)', borderRadius:8, padding:'10px 14px' }}>
+            <select className="input" style={{ fontSize:12, padding:'5px 8px', minWidth:160 }}
+              value={adjFilter.user} onChange={e => setAdjFilter(f => ({ ...f, user: e.target.value }))}>
+              <option value="all">All Engineers</option>
+              {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+            </select>
+            <select className="input" style={{ fontSize:12, padding:'5px 8px', minWidth:180 }}
+              value={adjFilter.category} onChange={e => setAdjFilter(f => ({ ...f, category: e.target.value }))}>
+              <option value="all">All Categories</option>
+              {ADJ_CATEGORIES.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+            </select>
+            <div style={{ marginLeft:'auto', fontSize:11, color:'var(--text-muted)', fontFamily:'DM Mono' }}>
+              {safeAdj.filter(a =>
+                (adjFilter.user === 'all' || a.userId === adjFilter.user) &&
+                (adjFilter.category === 'all' || a.category === adjFilter.category)
+              ).length} entries
+            </div>
+          </div>
+
+          {/* Adjustments table */}
+          {(() => {
+            const filtered = safeAdj
+              .filter(a =>
+                (adjFilter.user === 'all' || a.userId === adjFilter.user) &&
+                (adjFilter.category === 'all' || a.category === adjFilter.category)
+              )
+              .sort((a,b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+
+            if (filtered.length === 0) return (
+              <div style={{ textAlign:'center', padding:'52px 20px', color:'var(--text-muted)' }}>
+                <div style={{ fontSize:36, marginBottom:10 }}>✏️</div>
+                <div style={{ fontSize:14, fontWeight:600, color:'var(--text-secondary)' }}>No adjustments yet</div>
+                <div style={{ fontSize:12, marginTop:4 }}>Click "Add Adjustment" to manually correct hours for any engineer.</div>
+              </div>
+            );
+
+            return (
+              <div style={{ overflowX:'auto', border:'1px solid rgba(255,255,255,0.08)', borderRadius:10 }}>
+                <table style={{ width:'100%', borderCollapse:'collapse', minWidth:780 }}>
+                  <thead>
+                    <tr style={{ background:'rgba(255,255,255,0.03)' }}>
+                      {['Engineer','Date','Category','Hours','Reason','Note','Created',''].map(h => (
+                        <th key={h} style={{ padding:'9px 12px', borderBottom:'1px solid rgba(255,255,255,0.08)', fontSize:10, fontWeight:700, color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.5px', textAlign: h === 'Hours' ? 'right' : 'left', whiteSpace:'nowrap' }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filtered.map(adj => {
+                      const u   = users.find(x => x.id === adj.userId);
+                      const cat = ADJ_CATEGORIES.find(c => c.value === adj.category);
+                      const isPos = adj.hours >= 0;
+                      return (
+                        <tr key={adj.id} style={{ borderBottom:'1px solid rgba(255,255,255,0.04)' }}>
+                          <td style={{ padding:'9px 12px' }}>
+                            <div style={{ display:'flex', alignItems:'center', gap:7 }}>
+                              <Avatar user={u} size={22} />
+                              <span style={{ fontSize:12 }}>{u?.name || adj.userId}</span>
+                            </div>
+                          </td>
+                          <td style={{ padding:'9px 12px', fontFamily:'DM Mono', fontSize:11, color:'var(--text-secondary)', whiteSpace:'nowrap' }}>
+                            {adj.date ? new Date(adj.date + 'T12:00:00').toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}) : '—'}
+                          </td>
+                          <td style={{ padding:'9px 12px' }}>
+                            <span style={{ background: (cat?.color || '#888') + '20', color: cat?.color || '#888', border:`1px solid ${(cat?.color||'#888')}40`, padding:'2px 8px', borderRadius:5, fontSize:11, fontWeight:700 }}>
+                              {cat?.label || adj.category}
+                            </span>
+                          </td>
+                          <td style={{ padding:'9px 12px', fontFamily:'DM Mono', fontSize:13, textAlign:'right', fontWeight:800, color: isPos ? '#22c55e' : '#ef4444' }}>
+                            {isPos ? '+' : ''}{adj.hours}h
+                          </td>
+                          <td style={{ padding:'9px 12px', fontSize:12, color:'var(--text-secondary)', maxWidth:220 }}>
+                            <div style={{ display:'flex', alignItems:'flex-start', gap:6 }}>
+                              <span style={{ flexShrink:0, color: isPos ? '#22c55e' : '#f59e0b', fontSize:13 }}>{isPos ? '✎' : '⚠'}</span>
+                              <span style={{ wordBreak:'break-word' }}>{adj.reason}</span>
+                            </div>
+                          </td>
+                          <td style={{ padding:'9px 12px', fontSize:11, color:'var(--text-muted)', maxWidth:160, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                            {adj.note || '—'}
+                          </td>
+                          <td style={{ padding:'9px 12px', fontSize:10, color:'var(--text-muted)', fontFamily:'DM Mono', whiteSpace:'nowrap' }}>
+                            {adj.createdAt ? new Date(adj.createdAt).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}) : '—'}
+                            {adj.updatedAt && adj.updatedAt !== adj.createdAt && (
+                              <div style={{ fontSize:9, opacity:0.6 }}>edited</div>
+                            )}
+                          </td>
+                          <td style={{ padding:'9px 12px' }}>
+                            <div style={{ display:'flex', gap:4' }}>
+                              <button onClick={() => openEditAdj(adj)}
+                                style={{ padding:'3px 8px', background:'rgba(255,255,255,0.05)', border:'1px solid rgba(255,255,255,0.1)', borderRadius:5, color:'var(--text-secondary)', fontSize:11, cursor:'pointer' }}>✏</button>
+                              <button onClick={() => setAdjConfirmDel(adj.id)}
+                                style={{ padding:'3px 8px', background:'rgba(239,68,68,0.07)', border:'1px solid rgba(239,68,68,0.18)', borderRadius:5, color:'#ef4444', fontSize:11, cursor:'pointer' }}>🗑</button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            );
+          })()}
+
+          {/* Per-engineer summary of adjustments */}
+          {safeAdj.length > 0 && (
+            <div style={{ marginTop:18 }}>
+              <div style={{ fontSize:13, fontWeight:700, color:'var(--text-primary)', marginBottom:8 }}>Net Adjustment by Engineer</div>
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(260px, 1fr))', gap:10 }}>
+                {users.map(u => {
+                  const uAdj = safeAdj.filter(a => a.userId === u.id);
+                  if (uAdj.length === 0) return null;
+                  const net = uAdj.reduce((s, a) => s + (+a.hours || 0), 0);
+                  const byCategory = {};
+                  uAdj.forEach(a => { byCategory[a.category] = (byCategory[a.category] || 0) + (+a.hours || 0); });
+                  return (
+                    <div key={u.id} style={{ background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.08)', borderRadius:10, padding:'12px 14px' }}>
+                      <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:10 }}>
+                        <Avatar user={u} size={26} />
+                        <div>
+                          <div style={{ fontSize:12, fontWeight:700 }}>{u.name}</div>
+                          <div style={{ fontSize:10, color:'var(--text-muted)' }}>{uAdj.length} adjustment{uAdj.length !== 1 ? 's' : ''} · net <span style={{ color: net >= 0 ? '#22c55e' : '#ef4444', fontFamily:'DM Mono', fontWeight:700 }}>{net >= 0 ? '+' : ''}{Math.round(net*10)/10}h</span></div>
+                        </div>
+                      </div>
+                      {Object.entries(byCategory).map(([cat, hrs]) => {
+                        const catDef = ADJ_CATEGORIES.find(c => c.value === cat);
+                        return (
+                          <div key={cat} style={{ display:'flex', justifyContent:'space-between', fontSize:11, marginBottom:4, alignItems:'center' }}>
+                            <span style={{ color:'var(--text-muted)' }}>{catDef?.label || cat}</span>
+                            <span style={{ fontFamily:'DM Mono', fontWeight:700, color: hrs >= 0 ? '#22c55e' : '#ef4444' }}>{hrs >= 0 ? '+' : ''}{Math.round(hrs*10)/10}h</span>
+                          </div>
+                        );
+                      })}
+                      <button onClick={() => openAddAdj(u.id)}
+                        style={{ marginTop:8, width:'100%', padding:'5px 0', background:'rgba(255,255,255,0.04)', border:'1px solid rgba(255,255,255,0.08)', borderRadius:6, color:'var(--text-muted)', fontSize:11, cursor:'pointer', fontWeight:600 }}>
+                        + Add for {u.name.split(' ')[0]}
+                      </button>
+                    </div>
+                  );
+                }).filter(Boolean)}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Adjustment add/edit modal ───────────────────────────────────────── */}
+      {showAdjModal && (
+        <Modal title={editAdjId ? 'Edit Adjustment' : 'Add Manual Hour Adjustment'} onClose={() => setShowAdjModal(false)}>
+          <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
+
+            <div style={{ background:'rgba(245,158,11,0.07)', border:'1px solid rgba(245,158,11,0.2)', borderRadius:7, padding:'8px 12px', fontSize:12, color:'#fcd34d' }}>
+              ⚠ Adjustments are permanently logged. A clear reason is mandatory for audit purposes.
+            </div>
+
+            <div>
+              <div style={{ fontSize:11, color:'var(--text-muted)', marginBottom:5, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.6px' }}>Engineer</div>
+              <select className="input" value={adjForm.userId} onChange={e => setAdjForm(f => ({ ...f, userId: e.target.value }))}>
+                {users.map(u => <option key={u.id} value={u.id}>{u.name} ({u.id})</option>)}
+              </select>
+            </div>
+
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+              <div>
+                <div style={{ fontSize:11, color:'var(--text-muted)', marginBottom:5, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.6px' }}>Date</div>
+                <input type="date" className="input" value={adjForm.date} onChange={e => setAdjForm(f => ({ ...f, date: e.target.value }))} />
+              </div>
+              <div>
+                <div style={{ fontSize:11, color:'var(--text-muted)', marginBottom:5, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.6px' }}>Hours <span style={{ color:'var(--text-muted)', fontWeight:400, textTransform:'none' }}>(negative to deduct)</span></div>
+                <input type="number" className="input" step="0.5" value={adjForm.hours} onChange={e => setAdjForm(f => ({ ...f, hours: e.target.value }))} placeholder="e.g. 4 or -2" />
+              </div>
+            </div>
+
+            <div>
+              <div style={{ fontSize:11, color:'var(--text-muted)', marginBottom:8, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.6px' }}>Category</div>
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(4, 1fr)', gap:6 }}>
+                {ADJ_CATEGORIES.map(c => (
+                  <div key={c.value} onClick={() => setAdjForm(f => ({ ...f, category: c.value }))}
+                    style={{ padding:'7px 4px', textAlign:'center', borderRadius:7, cursor:'pointer', fontSize:10, fontWeight:700, lineHeight:1.3,
+                      background: adjForm.category === c.value ? c.color + '22' : 'rgba(255,255,255,0.03)',
+                      border: `1.5px solid ${adjForm.category === c.value ? c.color + '80' : 'rgba(255,255,255,0.08)'}`,
+                      color: adjForm.category === c.value ? c.color : 'var(--text-muted)',
+                      transition:'all 0.15s' }}>
+                    {c.label}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <div style={{ fontSize:11, color:'var(--text-muted)', marginBottom:5, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.6px' }}>
+                Reason <span style={{ color:'#ef4444' }}>*</span> <span style={{ fontWeight:400, textTransform:'none', letterSpacing:0 }}>(required — will appear in Excel export)</span>
+              </div>
+              <input type="text" className="input" value={adjForm.reason}
+                onChange={e => setAdjForm(f => ({ ...f, reason: e.target.value }))}
+                placeholder="e.g. Rota entry missing for week of 3 Feb — engineer was on evening standby confirmed by team lead"
+                style={{ width:'100%', boxSizing:'border-box' }} />
+              {adjForm.reason.trim().length > 0 && adjForm.reason.trim().length < 10 && (
+                <div style={{ fontSize:10, color:'#f59e0b', marginTop:3 }}>Please provide a more detailed justification (min. 10 characters)</div>
+              )}
+            </div>
+
+            <div>
+              <div style={{ fontSize:11, color:'var(--text-muted)', marginBottom:5, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.6px' }}>Internal Note <span style={{ fontWeight:400, textTransform:'none', letterSpacing:0 }}>(optional)</span></div>
+              <input type="text" className="input" value={adjForm.note}
+                onChange={e => setAdjForm(f => ({ ...f, note: e.target.value }))}
+                placeholder="e.g. Approved by Meetul — see Slack thread #payroll-corrections"
+                style={{ width:'100%', boxSizing:'border-box' }} />
+            </div>
+
+            {/* Preview */}
+            {adjForm.hours && adjForm.userId && adjForm.category && (() => {
+              const u = users.find(x => x.id === adjForm.userId);
+              const cat = ADJ_CATEGORIES.find(c => c.value === adjForm.category);
+              const hrs = parseFloat(adjForm.hours) || 0;
+              const isPos = hrs >= 0;
+              return (
+                <div style={{ background: isPos ? 'rgba(34,197,94,0.07)' : 'rgba(239,68,68,0.07)', border: `1px solid ${isPos ? 'rgba(34,197,94,0.2)' : 'rgba(239,68,68,0.2)'}`, borderRadius:7, padding:'8px 12px', fontSize:12 }}>
+                  <strong style={{ color: isPos ? '#22c55e' : '#ef4444' }}>{isPos ? '+' : ''}{hrs}h</strong>
+                  <span style={{ color:'var(--text-secondary)' }}> will be {isPos ? 'added to' : 'deducted from'} </span>
+                  <strong style={{ color: cat?.color }}>{cat?.label}</strong>
+                  <span style={{ color:'var(--text-secondary)' }}> for </span>
+                  <strong>{u?.name || adjForm.userId}</strong>
+                  <span style={{ color:'var(--text-secondary)' }}> on {adjForm.date ? new Date(adjForm.date + 'T12:00:00').toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}) : '—'}</span>
+                </div>
+              );
+            })()}
+
+            <div style={{ display:'flex', gap:8, justifyContent:'flex-end', marginTop:4 }}>
+              <button className="btn btn-secondary" onClick={() => setShowAdjModal(false)}>Cancel</button>
+              <button className="btn btn-primary"
+                disabled={!adjForm.userId || !adjForm.date || !adjForm.hours || adjForm.reason.trim().length < 10}
+                onClick={saveAdj}
+                style={{ opacity: (!adjForm.userId || !adjForm.date || !adjForm.hours || adjForm.reason.trim().length < 10) ? 0.45 : 1 }}>
+                {editAdjId ? 'Save Changes' : 'Add Adjustment'}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* ── Adjustment delete confirmation ──────────────────────────────────── */}
+      {adjConfirmDel && (
+        <Modal title="Delete Adjustment" onClose={() => setAdjConfirmDel(null)}>
+          <div style={{ fontSize:13, color:'var(--text-secondary)', marginBottom:18 }}>
+            Are you sure you want to delete this adjustment? This will immediately affect payroll figures for the affected engineer.
+          </div>
+          <div style={{ display:'flex', gap:8, justifyContent:'flex-end' }}>
+            <button className="btn btn-secondary" onClick={() => setAdjConfirmDel(null)}>Cancel</button>
+            <button className="btn" style={{ background:'rgba(239,68,68,0.15)', border:'1px solid rgba(239,68,68,0.3)', color:'#ef4444', fontWeight:700 }} onClick={() => deleteAdj(adjConfirmDel)}>Delete</button>
+          </div>
+        </Modal>
       )}
 
       {/* Export date-range modal */}
