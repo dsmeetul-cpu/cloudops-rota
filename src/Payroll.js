@@ -9,6 +9,7 @@ import { UK_BANK_HOLIDAYS } from './utils/defaults';
 const ONCALL_STANDBY_RATE      = 5;    // £/hr flat
 const ONCALL_WORKED_MULTIPLIER = 1.5;  // 1.5× hourly for active on-call hours
 const TOIL_ACCRUAL_RATE        = 1.0;  // 1:1 per UK WTR
+const TOIL_MAX_CARRYOVER       = 40;   // max 40h (5 days) carryover per UK WTR
 
 // ── Drive helpers (self-contained copies — no App.js dependency) ──────────────
 const APP_FOLDER_NAME = 'CloudOps-Rota';
