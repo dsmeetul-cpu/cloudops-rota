@@ -1,6 +1,6 @@
 // src/App.js
 // CloudOps Rota — Full Production Build v2
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 10th June 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 11th June 2026
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
@@ -6275,6 +6275,7 @@ export default function App() {
   const [toil, setToil]               = useState([]);
   const [absences, setAbsences]       = useState([]);
   const [overtime, setOvertime]       = useState([]);
+  const [payrollAdjustments, setPayrollAdjustments] = useState([]);
   const [logbook, setLogbook]         = useState([]);
   const [documents, setDocuments]     = useState([]);
   const [timekeeping, setTimekeeping] = useState({});
@@ -6401,7 +6402,7 @@ export default function App() {
       if (reg) setRegistry(reg);
       if (pics) { setProfilePics(pics); setProfilePicsState(pics); }
 
-      const defaults = { users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, overtime, logbook, documents, obsidianNotes, whatsappChats };
+      const defaults = { users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, overtime, logbook, documents, obsidianNotes, whatsappChats, payrollAdjustments };
       const data = await loadAllFromDrive(token, defaults);
 
       // Only mark driveReady if users actually loaded from Drive
@@ -6428,6 +6429,7 @@ export default function App() {
       if (data.toil         != null) setToil(Array.isArray(data.toil) ? data.toil : Object.values(data.toil));
       if (data.absences     != null) setAbsences(data.absences);
       if (data.overtime     != null) setOvertime(data.overtime);
+      if (data.payrollAdjustments != null) setPayrollAdjustments(data.payrollAdjustments);
       if (data.logbook      != null) setLogbook(data.logbook);
       if (data.documents    != null) setDocuments(data.documents);
       if (data.timekeeping  != null) setTimekeeping(data.timekeeping);
@@ -6562,6 +6564,7 @@ export default function App() {
   useEffect(() => { save('toil', toil); },                 [toil]);
   useEffect(() => { save('absences', absences); },         [absences]);
   useEffect(() => { save('overtime', overtime); },         [overtime]);
+  useEffect(() => { save('payrollAdjustments', payrollAdjustments); }, [payrollAdjustments]);
   useEffect(() => { save('logbook', logbook); },           [logbook]);
   useEffect(() => { save('documents', documents); },       [documents]);
   useEffect(() => { save('timekeeping', timekeeping); },   [timekeeping]);
@@ -6592,6 +6595,7 @@ export default function App() {
     payconfig:     'manager',
     permissions:   'manager',
     permTemplates: 'manager',
+    payrollAdjustments: 'manager',
     holidays:      'shared',
     incidents:     'shared',
     upgrades:      'shared',
@@ -6658,10 +6662,12 @@ export default function App() {
 
     const allKeys = ['users','holidays','incidents','timesheets','upgrades','wiki','glossary',
                      'contacts','payconfig','rota','swapRequests','toil','absences','overtime',
-                     'logbook','documents','obsidianNotes','whatsappChats','permissions','permTemplates'];
+                     'logbook','documents','obsidianNotes','whatsappChats','permissions','permTemplates',
+                     'payrollAdjustments'];
     const vals = { users, holidays, incidents, timesheets, upgrades, wiki, glossary,
                    contacts, payconfig, rota, swapRequests, toil, absences, overtime,
-                   logbook, documents, obsidianNotes, whatsappChats, permissions, permTemplates };
+                   logbook, documents, obsidianNotes, whatsappChats, permissions, permTemplates,
+                   payrollAdjustments };
 
     // Engineers only touch shared + their own engineer-owned keys
     // Managers sync everything
@@ -6904,6 +6910,7 @@ export default function App() {
     toil, setToil,
     absences, setAbsences,
     overtime, setOvertime,
+    payrollAdjustments, setPayrollAdjustments,
     logbook, setLogbook,
     documents, setDocuments,
     obsidianNotes, setObsidianNotes,
@@ -6947,7 +6954,7 @@ export default function App() {
       case 'insights':   return <Insights {...props} />;
       case 'capacity':   return <Capacity {...props} incidents={incidents} />;
       case 'reports':    return <WeeklyReports {...props} />;
-      case 'payroll':    return <Payroll {...props} incidents={incidents} upgrades={upgrades} rota={rota} overtime={overtime} driveToken={driveToken} />;
+      case 'payroll':    return <Payroll {...props} incidents={incidents} upgrades={upgrades} rota={rota} overtime={overtime} driveToken={driveToken} payrollAdjustments={payrollAdjustments} setPayrollAdjustments={setPayrollAdjustments} />;
       case 'payconfig':  return <PayConfig {...props} timesheets={timesheets} overtime={overtime} rota={rota} holidays={holidays} />;
       case 'settings':   return <SettingsPage
         users={users} setUsers={setUsers}
