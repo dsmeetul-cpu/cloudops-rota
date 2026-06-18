@@ -8,6 +8,40 @@ import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react'
 // ── Constants ─────────────────────────────────────────────────────────────────
 const ANNUAL_ALLOWANCE = 25; // standard UK days
 
+// ── Pro-rata allowance ────────────────────────────────────────────────────────
+// Holiday year is 1 Jan – 31 Dec.
+// If a user joins mid-year, their allowance is prorated from their start date
+// to 31 Dec of that year. Rounded to nearest 0.5 day (standard UK practice).
+// For subsequent years they get the full ANNUAL_ALLOWANCE.
+function calcProRataAllowance(startDateStr, targetYear) {
+  if (!startDateStr) return ANNUAL_ALLOWANCE;
+
+  const start     = new Date(startDateStr + 'T12:00:00');
+  const joinYear  = start.getFullYear();
+
+  // If the engineer joined before or in a previous year, full allowance
+  if (joinYear < targetYear) return ANNUAL_ALLOWANCE;
+
+  // If they haven't joined yet (future start year), 0
+  if (joinYear > targetYear) return 0;
+
+  // Same year — prorate from start date to 31 Dec inclusive
+  const yearEnd       = new Date(targetYear, 11, 31, 12, 0, 0);
+  const yearStart     = new Date(targetYear, 0, 1,  12, 0, 0);
+  const totalDays     = Math.round((yearEnd - yearStart) / 86400000) + 1; // 365 or 366
+  const remainingDays = Math.round((yearEnd - start)     / 86400000) + 1;
+  const raw           = (remainingDays / totalDays) * ANNUAL_ALLOWANCE;
+
+  // Round to nearest 0.5
+  return Math.round(raw * 2) / 2;
+}
+
+// Returns the effective allowance for a user in the current holiday year
+function getUserAllowance(user) {
+  const year = new Date().getFullYear();
+  return calcProRataAllowance(user?.startDate, year);
+}
+
 const LEAVE_TYPES = [
   { value: 'Annual Leave',        color: '#10b981', icon: '🌴' },
   { value: 'Sick Leave',          color: '#ef4444', icon: '🤒' },
@@ -401,11 +435,13 @@ function WhosOffStrip({ users, holidays }) {
 
 // ── Engineer leave card (dashboard overview) ──────────────────────────────────
 function EngineerLeaveCard({ user, holidays, isManager, onAddForUser }) {
-  const approved = holidays.filter(h => h.userId === user.id && h.status === 'approved');
-  const annual   = approved.filter(h => h.type === 'Annual Leave');
-  const usedDays = annual.reduce((s, h) => s + countWorkdays(h.start, h.end), 0);
-  const remaining = Math.max(ANNUAL_ALLOWANCE - usedDays, 0);
-  const pct = (usedDays / ANNUAL_ALLOWANCE) * 100;
+  const approved    = holidays.filter(h => h.userId === user.id && h.status === 'approved');
+  const annual      = approved.filter(h => h.type === 'Annual Leave');
+  const usedDays    = annual.reduce((s, h) => s + countWorkdays(h.start, h.end), 0);
+  const allowance   = getUserAllowance(user);
+  const remaining   = Math.max(allowance - usedDays, 0);
+  const pct         = (usedDays / Math.max(allowance, 1)) * 100;
+  const isProRata   = allowance < ANNUAL_ALLOWANCE;
   const color = remaining < 5 ? T.amber : remaining < 10 ? T.blue : '#10b981';
 
   const pending  = holidays.filter(h => h.userId === user.id && h.status === 'pending').length;
@@ -437,8 +473,15 @@ function EngineerLeaveCard({ user, holidays, isManager, onAddForUser }) {
       {/* Leave bar */}
       <div style={{ padding: '0 16px 12px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 5, fontSize: 10 }}>
-          <span style={{ color: T.textMuted }}>Annual Leave</span>
-          <span style={{ fontFamily: T.mono, color, fontWeight: 700 }}>{usedDays}/{ANNUAL_ALLOWANCE}d used · <span style={{ color }}>{remaining}d left</span></span>
+          <span style={{ color: T.textMuted, display: 'flex', alignItems: 'center', gap: 5 }}>
+            Annual Leave
+            {isProRata && (
+              <span title={`Pro-rata from ${fmtDate(user.startDate)}`} style={{ background: 'rgba(0,194,255,0.12)', color: T.accent, border: '1px solid rgba(0,194,255,0.25)', padding: '1px 5px', borderRadius: 4, fontSize: 9, fontWeight: 700 }}>
+                PRO-RATA
+              </span>
+            )}
+          </span>
+          <span style={{ fontFamily: T.mono, color, fontWeight: 700 }}>{usedDays}/{allowance}d used · <span style={{ color }}>{remaining}d left</span></span>
         </div>
         <ProgressBar pct={pct} color={color} height={7} />
       </div>
@@ -446,9 +489,9 @@ function EngineerLeaveCard({ user, holidays, isManager, onAddForUser }) {
       {/* Stats row */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', borderTop: `1px solid ${T.border}` }}>
         {[
-          { l: 'Used', v: `${usedDays}d`, c: '#10b981' },
-          { l: 'Left',  v: `${remaining}d`, c: color },
-          { l: 'Taken', v: annual.length, c: T.blue },
+          { l: 'Used',   v: `${usedDays}d`,  c: '#10b981' },
+          { l: 'Left',   v: `${remaining}d`, c: color },
+          { l: isProRata ? `of ${allowance}d` : 'Taken', v: isProRata ? `${ANNUAL_ALLOWANCE}d FTE` : annual.length, c: T.blue },
         ].map((s, i) => (
           <div key={s.l} style={{ padding: '9px 0', textAlign: 'center', borderRight: i < 2 ? `1px solid ${T.border}` : 'none' }}>
             <div style={{ fontSize: 9, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.4px', marginBottom: 4 }}>{s.l}</div>
@@ -512,7 +555,10 @@ export default function Holidays({ users, holidays, setHolidays, currentUser, is
       .reduce((s, h) => s + countWorkdays(h.start, h.end), 0);
   }, [safeHolidays]);
 
-  const remainingDays = useCallback((userId) => Math.max(ANNUAL_ALLOWANCE - usedAnnualDays(userId), 0), [usedAnnualDays]);
+  const remainingDays = useCallback((userId) => {
+    const user = users.find(u => u.id === userId);
+    return Math.max(getUserAllowance(user) - usedAnnualDays(userId), 0);
+  }, [usedAnnualDays, users]);
 
   // Total team days off (approved)
   const totalTeamDays = useMemo(() =>
@@ -623,10 +669,13 @@ export default function Holidays({ users, holidays, setHolidays, currentUser, is
   // Preview: workdays for current form
   const previewWorkdays = useMemo(() => {
     if (!form.start || !form.end) return null;
-    const wd = countWorkdays(form.start, form.end);
+    const wd  = countWorkdays(form.start, form.end);
     const rem = remainingDays(form.userId);
-    return { wd, rem, afterRem: Math.max(rem - wd, 0) };
-  }, [form.start, form.end, form.userId, remainingDays]);
+    const formUser   = users.find(u => u.id === form.userId);
+    const allowance  = getUserAllowance(formUser);
+    const isProRata  = allowance < ANNUAL_ALLOWANCE;
+    return { wd, rem, afterRem: Math.max(rem - wd, 0), allowance, isProRata };
+  }, [form.start, form.end, form.userId, remainingDays, users]);
 
   const tabs = [
     { id: 'dashboard', label: 'Dashboard' },
@@ -648,7 +697,7 @@ export default function Holidays({ users, holidays, setHolidays, currentUser, is
           <div style={{ width: 38, height: 38, borderRadius: 10, background: 'rgba(16,185,129,0.12)', border: '1px solid rgba(16,185,129,0.3)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20 }}>🌴</div>
           <div>
             <h1 style={{ margin: 0, fontSize: 20, fontWeight: 800, letterSpacing: '-0.5px' }}>Holiday Tracker</h1>
-            <div style={{ fontSize: 11, color: T.textMuted, marginTop: 2 }}>{ANNUAL_ALLOWANCE} days annual allowance · UK working days</div>
+            <div style={{ fontSize: 11, color: T.textMuted, marginTop: 2 }}>{ANNUAL_ALLOWANCE} days annual allowance · Pro-rata for new starters · UK working days</div>
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
@@ -694,7 +743,7 @@ export default function Holidays({ users, holidays, setHolidays, currentUser, is
             <KpiCard label="Pending"         value={pending.length} color={pending.length > 0 ? T.amber : T.textMuted} icon="⏳" sub="awaiting approval" />
             <KpiCard label="Team Days Used"  value={`${totalTeamDays}d`} color={T.blue} icon="📅" sub="approved, all time" />
             {!isManager && (
-              <KpiCard label="Your Leave Left" value={`${remainingDays(currentUser)}d`} color={remainingDays(currentUser) < 5 ? T.amber : '#10b981'} icon="✈️" sub={`of ${ANNUAL_ALLOWANCE}d allowance`} />
+              <KpiCard label="Your Leave Left" value={`${remainingDays(currentUser)}d`} color={remainingDays(currentUser) < 5 ? T.amber : '#10b981'} icon="✈️" sub={`of ${getUserAllowance(users.find(u=>u.id===currentUser))}d allowance${getUserAllowance(users.find(u=>u.id===currentUser)) < ANNUAL_ALLOWANCE ? ' (pro-rata)' : ''}`} />
             )}
             {isManager && (
               <KpiCard label="Avg Days Left" value={`${Math.round(users.reduce((s,u) => s + remainingDays(u.id), 0) / Math.max(users.length, 1))}d`} color="#10b981" icon="📊" sub="across team" />
@@ -921,18 +970,22 @@ export default function Holidays({ users, holidays, setHolidays, currentUser, is
             <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 16 }}>Used vs remaining per engineer (working days)</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               {users
-                .map(u => ({ u, used: usedAnnualDays(u.id), rem: remainingDays(u.id) }))
+                .map(u => ({ u, used: usedAnnualDays(u.id), rem: remainingDays(u.id), allowance: getUserAllowance(u) }))
                 .sort((a, b) => b.used - a.used)
-                .map(({ u, used, rem }) => {
-                  const pct   = (used / ANNUAL_ALLOWANCE) * 100;
+                .map(({ u, used, rem, allowance }) => {
+                  const pct   = (used / Math.max(allowance, 1)) * 100;
                   const color = rem < 5 ? T.amber : rem < 10 ? T.blue : '#10b981';
+                  const isProRata = allowance < ANNUAL_ALLOWANCE;
                   return (
                     <div key={u.id}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 5 }}>
                         <Avatar user={u} size={20} />
-                        <span style={{ fontSize: 12, flex: 1, color: T.textSec }}>{u.name}</span>
+                        <span style={{ fontSize: 12, flex: 1, color: T.textSec }}>
+                          {u.name}
+                          {isProRata && <span title={`Pro-rata from ${fmtDate(u.startDate)}`} style={{ marginLeft: 6, background: 'rgba(0,194,255,0.1)', color: T.accent, border: '1px solid rgba(0,194,255,0.2)', padding: '1px 5px', borderRadius: 4, fontSize: 9, fontWeight: 700 }}>PRO-RATA</span>}
+                        </span>
                         <span style={{ fontSize: 11, fontFamily: T.mono, color: T.textMuted }}>{used}d used</span>
-                        <span style={{ fontSize: 11, fontFamily: T.mono, color, fontWeight: 700 }}>{rem}d left</span>
+                        <span style={{ fontSize: 11, fontFamily: T.mono, color, fontWeight: 700 }}>{rem}d left of {allowance}d</span>
                       </div>
                       <ProgressBar pct={pct} color={color} height={7} />
                     </div>
@@ -957,12 +1010,14 @@ export default function Holidays({ users, holidays, setHolidays, currentUser, is
                 </thead>
                 <tbody>
                   {users.map(u => {
+                    const allowance = getUserAllowance(u);
+                    const isProRata = allowance < ANNUAL_ALLOWANCE;
                     const ual  = usedAnnualDays(u.id);
                     const rem  = remainingDays(u.id);
                     const sick = safeHolidays.filter(h=>h.userId===u.id&&h.status==='approved'&&h.type==='Sick Leave').reduce((s,h)=>s+countWorkdays(h.start,h.end),0);
                     const other= safeHolidays.filter(h=>h.userId===u.id&&h.status==='approved'&&h.type!=='Annual Leave'&&h.type!=='Sick Leave').reduce((s,h)=>s+countWorkdays(h.start,h.end),0);
                     const total= safeHolidays.filter(h=>h.userId===u.id&&h.status==='approved').reduce((s,h)=>s+countWorkdays(h.start,h.end),0);
-                    const pct  = Math.round((ual / ANNUAL_ALLOWANCE) * 100);
+                    const pct  = Math.round((ual / Math.max(allowance, 1)) * 100);
                     const color = rem < 5 ? T.amber : rem < 10 ? T.blue : '#10b981';
                     const status = rem <= 0 ? { l: 'Exhausted', c: T.red } : rem < 5 ? { l: 'Low', c: T.amber } : { l: 'OK', c: '#10b981' };
                     return (
@@ -971,7 +1026,10 @@ export default function Holidays({ users, holidays, setHolidays, currentUser, is
                           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                             <Avatar user={u} size={24} />
                             <div>
-                              <div style={{ fontSize: 12, fontWeight: 700 }}>{u.name}</div>
+                              <div style={{ fontSize: 12, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}>
+                                {u.name}
+                                {isProRata && <span title={`Pro-rata from ${fmtDate(u.startDate)}`} style={{ background: 'rgba(0,194,255,0.1)', color: T.accent, border: '1px solid rgba(0,194,255,0.2)', padding: '1px 5px', borderRadius: 4, fontSize: 9, fontWeight: 700 }}>PRO-RATA</span>}
+                              </div>
                               <div style={{ fontSize: 10, color: T.textMuted, fontFamily: T.mono }}>{u.id}</div>
                             </div>
                           </div>
@@ -1075,7 +1133,7 @@ export default function Holidays({ users, holidays, setHolidays, currentUser, is
               </span>
               {form.type === 'Annual Leave' && (
                 <span style={{ color: previewWorkdays.wd > previewWorkdays.rem ? T.amber : '#10b981', marginLeft: 8, fontWeight: 700 }}>
-                  · {previewWorkdays.rem}d remaining → {previewWorkdays.afterRem}d after
+                  · {previewWorkdays.rem}d remaining of {previewWorkdays.allowance}d{previewWorkdays.isProRata ? ' (pro-rata)' : ''} → {previewWorkdays.afterRem}d after
                   {previewWorkdays.wd > previewWorkdays.rem && ' ⚠ Exceeds allowance'}
                 </span>
               )}
