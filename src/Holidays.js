@@ -39,7 +39,7 @@ function calcProRataAllowance(startDateStr, targetYear) {
 // Returns the effective allowance for a user in the current holiday year
 function getUserAllowance(user) {
   const year = new Date().getFullYear();
-  return calcProRataAllowance(user?.startDate, year);
+  return calcProRataAllowance(user?.start_date, year);
 }
 
 const LEAVE_TYPES = [
@@ -476,7 +476,7 @@ function EngineerLeaveCard({ user, holidays, isManager, onAddForUser }) {
           <span style={{ color: T.textMuted, display: 'flex', alignItems: 'center', gap: 5 }}>
             Annual Leave
             {isProRata && (
-              <span title={`Pro-rata from ${fmtDate(user.startDate)}`} style={{ background: 'rgba(0,194,255,0.12)', color: T.accent, border: '1px solid rgba(0,194,255,0.25)', padding: '1px 5px', borderRadius: 4, fontSize: 9, fontWeight: 700 }}>
+              <span title={`Pro-rata from ${fmtDate(user.start_date)}`} style={{ background: 'rgba(0,194,255,0.12)', color: T.accent, border: '1px solid rgba(0,194,255,0.25)', padding: '1px 5px', borderRadius: 4, fontSize: 9, fontWeight: 700 }}>
                 PRO-RATA
               </span>
             )}
@@ -982,7 +982,7 @@ export default function Holidays({ users, holidays, setHolidays, currentUser, is
                         <Avatar user={u} size={20} />
                         <span style={{ fontSize: 12, flex: 1, color: T.textSec }}>
                           {u.name}
-                          {isProRata && <span title={`Pro-rata from ${fmtDate(u.startDate)}`} style={{ marginLeft: 6, background: 'rgba(0,194,255,0.1)', color: T.accent, border: '1px solid rgba(0,194,255,0.2)', padding: '1px 5px', borderRadius: 4, fontSize: 9, fontWeight: 700 }}>PRO-RATA</span>}
+                          {isProRata && <span title={`Pro-rata from ${fmtDate(u.start_date)}`} style={{ marginLeft: 6, background: 'rgba(0,194,255,0.1)', color: T.accent, border: '1px solid rgba(0,194,255,0.2)', padding: '1px 5px', borderRadius: 4, fontSize: 9, fontWeight: 700 }}>PRO-RATA</span>}
                         </span>
                         <span style={{ fontSize: 11, fontFamily: T.mono, color: T.textMuted }}>{used}d used</span>
                         <span style={{ fontSize: 11, fontFamily: T.mono, color, fontWeight: 700 }}>{rem}d left of {allowance}d</span>
@@ -1028,7 +1028,7 @@ export default function Holidays({ users, holidays, setHolidays, currentUser, is
                             <div>
                               <div style={{ fontSize: 12, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}>
                                 {u.name}
-                                {isProRata && <span title={`Pro-rata from ${fmtDate(u.startDate)}`} style={{ background: 'rgba(0,194,255,0.1)', color: T.accent, border: '1px solid rgba(0,194,255,0.2)', padding: '1px 5px', borderRadius: 4, fontSize: 9, fontWeight: 700 }}>PRO-RATA</span>}
+                                {isProRata && <span title={`Pro-rata from ${fmtDate(u.start_date)}`} style={{ background: 'rgba(0,194,255,0.1)', color: T.accent, border: '1px solid rgba(0,194,255,0.2)', padding: '1px 5px', borderRadius: 4, fontSize: 9, fontWeight: 700 }}>PRO-RATA</span>}
                               </div>
                               <div style={{ fontSize: 10, color: T.textMuted, fontFamily: T.mono }}>{u.id}</div>
                             </div>
