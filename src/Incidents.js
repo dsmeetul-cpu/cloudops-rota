@@ -1,6 +1,6 @@
 // src/Incidents.js
 // CloudOps Rota — Incidents Component
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 2nd June 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 19th June 2026
 
 import React, { useState, useRef, useEffect } from 'react';
 
@@ -369,6 +369,14 @@ const INC_SEVERITIES = [
   { value: 'High',     label: '🟠 High',     color: '#f59e0b' },
 ];
 
+// ── Incident type options ──────────────────────────────────────────────────
+// 'oncall' = standard on-call incident — has a duration, feeds timesheets/payroll
+// 'daily'  = daily incident log entry — not on-call, no time tracking, never touches payroll
+const INC_TYPES = [
+  { value: 'oncall', label: '📟 On-Call Incident', color: '#00c2ff', desc: 'Standard on-call response. Duration is tracked and pushed to timesheets/payroll.' },
+  { value: 'daily',  label: '📋 Daily Incident',   color: '#a78bfa', desc: 'Routine log entry, not on-call. No time tracking — never appears in payroll.' },
+];
+
 // ── Incident Tabs (Issue | Actions | Solution) ────────────────────────────
 function IncidentTabs({ form, setForm }) {
   const [activeTab, setActiveTab] = useState('issue');
@@ -496,6 +504,7 @@ export default function Incidents({ users, incidents, setIncidents, currentUser,
   const { selected, toggleOne, toggleAll, clearAll } = useBulkSelect(incidents);
 
   const EMPTY_FORM = {
+    incident_type: 'oncall',
     alert_name: '', vm_service: '', severity: 'Disaster', assigned_to: currentUser,
     kb_ref: '', ticket_ref: '', email_ref: '',
     issue_desc: '', issue_images: [],
@@ -505,8 +514,8 @@ export default function Incidents({ users, incidents, setIncidents, currentUser,
   };
   const [form, setForm] = useState(EMPTY_FORM);
 
-  const openAdd  = ()        => { setForm({ ...EMPTY_FORM, assigned_to: currentUser }); setEditInc(null); setShowModal(true); };
-  const openEdit = (inc, e)  => { e.stopPropagation(); setForm({ ...inc }); setEditInc(inc.id); setShowModal(true); };
+  const openAdd  = (type = 'oncall') => { setForm({ ...EMPTY_FORM, assigned_to: currentUser, incident_type: type }); setEditInc(null); setShowModal(true); };
+  const openEdit = (inc, e)  => { e.stopPropagation(); setForm({ ...EMPTY_FORM, ...inc, incident_type: inc.incident_type || 'oncall' }); setEditInc(inc.id); setShowModal(true); };
 
   // ── Timesheet helpers ─────────────────────────────────────────────────────
   // Builds one timesheet row for an incident — worked hours only (not standby)
@@ -552,6 +561,11 @@ export default function Incidents({ users, incidents, setIncidents, currentUser,
   // ── Save ───────────────────────────────────────────────────────────────────
   const save = () => {
     if (!form.alert_name) return;
+    const isDaily = form.incident_type === 'daily';
+    // Daily incidents are not on-call — no time tracking, ever. Force duration blank
+    // regardless of what's left in form state so a stray value can never reach payroll.
+    const formToSave = isDaily ? { ...form, duration_hours: '' } : form;
+
     const combinedDesc = [
       form.issue_desc    ? `<h3>🔴 Issue</h3>${form.issue_desc}` : '',
       form.actions_desc  ? `<h3>⚙️ Actions Taken</h3>${form.actions_desc}${form.actions_code ? `<pre style="background:rgba(0,0,0,0.4);padding:10px;border-radius:6px;overflow:auto;font-size:12px">${form.actions_code}</pre>` : ''}` : '',
@@ -562,25 +576,31 @@ export default function Incidents({ users, incidents, setIncidents, currentUser,
       // ── Edit path ──────────────────────────────────────────────────────────
       const oldInc  = incidents.find(i => i.id === editInc);
       const oldHrs  = +(oldInc?.duration_hours || 0);
-      const newHrs  = +(form.duration_hours    || 0);
+      const newHrs  = isDaily ? 0 : +(formToSave.duration_hours || 0);
       const oldUid  = oldInc?.assigned_to;
-      const newUid  = form.assigned_to;
+      const newUid  = formToSave.assigned_to;
       const incDate = (oldInc?.date || new Date().toISOString()).slice(0, 10);
 
-      setIncidents(incidents.map(i => i.id === editInc ? { ...i, ...form, desc: combinedDesc } : i));
+      setIncidents(incidents.map(i => i.id === editInc ? { ...i, ...formToSave, desc: combinedDesc } : i));
 
-      // Step 1: remove old timesheet entry if user changed OR duration cleared
-      if (oldHrs > 0 && (oldUid !== newUid || newHrs === 0)) {
-        removeIncidentTimesheet(editInc, oldUid);
-      }
-
-      // Step 2: add / update new timesheet entry if duration is set
-      if (newHrs > 0 && newUid) {
-        // Also clean up old user's entry when reassigned
-        if (oldUid && oldUid !== newUid && oldHrs > 0) {
+      // Daily incidents never feed timesheets/payroll — if this incident was
+      // previously on-call with logged time, strip that timesheet entry out.
+      if (isDaily) {
+        if (oldHrs > 0) removeIncidentTimesheet(editInc, oldUid);
+      } else {
+        // Step 1: remove old timesheet entry if user changed OR duration cleared
+        if (oldHrs > 0 && (oldUid !== newUid || newHrs === 0)) {
           removeIncidentTimesheet(editInc, oldUid);
         }
-        addIncidentTimesheet(editInc, newUid, form.alert_name, incDate, newHrs);
+
+        // Step 2: add / update new timesheet entry if duration is set
+        if (newHrs > 0 && newUid) {
+          // Also clean up old user's entry when reassigned
+          if (oldUid && oldUid !== newUid && oldHrs > 0) {
+            removeIncidentTimesheet(editInc, oldUid);
+          }
+          addIncidentTimesheet(editInc, newUid, formToSave.alert_name, incDate, newHrs);
+        }
       }
 
     } else {
@@ -591,7 +611,7 @@ export default function Incidents({ users, incidents, setIncidents, currentUser,
       const _now    = new Date();
       const incDate = `${_now.getFullYear()}-${String(_now.getMonth()+1).padStart(2,'0')}-${String(_now.getDate()).padStart(2,'0')}`;
       const newInc  = {
-        id, ...form, desc: combinedDesc,
+        id, ...formToSave, desc: combinedDesc,
         status: 'Investigating', reporter: currentUser,
         date: `${incDate} ${String(_now.getHours()).padStart(2,'0')}:${String(_now.getMinutes()).padStart(2,'0')}`,
         updates: [],
@@ -601,8 +621,9 @@ export default function Incidents({ users, incidents, setIncidents, currentUser,
         return [newInc, ...safe];
       });
 
-      if (form.duration_hours && form.assigned_to) {
-        addIncidentTimesheet(id, form.assigned_to, form.alert_name, incDate, +form.duration_hours);
+      // Daily incidents are log-only — skip timesheet/payroll entirely.
+      if (!isDaily && formToSave.duration_hours && formToSave.assigned_to) {
+        addIncidentTimesheet(id, formToSave.assigned_to, formToSave.alert_name, incDate, +formToSave.duration_hours);
       }
     }
     setShowModal(false); setForm(EMPTY_FORM);
@@ -641,7 +662,7 @@ export default function Incidents({ users, incidents, setIncidents, currentUser,
     clearAll();
   };
 
-  const filtered     = filter === 'all' ? incidents : incidents.filter(i => i.status === filter || i.severity === filter);
+  const filtered     = filter === 'all' ? incidents : incidents.filter(i => i.status === filter || i.severity === filter || (i.incident_type || 'oncall') === filter);
   const assignedUser = (id) => users.find(u => u.id === id);
 
   return (
@@ -654,11 +675,14 @@ export default function Incidents({ users, incidents, setIncidents, currentUser,
             <option value="Resolved">Resolved</option>
             <option value="Disaster">🔴 Disaster</option>
             <option value="High">🟠 High</option>
+            <option value="oncall">📟 On-Call</option>
+            <option value="daily">📋 Daily Incident</option>
           </select>
           {selected.size > 0 && (
             <button className="btn btn-danger btn-sm" onClick={deleteBulk}>🗑 Delete {selected.size}</button>
           )}
-          <button className="btn btn-primary" onClick={openAdd}>+ Log Incident</button>
+          <button className="btn btn-secondary" onClick={() => openAdd('daily')}>📋 Log Daily Incident</button>
+          <button className="btn btn-primary" onClick={() => openAdd('oncall')}>+ Log Incident</button>
         </>}
       />
 
@@ -669,7 +693,7 @@ export default function Incidents({ users, incidents, setIncidents, currentUser,
               <th style={{ width: 32 }}>
                 <input type="checkbox" checked={selected.size === incidents.length && incidents.length > 0} onChange={toggleAll} />
               </th>
-              <th>ID</th><th>Alert Name</th><th>VM/Service</th><th>Severity</th><th>Status</th>
+              <th>ID</th><th>Alert Name</th><th>Type</th><th>VM/Service</th><th>Severity</th><th>Status</th>
               <th>Assigned To</th><th>Duration</th><th>KB Ref</th><th>Date</th><th>Actions</th>
             </tr>
           </thead>
@@ -687,6 +711,9 @@ export default function Incidents({ users, incidents, setIncidents, currentUser,
                     <div style={{ color: 'var(--text-primary)', fontWeight: 500, fontSize: 13 }}>{i.alert_name}</div>
                     {i.desc && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}
                       dangerouslySetInnerHTML={{ __html: (i.desc || '').replace(/<[^>]+>/g, '').slice(0, 60) + (i.desc?.length > 60 ? '…' : '') }} />}
+                  </td>
+                  <td>
+                    {(() => { const t = INC_TYPES.find(x => x.value === (i.incident_type || 'oncall')); return t ? <span style={{ background: t.color + '22', color: t.color, padding: '3px 8px', borderRadius: 6, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>{t.label}</span> : null; })()}
                   </td>
                   <td style={{ fontSize: 12 }}>{i.vm_service || '—'}</td>
                   <td>
@@ -723,8 +750,23 @@ export default function Incidents({ users, incidents, setIncidents, currentUser,
 
       {/* Log / Edit modal */}
       {showModal && (
-        <Modal title={editInc ? `✏ Edit Incident — ${form.alert_name || ''}` : '🚨 Log New Incident'} onClose={() => setShowModal(false)} fullscreen>
+        <Modal title={editInc ? `✏ Edit Incident — ${form.alert_name || ''}` : (form.incident_type === 'daily' ? '📋 Log Daily Incident' : '🚨 Log New Incident')} onClose={() => setShowModal(false)} fullscreen>
           <div style={{ maxWidth: 1100, margin: '0 auto' }}>
+            {/* Incident type toggle */}
+            <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+              {INC_TYPES.map(t => (
+                <button key={t.value} type="button"
+                  onClick={() => setForm({ ...form, incident_type: t.value, ...(t.value === 'daily' ? { duration_hours: '' } : {}) })}
+                  style={{
+                    flex: 1, textAlign: 'left', padding: '10px 14px', borderRadius: 10, cursor: 'pointer',
+                    border: `1px solid ${form.incident_type === t.value ? t.color : 'var(--border)'}`,
+                    background: form.incident_type === t.value ? t.color + '18' : 'var(--bg-card)',
+                  }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: form.incident_type === t.value ? t.color : 'var(--text-primary)' }}>{t.label}</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{t.desc}</div>
+                </button>
+              ))}
+            </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
               <FormGroup label="Alert Name">
                 <input className="input" placeholder="e.g. High CPU on prod-api-01"
@@ -756,14 +798,16 @@ export default function Incidents({ users, incidents, setIncidents, currentUser,
                 <input className="input" placeholder="e.g. Alert email subject"
                   value={form.email_ref} onChange={e => setForm({ ...form, email_ref: e.target.value })} />
               </FormGroup>
-              <FormGroup label="Duration (Hours)" hint="Auto-added to timesheets & payroll">
-                <select className="select" value={form.duration_hours} onChange={e => setForm({ ...form, duration_hours: e.target.value })}>
-                  <option value="">Select duration…</option>
-                  {[0.5, 1, 1.5, 2, 2.5, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(h => (
-                    <option key={h} value={h}>{h} hour{h !== 1 ? 's' : ''}</option>
-                  ))}
-                </select>
-              </FormGroup>
+              {form.incident_type !== 'daily' && (
+                <FormGroup label="Duration (Hours)" hint="Auto-added to timesheets & payroll">
+                  <select className="select" value={form.duration_hours} onChange={e => setForm({ ...form, duration_hours: e.target.value })}>
+                    <option value="">Select duration…</option>
+                    {[0.5, 1, 1.5, 2, 2.5, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(h => (
+                      <option key={h} value={h}>{h} hour{h !== 1 ? 's' : ''}</option>
+                    ))}
+                  </select>
+                </FormGroup>
+              )}
             </div>
             <IncidentTabs form={form} setForm={setForm} />
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 20 }}>
@@ -779,6 +823,7 @@ export default function Incidents({ users, incidents, setIncidents, currentUser,
           <div style={{ maxWidth: 1000, margin: '0 auto' }}>
             {/* Meta row */}
             <div style={{ display:'flex', gap:10, flexWrap:'wrap', alignItems:'center', marginBottom:18 }}>
+              {(() => { const t = INC_TYPES.find(x => x.value === (viewInc.incident_type || 'oncall')); return t ? <span style={{ background:t.color+'22', color:t.color, padding:'4px 12px', borderRadius:8, fontSize:12, fontWeight:700 }}>{t.label}</span> : null; })()}
               {(() => { const s = INC_SEVERITIES.find(x => x.value === viewInc.severity); return s ? <span style={{ background:s.color+'25', color:s.color, padding:'4px 12px', borderRadius:8, fontSize:12, fontWeight:700 }}>{s.label}</span> : null; })()}
               <Tag label={viewInc.status} type={viewInc.status === 'Resolved' ? 'green' : 'red'} />
               <span className="muted-xs">{viewInc.date}</span>
