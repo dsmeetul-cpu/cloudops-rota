@@ -1,6 +1,6 @@
 // src/App.js
 // CloudOps Rota — Full Production Build v2
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 11th June 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 23rd June 2026
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
@@ -5401,9 +5401,15 @@ export default function App() {
       if (data.whatsappChats != null) { const wc = data.whatsappChats; setWhatsappChats(wc?.chats ?? (Array.isArray(wc) ? wc : [])); }
       if (data.permissions     != null) setPermissions(data.permissions);
       if (data.permTemplates   != null) setPermTemplates(data.permTemplates);
-      setDriveReady(true);       // ← ONLY here, after real data confirmed
-      setDriveToken(token);      // ← after driveDataLoaded, safe to trigger saves
-      console.log('Drive: loaded successfully, driveReady = true');
+      setDriveReady(true);
+      // ── CRITICAL FIX ──────────────────────────────────────────────────────
+      // driveDataLoaded.current MUST be set before setDriveToken() fires.
+      // Setting driveToken triggers all save() useEffects. Without this flag
+      // every save() call bounces off the guard at line 5449 and nothing is
+      // ever written to Drive when the auto-connect path is used.
+      driveDataLoaded.current = true;
+      setDriveToken(token);      // ← safe now: ref is true, real data is in state
+      console.log('Drive: loaded successfully, driveReady = true, saves unblocked');
     } catch (e) {
       console.error('Drive load error:', e?.message || e);
       try { sessionStorage.removeItem('gdrive_token'); sessionStorage.removeItem('gdrive_token_ts'); } catch (_) {}
@@ -5651,7 +5657,12 @@ export default function App() {
     setPage(uid === 'MBA47' ? 'dashboard' : 'oncall');
 
     if (driveReady) {
-      // Drive data already loaded (silent auto-connect succeeded before login)
+      // Drive data already loaded (silent auto-connect succeeded before login).
+      // ── CRITICAL FIX: driveDataLoaded.current was never set on this path. ──
+      // Auto-connect calls loadDriveData() which now sets the ref, but if the
+      // ref was still false when the user reaches this branch saves stay blocked
+      // forever. Force it true here as a belt-and-braces guard.
+      driveDataLoaded.current = true;
       setLoggedIn(true);
       return;
     }
@@ -5699,7 +5710,7 @@ export default function App() {
         if (pics) { setProfilePics(pics); setProfilePicsState(pics); }
 
         setLoadProgress(40); setLoadStatus('Loading rota & schedules…');
-        const defaults = { users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, overtime, logbook, documents, obsidianNotes, whatsappChats };
+        const defaults = { users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, overtime, logbook, documents, obsidianNotes, whatsappChats, payrollAdjustments };
         const data = await loadAllFromDrive(token, defaults);
 
         setLoadProgress(75); setLoadStatus('Applying team data…');
@@ -5717,6 +5728,7 @@ export default function App() {
         if (data.toil != null) setToil(Array.isArray(data.toil) ? data.toil : Object.values(data.toil));
         if (data.absences != null) setAbsences(data.absences);
         if (data.overtime != null) setOvertime(data.overtime);
+        if (data.payrollAdjustments != null) setPayrollAdjustments(data.payrollAdjustments);
         if (data.logbook != null) setLogbook(data.logbook);
         if (data.documents != null) setDocuments(data.documents);
         if (data.timekeeping != null) setTimekeeping(data.timekeeping);
