@@ -18,6 +18,7 @@ import TimeKeeping from './TimeKeeping';
 import TOIL from './TOIL';
 import RotaPage from './Rota';
 import SettingsPage from './Settings';
+import Wiki from './Wiki';
 import Announcements, { AnnouncementBanners } from './Announcements';
 import ShiftReminders, { ShiftReminderBanner } from './ShiftReminders';
 import CalendarPage from './Calendar';
@@ -2521,192 +2522,6 @@ function Logbook({ users, logbook, setLogbook, currentUser, isManager }) {
   );
 }
 
-
-// ── Wiki — Full Page Blog Editor ───────────────────────────────────────────
-function Wiki({ wiki, setWiki }) {
-  const [sel, setSel]       = useState(null);   // viewing id
-  const [editing, setEditing] = useState(false); // full page editor
-  const [search, setSearch] = useState('');
-  const [catFilter, setCatFilter] = useState('all');
-  const [form, setForm]     = useState({ title: '', cat: 'Operations', heroUrl: '', excerpt: '', tags: '', content: '', author: '' });
-
-  const CATS = ['Operations','Engineering','Process','Security','Runbooks','Announcements'];
-
-  const openNew  = () => { setForm({ title: '', cat: 'Operations', heroUrl: '', excerpt: '', tags: '', content: '', author: '' }); setSel('__new__'); setEditing(true); };
-  const openEdit = (w) => { setForm({ ...w }); setSel(w.id); setEditing(true); };
-
-  const save = () => {
-    if (!form.title) return;
-    if (sel === '__new__') {
-      setWiki([...wiki, { id: 'w' + Date.now(), ...form, created: new Date().toISOString().slice(0,10), updated: new Date().toISOString().slice(0,10) }]);
-    } else {
-      setWiki(wiki.map(w => w.id === sel ? { ...w, ...form, updated: new Date().toISOString().slice(0,10) } : w));
-    }
-    setEditing(false); setSel(null);
-  };
-
-  const deleteW = (id) => { if (window.confirm('Delete article?')) { setWiki(wiki.filter(w => w.id !== id)); setSel(null); setEditing(false); } };
-
-  const filtered = wiki.filter(w =>
-    (catFilter === 'all' || w.cat === catFilter) &&
-    (w.title.toLowerCase().includes(search.toLowerCase()) || (w.tags||'').toLowerCase().includes(search.toLowerCase()) || (w.excerpt||'').toLowerCase().includes(search.toLowerCase()))
-  );
-
-  // ── Full page editor ─────────────────────────────────────────────────────
-  if (editing) {
-    const isNew = sel === '__new__';
-    return (
-      <div style={{ maxWidth: 900, margin: '0 auto' }}>
-        <div style={{ display: 'flex', gap: 8, marginBottom: 20, alignItems: 'center' }}>
-          <button className="btn btn-secondary btn-sm" onClick={() => { setEditing(false); setSel(null); }}>← Back</button>
-          <span style={{ flex: 1, fontSize: 13, color: 'var(--text-muted)' }}>{isNew ? 'New Article' : 'Edit Article'}</span>
-          {!isNew && <button className="btn btn-danger btn-sm" onClick={() => deleteW(sel)}>🗑 Delete</button>}
-          <button className="btn btn-primary" onClick={save}>{isNew ? 'Publish' : 'Update'}</button>
-        </div>
-
-        {/* Hero Image */}
-        <div style={{ marginBottom: 20 }}>
-          {form.heroUrl && (
-            <div style={{ width: '100%', height: 220, borderRadius: 12, overflow: 'hidden', marginBottom: 12, position: 'relative' }}>
-              <img src={form.heroUrl} alt="Hero" style={{ width: '100%', height: '100%', objectFit: 'cover' }} onError={e => e.target.style.display='none'} />
-              <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(180deg,transparent 50%,rgba(10,20,40,.9))' }} />
-            </div>
-          )}
-          <input className="input" placeholder="Hero image URL (https://…)" value={form.heroUrl} onChange={e => setForm({ ...form, heroUrl: e.target.value })} />
-        </div>
-
-        {/* Meta */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginBottom: 16 }}>
-          <FormGroup label="Title">
-            <input className="input" style={{ fontSize: 15 }} placeholder="Article title" value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} />
-          </FormGroup>
-          <FormGroup label="Category">
-            <select className="select" value={form.cat} onChange={e => setForm({ ...form, cat: e.target.value })}>
-              {CATS.map(c => <option key={c}>{c}</option>)}
-            </select>
-          </FormGroup>
-          <FormGroup label="Author">
-            <input className="input" placeholder="Your name" value={form.author} onChange={e => setForm({ ...form, author: e.target.value })} />
-          </FormGroup>
-        </div>
-        <FormGroup label="Tags" hint="comma separated">
-          <input className="input" placeholder="e.g. aws, kubernetes, runbook" value={form.tags} onChange={e => setForm({ ...form, tags: e.target.value })} />
-        </FormGroup>
-        <FormGroup label="Excerpt / Summary">
-          <textarea className="textarea" rows={2} placeholder="Short description shown on cards…" value={form.excerpt} onChange={e => setForm({ ...form, excerpt: e.target.value })} />
-        </FormGroup>
-        <FormGroup label="Content">
-          <RichEditor value={form.content} onChange={v => setForm({ ...form, content: v })} rows={20} fullPage />
-        </FormGroup>
-        <div style={{ display: 'flex', gap: 8, marginTop: 16, justifyContent: 'flex-end' }}>
-          <button className="btn btn-secondary" onClick={() => { setEditing(false); setSel(null); }}>Cancel</button>
-          <button className="btn btn-primary" onClick={save}>{isNew ? '🚀 Publish Article' : '✓ Update Article'}</button>
-        </div>
-      </div>
-    );
-  }
-
-  // ── Article view ─────────────────────────────────────────────────────────
-  if (sel && sel !== '__new__') {
-    const w = wiki.find(x => x.id === sel);
-    if (!w) { setSel(null); return null; }
-    return (
-      <div style={{ maxWidth: 820, margin: '0 auto' }}>
-        <div style={{ display: 'flex', gap: 8, marginBottom: 20 }}>
-          <button className="btn btn-secondary btn-sm" onClick={() => setSel(null)}>← Back</button>
-          <button className="btn btn-secondary btn-sm" onClick={() => openEdit(w)}>✏ Edit</button>
-          <button className="btn btn-danger btn-sm" onClick={() => deleteW(w.id)}>🗑 Delete</button>
-        </div>
-        {w.heroUrl && (
-          <div style={{ width: '100%', height: 280, borderRadius: 16, overflow: 'hidden', marginBottom: 24, position: 'relative' }}>
-            <img src={w.heroUrl} alt="Hero" style={{ width: '100%', height: '100%', objectFit: 'cover' }} onError={e => e.target.style.display='none'} />
-            <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(180deg,transparent 40%,rgba(10,20,40,.95))' }} />
-            <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, padding: '24px 28px' }}>
-              <div style={{ fontSize: 26, fontWeight: 700, color: '#fff', lineHeight: 1.3 }}>{w.title}</div>
-            </div>
-          </div>
-        )}
-        {!w.heroUrl && <div style={{ fontSize: 26, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 16 }}>{w.title}</div>}
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16, alignItems: 'center' }}>
-          <span style={{ background: '#1e40af55', color: '#bfdbfe', padding: '3px 10px', borderRadius: 20, fontSize: 11, fontWeight: 600 }}>{w.cat}</span>
-          {(w.tags||'').split(',').filter(Boolean).map(t => (
-            <span key={t} style={{ background: '#1e293b', color: 'var(--text-muted)', padding: '2px 8px', borderRadius: 12, fontSize: 11, border: '1px solid var(--border)' }}>{t.trim()}</span>
-          ))}
-          {w.author && <span className="muted-xs">by {w.author}</span>}
-          {w.updated && <span className="muted-xs">· Updated {w.updated}</span>}
-        </div>
-        {w.excerpt && <div style={{ fontSize: 15, color: 'var(--text-secondary)', lineHeight: 1.7, marginBottom: 20, paddingBottom: 20, borderBottom: '1px solid var(--border)', fontStyle: 'italic' }}>{w.excerpt}</div>}
-        <div style={{ fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.9 }} dangerouslySetInnerHTML={{ __html: w.content }} />
-      </div>
-    );
-  }
-
-  // ── Article list (blog layout) ────────────────────────────────────────────
-  return (
-    <div>
-      <PageHeader title="Wiki" sub="Team knowledge base & articles"
-        actions={<button className="btn btn-primary" onClick={openNew}>+ New Article</button>} />
-      <div style={{ display: 'flex', gap: 10, marginBottom: 20, flexWrap: 'wrap' }}>
-        <input className="input" placeholder="🔍 Search wiki…" value={search} onChange={e => setSearch(e.target.value)} style={{ flex: 1, minWidth: 200 }} />
-        <select className="select" value={catFilter} onChange={e => setCatFilter(e.target.value)} style={{ width: 160 }}>
-          <option value="all">All Categories</option>
-          {CATS.map(c => <option key={c}>{c}</option>)}
-        </select>
-      </div>
-      {filtered.length === 0 && <Alert>No articles found. {catFilter !== 'all' ? 'Try a different category.' : 'Create your first article above.'}</Alert>}
-
-      {/* Featured / first article */}
-      {filtered.length > 0 && (() => {
-        const w = filtered[0];
-        return (
-          <div key={w.id} className="card" style={{ cursor: 'pointer', marginBottom: 20, padding: 0, overflow: 'hidden' }} onClick={() => setSel(w.id)}>
-            {w.heroUrl && (
-              <div style={{ width: '100%', height: 200, position: 'relative', overflow: 'hidden' }}>
-                <img src={w.heroUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} onError={e => e.target.style.display='none'} />
-                <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(180deg,transparent 30%,rgba(10,20,40,.95))' }} />
-                <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, padding: '20px 24px' }}>
-                  <div style={{ fontSize: 20, fontWeight: 700, color: '#fff' }}>{w.title}</div>
-                </div>
-              </div>
-            )}
-            <div style={{ padding: '16px 20px' }}>
-              {!w.heroUrl && <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 8 }}>{w.title}</div>}
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
-                <span style={{ background: '#1e40af55', color: '#bfdbfe', padding: '2px 8px', borderRadius: 12, fontSize: 11 }}>★ Featured · {w.cat}</span>
-                {(w.tags||'').split(',').filter(Boolean).slice(0,3).map(t => <span key={t} style={{ background: '#1e293b', color: 'var(--text-muted)', padding: '2px 6px', borderRadius: 10, fontSize: 10, border: '1px solid var(--border)' }}>{t.trim()}</span>)}
-              </div>
-              <div className="muted-xs">{w.excerpt || w.content.replace(/<[^>]+>/g,'').slice(0,150)}…</div>
-              <div className="muted-xs" style={{ marginTop: 8 }}>{w.author && `by ${w.author} · `}{w.updated}</div>
-            </div>
-          </div>
-        );
-      })()}
-
-      {/* Rest as grid */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px,1fr))', gap: 16 }}>
-        {filtered.slice(1).map(w => (
-          <div key={w.id} className="card" style={{ cursor: 'pointer', padding: 0, overflow: 'hidden' }} onClick={() => setSel(w.id)}>
-            {w.heroUrl && (
-              <div style={{ height: 120, overflow: 'hidden', position: 'relative' }}>
-                <img src={w.heroUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} onError={e => e.target.style.display='none'} />
-                <div style={{ position: 'absolute', inset: 0, background: 'rgba(10,20,40,.3)' }} />
-              </div>
-            )}
-            <div style={{ padding: '14px 16px' }}>
-              <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 8 }}>
-                <span style={{ background: '#1e40af55', color: '#bfdbfe', padding: '2px 6px', borderRadius: 10, fontSize: 10 }}>{w.cat}</span>
-                {(w.tags||'').split(',').filter(Boolean).slice(0,2).map(t => <span key={t} style={{ background: '#1e293b', color: 'var(--text-muted)', padding: '2px 5px', borderRadius: 8, fontSize: 9, border: '1px solid var(--border)' }}>{t.trim()}</span>)}
-              </div>
-              <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 6, lineHeight: 1.4 }}>{w.title}</div>
-              <div className="muted-xs">{w.excerpt || w.content.replace(/<[^>]+>/g,'').slice(0,100)}…</div>
-              <div className="muted-xs" style={{ marginTop: 8 }}>{w.updated}</div>
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
 
 // ── Glossary ───────────────────────────────────────────────────────────────
 function Glossary({ glossary, setGlossary }) {
@@ -5909,7 +5724,7 @@ export default function App() {
       case 'absence':    return <Absence {...props} driveToken={driveToken} />;
       case 'overtime':   return <Overtime {...props} overtime={overtime} setOvertime={setOvertime} driveToken={driveToken} />;
       case 'logbook':    return <Logbook {...props} />;
-      case 'wiki':       return <Wiki {...props} />;
+      case 'wiki':       return <Wiki wiki={wiki} setWiki={setWiki} driveToken={driveToken} currentUser={currentUser} isManager={isManager} />;
       case 'glossary':   return <Glossary {...props} />;
       case 'contacts':   return <Contacts {...props} />;
       case 'notes':      return <Notes {...props} />;
