@@ -1,6 +1,6 @@
 // src/Incidents.js
 // CloudOps Rota — Incidents Component
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 19th June 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 24th June 2026
 
 import React, { useState, useRef, useEffect } from 'react';
 
@@ -514,7 +514,9 @@ export default function Incidents({ users, incidents, setIncidents, currentUser,
   };
   const [form, setForm] = useState(EMPTY_FORM);
 
+  // type = 'oncall' | 'daily'
   const openAdd  = (type = 'oncall') => { setForm({ ...EMPTY_FORM, assigned_to: currentUser, incident_type: type }); setEditInc(null); setShowModal(true); };
+  // Legacy incidents that predate this field default to 'oncall' so existing data is unchanged
   const openEdit = (inc, e)  => { e.stopPropagation(); setForm({ ...EMPTY_FORM, ...inc, incident_type: inc.incident_type || 'oncall' }); setEditInc(inc.id); setShowModal(true); };
 
   // ── Timesheet helpers ─────────────────────────────────────────────────────
@@ -562,8 +564,8 @@ export default function Incidents({ users, incidents, setIncidents, currentUser,
   const save = () => {
     if (!form.alert_name) return;
     const isDaily = form.incident_type === 'daily';
-    // Daily incidents are not on-call — no time tracking, ever. Force duration blank
-    // regardless of what's left in form state so a stray value can never reach payroll.
+    // Daily incidents are log-only — force duration blank so no stray value
+    // can ever reach the timesheet/payroll machinery.
     const formToSave = isDaily ? { ...form, duration_hours: '' } : form;
 
     const combinedDesc = [
@@ -583,19 +585,16 @@ export default function Incidents({ users, incidents, setIncidents, currentUser,
 
       setIncidents(incidents.map(i => i.id === editInc ? { ...i, ...formToSave, desc: combinedDesc } : i));
 
-      // Daily incidents never feed timesheets/payroll — if this incident was
-      // previously on-call with logged time, strip that timesheet entry out.
       if (isDaily) {
+        // Switching an oncall→daily: remove any existing timesheet entry
         if (oldHrs > 0) removeIncidentTimesheet(editInc, oldUid);
       } else {
         // Step 1: remove old timesheet entry if user changed OR duration cleared
         if (oldHrs > 0 && (oldUid !== newUid || newHrs === 0)) {
           removeIncidentTimesheet(editInc, oldUid);
         }
-
         // Step 2: add / update new timesheet entry if duration is set
         if (newHrs > 0 && newUid) {
-          // Also clean up old user's entry when reassigned
           if (oldUid && oldUid !== newUid && oldHrs > 0) {
             removeIncidentTimesheet(editInc, oldUid);
           }
@@ -621,7 +620,7 @@ export default function Incidents({ users, incidents, setIncidents, currentUser,
         return [newInc, ...safe];
       });
 
-      // Daily incidents are log-only — skip timesheet/payroll entirely.
+      // Daily incidents are log-only — never touch timesheets/payroll
       if (!isDaily && formToSave.duration_hours && formToSave.assigned_to) {
         addIncidentTimesheet(id, formToSave.assigned_to, formToSave.alert_name, incDate, +formToSave.duration_hours);
       }
@@ -669,7 +668,7 @@ export default function Incidents({ users, incidents, setIncidents, currentUser,
     <div>
       <PageHeader title="Incidents" sub="Log and track operational incidents"
         actions={<>
-          <select className="select" value={filter} onChange={e => setFilter(e.target.value)} style={{ width: 150 }}>
+          <select className="select" value={filter} onChange={e => setFilter(e.target.value)} style={{ width: 165 }}>
             <option value="all">All</option>
             <option value="Investigating">Investigating</option>
             <option value="Resolved">Resolved</option>
@@ -699,8 +698,9 @@ export default function Incidents({ users, incidents, setIncidents, currentUser,
           </thead>
           <tbody>
             {[...filtered].sort((a, b) => new Date(b.date) - new Date(a.date)).map(i => {
-              const sev = INC_SEVERITIES.find(s => s.value === i.severity) || INC_SEVERITIES[0];
-              const eng = assignedUser(i.assigned_to);
+              const sev  = INC_SEVERITIES.find(s => s.value === i.severity) || INC_SEVERITIES[0];
+              const type = INC_TYPES.find(t => t.value === (i.incident_type || 'oncall')) || INC_TYPES[0];
+              const eng  = assignedUser(i.assigned_to);
               return (
                 <tr key={i.id} style={{ cursor: 'pointer' }} onClick={() => setViewInc(i)}>
                   <td onClick={e => e.stopPropagation()}>
@@ -713,7 +713,9 @@ export default function Incidents({ users, incidents, setIncidents, currentUser,
                       dangerouslySetInnerHTML={{ __html: (i.desc || '').replace(/<[^>]+>/g, '').slice(0, 60) + (i.desc?.length > 60 ? '…' : '') }} />}
                   </td>
                   <td>
-                    {(() => { const t = INC_TYPES.find(x => x.value === (i.incident_type || 'oncall')); return t ? <span style={{ background: t.color + '22', color: t.color, padding: '3px 8px', borderRadius: 6, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>{t.label}</span> : null; })()}
+                    <span style={{ background: type.color + '22', color: type.color, padding: '3px 8px', borderRadius: 6, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>
+                      {type.label}
+                    </span>
                   </td>
                   <td style={{ fontSize: 12 }}>{i.vm_service || '—'}</td>
                   <td>
@@ -752,8 +754,9 @@ export default function Incidents({ users, incidents, setIncidents, currentUser,
       {showModal && (
         <Modal title={editInc ? `✏ Edit Incident — ${form.alert_name || ''}` : (form.incident_type === 'daily' ? '📋 Log Daily Incident' : '🚨 Log New Incident')} onClose={() => setShowModal(false)} fullscreen>
           <div style={{ maxWidth: 1100, margin: '0 auto' }}>
-            {/* Incident type toggle */}
-            <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+
+            {/* ── Incident type toggle ───────────────────────────────────────── */}
+            <div style={{ display: 'flex', gap: 8, marginBottom: 18 }}>
               {INC_TYPES.map(t => (
                 <button key={t.value} type="button"
                   onClick={() => setForm({ ...form, incident_type: t.value, ...(t.value === 'daily' ? { duration_hours: '' } : {}) })}
@@ -767,6 +770,7 @@ export default function Incidents({ users, incidents, setIncidents, currentUser,
                 </button>
               ))}
             </div>
+
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
               <FormGroup label="Alert Name">
                 <input className="input" placeholder="e.g. High CPU on prod-api-01"
@@ -798,6 +802,7 @@ export default function Incidents({ users, incidents, setIncidents, currentUser,
                 <input className="input" placeholder="e.g. Alert email subject"
                   value={form.email_ref} onChange={e => setForm({ ...form, email_ref: e.target.value })} />
               </FormGroup>
+              {/* Duration only shown for on-call incidents — daily incidents have no time tracking */}
               {form.incident_type !== 'daily' && (
                 <FormGroup label="Duration (Hours)" hint="Auto-added to timesheets & payroll">
                   <select className="select" value={form.duration_hours} onChange={e => setForm({ ...form, duration_hours: e.target.value })}>
@@ -812,7 +817,7 @@ export default function Incidents({ users, incidents, setIncidents, currentUser,
             <IncidentTabs form={form} setForm={setForm} />
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 20 }}>
               <button className="btn btn-secondary" onClick={() => setShowModal(false)}>Cancel</button>
-              <button className="btn btn-primary" onClick={save}>{editInc ? 'Update Incident' : 'Log Incident'}</button>
+              <button className="btn btn-primary" onClick={save}>{editInc ? 'Update Incident' : (form.incident_type === 'daily' ? 'Log Daily Incident' : 'Log Incident')}</button>
             </div>
           </div>
         </Modal>
