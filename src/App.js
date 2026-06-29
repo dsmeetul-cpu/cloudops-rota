@@ -25,6 +25,7 @@ import CalendarPage from './Calendar';
 import Dashboard from './Dashboard';
 import OnCall from './OnCall';
 import Incidents from './Incidents';
+import Logs, { createLogWriter } from './Logs';
 import UpgradeDays from './UpgradeDays';
 import Holidays from './Holidays';
 import Payroll from './Payroll';
@@ -821,7 +822,7 @@ const NAV = [
   { section: 'People', items: [
     { id: 'timesheets',   icon: '⏱', label: 'Timesheets'                      },
     { id: 'timekeeping',  icon: '🕒', label: 'Time Keeping' },
-    { id: 'holidays',     icon: '🌴', label: 'Holidays',      managerOnly: true },
+    { id: 'holidays',     icon: '🌴', label: 'Holidays' },
     { id: 'swaps',      icon: '🔁', label: 'Shift Swaps'    },
     { id: 'upgrades',   icon: '⬆', label: 'Upgrade Days'   },
     { id: 'stress',     icon: '📊', label: 'Stress Score',  managerOnly: true },
@@ -853,6 +854,7 @@ const NAV = [
   ]},
   { section: 'Account', items: [
     { id: 'settings',  icon: '🔧', label: 'Settings',       managerOnly: true },
+    { id: 'logs',      icon: '📋', label: 'Activity Logs',  managerOnly: true },
     { id: 'myaccount', icon: '👤', label: 'My Account'      },
   ]},
 ];
@@ -5062,6 +5064,14 @@ export default function App() {
   const [permTemplates,  setPermTemplates]  = useState({});
 
   const isManager = currentUser === 'MBA47';
+
+  // ── Activity log writer (writes to CRO_LOGS on Drive) ─────────────────────
+  // Pass addLog as a prop to any page component that should emit log entries.
+  // Signature: addLog({ action, section, detail, level?, uid?, user? })
+  const addLog = React.useCallback(
+    createLogWriter(driveToken, currentUser, users),
+    [driveToken, currentUser, users] // eslint-disable-line react-hooks/exhaustive-deps
+  );
   const [connectingDrive, setConnectingDrive] = useState(false);
   const [profilePics, setProfilePicsState] = useState({});
   const [driveReady, setDriveReady]         = useState(false); // true once initial Drive load done
@@ -5471,6 +5481,15 @@ export default function App() {
     setCurrentUser(uid);
     setPage(uid === 'MBA47' ? 'dashboard' : 'oncall');
 
+    // Log the login event (fire-and-forget — non-blocking)
+    if (driveToken) {
+      createLogWriter(driveToken, uid, users)({
+        section: 'auth', level: 'info',
+        action: 'User login',
+        detail: `${users.find(u => u.id === uid)?.name || uid} signed in`,
+      }).catch(() => {});
+    }
+
     if (driveReady) {
       // Drive data already loaded (silent auto-connect succeeded before login).
       // ── CRITICAL FIX: driveDataLoaded.current was never set on this path. ──
@@ -5704,6 +5723,7 @@ export default function App() {
     isManager,
     profilePics,
     user,
+    addLog,
   };
 
   const renderPage = () => {
@@ -5713,10 +5733,11 @@ export default function App() {
       case 'myshift':    return <MyShift {...props} />;
       case 'calendar':   return <CalendarPage users={users} rota={rota} holidays={holidays} upgrades={upgrades} absences={absences} incidents={incidents} UK_BANK_HOLIDAYS={UK_BANK_HOLIDAYS} currentUser={currentUser} isManager={isManager} calendarEvents={calendarEvents} setCalendarEvents={setCalendarEvents} userCalendars={userCalendars} setUserCalendars={setUserCalendars} />;
       case 'rota':       return <RotaPage users={users} rota={rota} setRota={setRota} holidays={holidays} upgrades={upgrades} swapRequests={swapRequests} setSwapRequests={setSwapRequests} isManager={isManager} UK_BANK_HOLIDAYS={UK_BANK_HOLIDAYS} generateRota={generateRota} generateICalFeed={generateICalFeed} downloadIcal={downloadIcal} />;
-      case 'incidents':  return <Incidents {...props} timesheets={timesheets} setTimesheets={setTimesheets} />;
+      case 'incidents':  return <Incidents {...props} timesheets={timesheets} setTimesheets={setTimesheets} addLog={addLog} />;
       case 'timesheets': return <Timesheets {...props} />;
       case 'timekeeping': return <TimeKeeping users={users} holidays={holidays} currentUser={currentUser} isManager={isManager} bankHolidays={UK_BANK_HOLIDAYS} timekeeping={timekeeping} setTimekeeping={setTimekeeping} driveToken={driveToken} />;
       case 'holidays':   return <Holidays {...props} />;
+      case 'logs':       return <Logs isManager={isManager} driveToken={driveToken} users={users} currentUser={currentUser} />;
       case 'swaps':      return <ShiftSwaps {...props} driveToken={driveToken} />;
       case 'upgrades':   return <UpgradeDays {...props} timesheets={timesheets} setTimesheets={setTimesheets} />;
       case 'stress':     return <StressScore {...props} overtime={overtime} holidays={holidays} />;
