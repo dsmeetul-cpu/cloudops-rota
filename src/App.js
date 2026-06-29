@@ -5070,7 +5070,7 @@ export default function App() {
   // Signature: addLog({ action, section, detail, level?, uid?, user? })
   const addLog = React.useCallback(
     createLogWriter(driveToken, currentUser, users),
-    [driveToken, currentUser, users] // eslint-disable-line react-hooks/exhaustive-deps
+    [driveToken, currentUser, users] // eslint-disable-line
   );
   const [connectingDrive, setConnectingDrive] = useState(false);
   const [profilePics, setProfilePicsState] = useState({});
