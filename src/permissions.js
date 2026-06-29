@@ -101,6 +101,7 @@ export const PERMISSION_GROUPS = [
       { id: 'permissions', label: 'Permissions',     icon: '🔑', actions: ['read', 'write', 'manage'] },
       { id: 'users',       label: 'User Management', icon: '👤', actions: ['read', 'write', 'delete', 'manage'] },
       { id: 'drive',       label: 'Drive & Sync',    icon: '☁️', actions: ['read', 'configure', 'manage'] },
+      { id: 'logs',        label: 'Activity Logs',   icon: '📋', actions: ['read', 'export', 'manage'] },
       { id: 'myaccount',   label: 'My Account',      icon: '🪪',  actions: ['read', 'write'] },
     ],
   },
@@ -128,6 +129,9 @@ const ENGINEER_WRITE = [
 ];
 const ENGINEER_DELETE = ['logbook','notes','whatsapp'];
 
+// Sections that engineers cannot read at all (manager-only)
+const ENGINEER_NO_READ = ['logs', 'dashboard', 'stress', 'insights', 'capacity', 'reports', 'payroll', 'payconfig', 'settings', 'permissions'];
+
 export const DEFAULT_PERMISSIONS = {
   Manager: Object.fromEntries(
     PERMISSION_SECTIONS.map(s => [
@@ -139,13 +143,13 @@ export const DEFAULT_PERMISSIONS = {
     PERMISSION_SECTIONS.map(s => [
       s.id,
       {
-        ...(s.actions.includes('read')      ? { read:      true }                              : {}),
-        ...(s.actions.includes('write')     ? { write:     ENGINEER_WRITE.includes(s.id) }    : {}),
-        ...(s.actions.includes('delete')    ? { delete:    ENGINEER_DELETE.includes(s.id) }   : {}),
-        ...(s.actions.includes('approve')   ? { approve:   false }                            : {}),
-        ...(s.actions.includes('export')    ? { export:    false }                            : {}),
-        ...(s.actions.includes('configure') ? { configure: false }                            : {}),
-        ...(s.actions.includes('manage')    ? { manage:    false }                            : {}),
+        ...(s.actions.includes('read')      ? { read:      !ENGINEER_NO_READ.includes(s.id) }     : {}),
+        ...(s.actions.includes('write')     ? { write:     ENGINEER_WRITE.includes(s.id) }        : {}),
+        ...(s.actions.includes('delete')    ? { delete:    ENGINEER_DELETE.includes(s.id) }       : {}),
+        ...(s.actions.includes('approve')   ? { approve:   false }                                : {}),
+        ...(s.actions.includes('export')    ? { export:    false }                                : {}),
+        ...(s.actions.includes('configure') ? { configure: false }                                : {}),
+        ...(s.actions.includes('manage')    ? { manage:    false }                                : {}),
       }
     ])
   ),
