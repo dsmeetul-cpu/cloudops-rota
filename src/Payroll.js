@@ -278,6 +278,79 @@ function nthBusinessDay(year, month, n, bhDates = []) {
   return d;
 }
 
+// ── UK Tax Calculator (2025-26 rates) ─────────────────────────────────────
+// calcUKTax(grossAnnual, { pensionPct, studentLoan })
+// Returns: { annualGross, incomeTax, ni, pension, slRepay, annualNet,
+//            effectiveRate, monthly, weekly, daily, hourly }
+// Each period key has { gross, net }.
+function calcUKTax(grossAnnual, { pensionPct = 0, studentLoan = false } = {}) {
+  const gross = Math.max(0, grossAnnual);
+
+  // Pension (salary sacrifice — reduces taxable pay)
+  const pension = gross * (pensionPct / 100);
+  const taxable = gross - pension;
+
+  // ── Income Tax 2025-26 ────────────────────────────────────────────────────
+  // Personal allowance: £12,570 (tapered above £100k — simplified: halved above £100k)
+  let pa = 12570;
+  if (taxable > 100000) pa = Math.max(0, pa - Math.floor((taxable - 100000) / 2));
+  const afterPA = Math.max(0, taxable - pa);
+
+  // Bands: Basic 20% up to £37,700; Higher 40% £37,701–£125,140; Additional 45% above
+  const basicBand   = 37700;
+  const higherBand  = 125140 - pa; // upper limit of higher rate relative to personal allowance
+
+  let incomeTax = 0;
+  if (afterPA > 0) {
+    const basicTax   = Math.min(afterPA, basicBand) * 0.20;
+    const higherAmt  = Math.max(0, Math.min(afterPA - basicBand, higherBand - basicBand));
+    const higherTax  = higherAmt * 0.40;
+    const addlAmt    = Math.max(0, afterPA - higherBand);
+    const addlTax    = addlAmt * 0.45;
+    incomeTax        = basicTax + higherTax + addlTax;
+  }
+
+  // ── National Insurance (Class 1 Employee) 2025-26 ─────────────────────────
+  // 8% on £12,570–£50,270; 2% above £50,270
+  const niLower  = 12570;
+  const niUpper  = 50270;
+  let ni = 0;
+  if (taxable > niLower) {
+    ni += Math.min(taxable - niLower, niUpper - niLower) * 0.08;
+    if (taxable > niUpper) ni += (taxable - niUpper) * 0.02;
+  }
+
+  // ── Student Loan Plan 2 ────────────────────────────────────────────────────
+  // 9% on income above £27,295
+  const slThreshold = 27295;
+  const slRepay = studentLoan && taxable > slThreshold
+    ? (taxable - slThreshold) * 0.09
+    : 0;
+
+  // ── Net ───────────────────────────────────────────────────────────────────
+  const annualNet    = gross - incomeTax - ni - pension - slRepay;
+  const effectiveRate = gross > 0 ? (incomeTax + ni) / gross : 0;
+
+  const period = (divisor) => ({
+    gross: gross / divisor,
+    net:   annualNet / divisor,
+  });
+
+  return {
+    annualGross: gross,
+    incomeTax,
+    ni,
+    pension,
+    slRepay,
+    annualNet,
+    effectiveRate,
+    monthly: period(12),
+    weekly:  period(52),
+    daily:   period(260),   // 52 weeks × 5 days
+    hourly:  period(2080),  // 52 weeks × 40 hours
+  };
+}
+
 // ── Payroll (Manager only) ─────────────────────────────────────────────────
 function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents, upgrades, rota, holidays, isManager, overtime: overtimeArr, driveToken, payrollAdjustments, setPayrollAdjustments }) {
   const [tab,         setTab]         = useState('overview');  // 'overview' | 'takehome' | 'log' | 'reports' | 'adjustments'
