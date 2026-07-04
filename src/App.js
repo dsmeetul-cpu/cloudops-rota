@@ -3656,25 +3656,24 @@ function WhatsAppChat({ whatsappChats, setWhatsappChats, users, currentUser, isM
     <div style={{ position:'relative' }}>
       {/* ── In-app toast notifications ──────────────────────────────────── */}
       <div style={{ position:'fixed', bottom:24, right:24, zIndex:9999,
-        display:'flex', flexDirection:'column', gap:8, pointerEvents:'none' }}>
+        display:'flex', flexDirection:'column', gap:10, pointerEvents:'none' }}>
         {toasts.map(toast => (
           <div key={toast.id}
             onClick={()=>{ selectChat(toast.chatId); setToasts(prev=>prev.filter(t=>t.id!==toast.id)); }}
-            style={{ background:'var(--bg-card)', border:'1px solid rgba(0,194,255,0.35)',
-              borderRadius:10, padding:'10px 14px', maxWidth:300, pointerEvents:'all',
-              boxShadow:'0 8px 32px rgba(0,0,0,0.5)', cursor:'pointer',
-              animation:'slideInToast 0.25s cubic-bezier(0.34,1.2,0.64,1)' }}>
-            <div style={{ fontSize:12, fontWeight:700, color:'var(--accent)', marginBottom:3 }}>
-              💬 {toast.channel}
-            </div>
-            <div style={{ fontSize:12, fontWeight:600, color:'var(--text-primary)', marginBottom:2 }}>
-              {toast.sender}
-            </div>
-            <div style={{ fontSize:11, color:'var(--text-muted)', lineHeight:1.4 }}>
-              {toast.body}{toast.body.length >= 60 ? '…' : ''}
-            </div>
-            <div style={{ fontSize:9, color:'var(--text-muted)', marginTop:4, fontFamily:'DM Mono' }}>
-              Click to open
+            className="cro-toast cro-toast-info"
+            style={{ cursor:'pointer', pointerEvents:'all' }}>
+            <div className="cro-toast-icon">💬</div>
+            <div className="cro-toast-body">
+              <div className="cro-toast-title">{toast.channel}</div>
+              <div className="cro-toast-msg" style={{ fontWeight:600, color:'var(--text-primary)', marginBottom:2 }}>
+                {toast.sender}
+              </div>
+              <div className="cro-toast-msg">
+                {toast.body}{toast.body.length >= 60 ? '…' : ''}
+              </div>
+              <div style={{ fontSize:9, color:'var(--text-muted)', marginTop:5, fontFamily:'DM Mono', letterSpacing:'0.5px' }}>
+                TAP TO OPEN
+              </div>
             </div>
           </div>
         ))}
@@ -5958,14 +5957,16 @@ export default function App() {
             backdropFilter: 'blur(8px)',
           }}>
             <div style={{ fontSize:13, fontWeight:600, color:'var(--text-primary)', flex:1 }}>{pageTitles[page] || page}</div>
-            <input placeholder="Search…" value={searchQ} onChange={e => setSearchQ(e.target.value)}
-              style={{ width:160, fontSize:11, background:'var(--input-bg)', border:'1px solid var(--border)', borderRadius:6, padding:'4px 8px', color:'var(--text-primary)', outline:'none' }} />
+            <input placeholder="🔍  Search…" value={searchQ} onChange={e => setSearchQ(e.target.value)}
+              className="search-input"
+              style={{ width:160, fontSize:11 }} />
             <div style={{ display:'flex', alignItems:'center', gap:6 }}>
-              <div style={{ fontSize:10, color:'var(--text-muted)', fontFamily:'DM Mono', whiteSpace:'nowrap' }}>
+              <div style={{ fontSize:10, color:'var(--text-muted)', fontFamily:'DM Mono', whiteSpace:'nowrap', letterSpacing:'0.3px' }}>
                 {new Date().toLocaleDateString('en-GB', { weekday:'short', day:'numeric', month:'short' })}
               </div>
               {driveToken && (
-                <button title="Refresh from Drive" style={{ padding:'3px 7px', fontSize:11, background:'var(--bg-card2)', border:'1px solid var(--border)', borderRadius:6, color:'var(--text-secondary)', cursor:'pointer' }}
+                <button title="Refresh from Drive" className="btn btn-secondary btn-sm"
+                  style={{ padding:'4px 9px', fontSize:11, gap:4 }}
                   onClick={async () => {
                     try {
                       setSyncing(true);
@@ -5995,29 +5996,42 @@ export default function App() {
                       setLastSync(new Date());
                     } catch(e) { console.warn('Refresh failed:', e); }
                     finally { setSyncing(false); }
-                  }}>🔄</button>
+                  }}
+                  title="Pull latest data from Drive">
+                  🔄
+                </button>
               )}
               {driveToken && (
-                <button
+                <button className="btn btn-secondary btn-sm"
                   title={isManager
                     ? 'Manager sync — saves all data to Drive (full)'
-                    : 'Engineer sync — saves only your records (safe merge, will not overwrite manager data)'}
-                  style={{ padding:'3px 7px', fontSize:11, background:'var(--bg-card2)', border:'1px solid var(--border)', borderRadius:6, color:'var(--text-secondary)', cursor:'pointer' }}
+                    : 'Engineer sync — saves only your records (safe merge)'}
+                  style={{ padding:'4px 9px', fontSize:11 }}
                   onClick={syncAllToDrive} disabled={manualSyncing}>
-                  {manualSyncing ? '⏳' : '☁'}
+                  {manualSyncing ? <span className="spinner spinner-sm" /> : '☁️'}
                 </button>
               )}
               <button onClick={toggleTheme}
                 title={theme === 'dark' ? 'Switch to Light' : theme === 'light' ? 'Switch to New GUI 2026v2' : 'Switch to Dark'}
-                style={{ display:'flex', alignItems:'center', gap:5, padding:'4px 10px', background: isV2 ? 'rgba(91,106,240,0.12)' : 'rgba(148,163,184,0.1)', border: `1px solid ${isV2 ? 'rgba(91,106,240,0.35)' : 'var(--border)'}`, borderRadius: isV2 ? 10 : 6, cursor:'pointer', fontSize:11, fontWeight:600, color: isV2 ? '#5b6af0' : 'var(--text-secondary)', transition:'all 0.2s', boxShadow: isV2 ? 'var(--shadow-btn)' : 'none' }}>
+                className="btn btn-secondary btn-sm"
+                style={{ display:'flex', alignItems:'center', gap:5, padding:'4px 10px',
+                  ...(isV2 ? { background:'rgba(91,106,240,0.12)', borderColor:'rgba(91,106,240,0.35)', color:'#5b6af0' } : {}) }}>
                 {theme === 'dark' ? '☀️' : theme === 'light' ? '✦' : '🌙'}
                 <span style={{ fontSize:10, letterSpacing:'-0.2px' }}>
-                  {theme === 'dark' ? 'Light' : theme === 'light' ? 'New GUI 2026v2' : 'Dark'}
+                  {theme === 'dark' ? 'Light' : theme === 'light' ? 'New GUI' : 'Dark'}
                 </span>
               </button>
-              {openInc > 0 && <div style={{ background:'#ef4444', color:'#fff', borderRadius:12, padding:'2px 8px', fontSize:10, fontWeight:600 }}>🚨 {openInc}</div>}
+              {openInc > 0 && (
+                <div className="badge" onClick={() => setPage('incidents')}
+                  style={{ background:'rgba(239,68,68,0.15)', color:'#fca5a5', border:'1px solid rgba(239,68,68,0.3)',
+                    cursor:'pointer', borderRadius:20, padding:'3px 9px', fontSize:10, fontWeight:700,
+                    transition:'all 0.15s', boxShadow:'0 0 12px rgba(239,68,68,0.2)' }}>
+                  🚨 {openInc}
+                </div>
+              )}
               <Avatar user={user || { avatar:'?', color:'#475569' }} size={26} />
             </div>
+
           </div>
 
           {/* Sync progress bar */}
