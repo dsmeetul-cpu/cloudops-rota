@@ -266,7 +266,7 @@ function RichEditor({value,onChange,placeholder}){
 }
 
 // ── Incident card (list view) ──────────────────────────────────────────────
-function IncCard({inc,users,isManager,currentUser,onEdit,onDelete,onResolve}){
+function IncCard({inc,users,isManager,currentUser,onEdit,onDelete,onResolve,onView}){
   const assignee=users.find(u=>u.id===inc.assigned_to);
   const canEdit=isManager||inc.assigned_to===currentUser;
   const dailyT=DAILY_TYPES.find(t=>t.id===inc.dailyType);
@@ -275,12 +275,14 @@ function IncCard({inc,users,isManager,currentUser,onEdit,onDelete,onResolve}){
   const staC=STA[inc.status]||STA.Investigating;
 
   return (
-    <div style={{
-      background:'var(--bg-card)',border:`1px solid var(--border)`,
-      borderLeft:`3px solid ${sevC.border}`,borderRadius:10,
-      padding:'14px 16px',
-      transition:'transform .18s cubic-bezier(.34,1.56,.64,1),box-shadow .2s,border-color .2s',
-    }}
+    <div
+      onClick={()=>onView(inc)}
+      style={{
+        background:'var(--bg-card)',border:`1px solid var(--border)`,
+        borderLeft:`3px solid ${sevC.border}`,borderRadius:10,
+        padding:'14px 16px', cursor:'pointer',
+        transition:'transform .18s cubic-bezier(.34,1.56,.64,1),box-shadow .2s,border-color .2s',
+      }}
       onMouseEnter={e=>{e.currentTarget.style.transform='translateY(-1px)';e.currentTarget.style.boxShadow='0 6px 24px rgba(0,0,0,.3)';e.currentTarget.style.borderColor=sevC.border;}}
       onMouseLeave={e=>{e.currentTarget.style.transform='';e.currentTarget.style.boxShadow='';e.currentTarget.style.borderColor='var(--border)';}}
     >
@@ -319,40 +321,201 @@ function IncCard({inc,users,isManager,currentUser,onEdit,onDelete,onResolve}){
           </div>
         </div>
 
-        {/* Actions */}
-        {canEdit&&(
-          <div style={{display:'flex',gap:6,flexShrink:0,alignItems:'center'}}>
-            {inc.status!=='Resolved'&&(
-              <button onClick={()=>onResolve(inc.id)} style={{
-                background:'rgba(34,197,94,0.1)',border:'1px solid rgba(34,197,94,0.25)',
-                borderRadius:7,padding:'5px 10px',cursor:'pointer',
-                color:'#4ade80',fontSize:11,fontWeight:600,
-                transition:'background .15s,border-color .15s',
-              }}
-                onMouseEnter={e=>{e.currentTarget.style.background='rgba(34,197,94,0.18)';}}
-                onMouseLeave={e=>{e.currentTarget.style.background='rgba(34,197,94,0.1)';}}
-              >✓ Resolve</button>
-            )}
+        {/* Actions — stopPropagation so clicking buttons does not open detail view */}
+        <div style={{display:'flex',gap:6,flexShrink:0,alignItems:'center'}} onClick={e=>e.stopPropagation()}>
+          {canEdit&&inc.status!=='Resolved'&&(
+            <button onClick={()=>onResolve(inc.id)} style={{
+              background:'rgba(34,197,94,0.1)',border:'1px solid rgba(34,197,94,0.25)',
+              borderRadius:7,padding:'5px 10px',cursor:'pointer',
+              color:'#4ade80',fontSize:11,fontWeight:600,transition:'background .15s',
+            }}
+              onMouseEnter={e=>{e.currentTarget.style.background='rgba(34,197,94,0.18)';}}
+              onMouseLeave={e=>{e.currentTarget.style.background='rgba(34,197,94,0.1)';}}
+            >✓ Resolve</button>
+          )}
+          {canEdit&&(
             <button onClick={()=>onEdit(inc)} style={{
               background:'rgba(255,255,255,0.05)',border:'1px solid rgba(255,255,255,0.1)',
               borderRadius:7,padding:'5px 10px',cursor:'pointer',
-              color:'rgba(255,255,255,0.55)',fontSize:11,
-              transition:'all .15s',
+              color:'rgba(255,255,255,0.55)',fontSize:11,transition:'all .15s',
             }}
               onMouseEnter={e=>{e.currentTarget.style.color='white';e.currentTarget.style.borderColor='rgba(255,255,255,0.25)';}}
               onMouseLeave={e=>{e.currentTarget.style.color='rgba(255,255,255,0.55)';e.currentTarget.style.borderColor='rgba(255,255,255,0.1)';}}
             >✏ Edit</button>
-            {isManager&&<button onClick={()=>onDelete(inc.id)} style={{
+          )}
+          {isManager&&(
+            <button onClick={()=>onDelete(inc.id)} style={{
               background:'transparent',border:'1px solid transparent',
               borderRadius:7,padding:'5px 8px',cursor:'pointer',
-              color:'rgba(239,68,68,0.45)',fontSize:11,
-              transition:'all .15s',
+              color:'rgba(239,68,68,0.45)',fontSize:11,transition:'all .15s',
             }}
               onMouseEnter={e=>{e.currentTarget.style.color='#f87171';e.currentTarget.style.background='rgba(239,68,68,0.1)';e.currentTarget.style.borderColor='rgba(239,68,68,0.25)';}}
               onMouseLeave={e=>{e.currentTarget.style.color='rgba(239,68,68,0.45)';e.currentTarget.style.background='transparent';e.currentTarget.style.borderColor='transparent';}}
-            >✕</button>}
+            >✕</button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+
+// ── Detail View (read-only) ────────────────────────────────────────────────
+const DETAIL_TABS = [
+  { id:'issue',       label:'🚨 Issue',       field:'issueContent' },
+  { id:'diagnostics', label:'🔍 Diagnostics', field:'diagnosticsContent' },
+  { id:'resolution',  label:'✅ Resolution',  field:'resolutionContent' },
+];
+
+function DetailView({inc, users, isManager, currentUser, onClose, onEdit, onResolve}){
+  const [tab, setTab] = React.useState('issue');
+  if (!inc) return null;
+  const assignee = users.find(u => u.id === inc.assigned_to);
+  const canEdit  = isManager || inc.assigned_to === currentUser;
+  const sevC     = SEV[inc.severity] || SEV.Low;
+  const staC     = STA[inc.status]   || STA.Investigating;
+  const dailyT   = DAILY_TYPES.find(t => t.id === inc.dailyType);
+  const activeTab = DETAIL_TABS.find(t => t.id === tab);
+
+  return (
+    <div style={{
+      position:'fixed', inset:0, zIndex:9000,
+      background:'rgba(0,0,0,0.85)', backdropFilter:'blur(8px)', WebkitBackdropFilter:'blur(8px)',
+      display:'flex', alignItems:'center', justifyContent:'center', padding:20,
+    }}>
+      <div style={{
+        width:'100%', maxWidth:900, height:'min(88vh,780px)',
+        display:'flex', flexDirection:'column',
+        background:'#0d1117', border:'1px solid rgba(255,255,255,0.1)',
+        borderRadius:16, overflow:'hidden',
+        boxShadow:'0 40px 120px rgba(0,0,0,0.8)',
+        animation:'slideUpModal .25s cubic-bezier(.34,1.4,.64,1)',
+      }}>
+
+        {/* Header */}
+        <div style={{
+          display:'flex', alignItems:'flex-start', gap:12,
+          padding:'16px 20px', flexShrink:0,
+          background:'rgba(255,255,255,0.02)',
+          borderBottom:'1px solid rgba(255,255,255,0.07)',
+        }}>
+          {/* Severity dot */}
+          <div style={{width:10,height:10,borderRadius:'50%',background:sevC.dot,marginTop:6,flexShrink:0,boxShadow:`0 0 8px ${sevC.dot}`}}/>
+          <div style={{flex:1, minWidth:0}}>
+            <div style={{fontSize:18, fontWeight:700, color:'#fff', marginBottom:8, lineHeight:1.3}}>
+              {inc.title}
+            </div>
+            {/* Meta pills */}
+            <div style={{display:'flex', gap:6, flexWrap:'wrap', alignItems:'center'}}>
+              <SevPill s={inc.severity}/>
+              <StaPill s={inc.status}/>
+              {inc.isDaily && <span style={{fontSize:10,background:'rgba(99,102,241,0.12)',border:'1px solid rgba(99,102,241,0.3)',color:'#a5b4fc',borderRadius:20,padding:'2px 9px',fontWeight:600}}>{dailyT?.icon||'📋'} Daily — {dailyT?.label||'Other'}</span>}
+              {!inc.isDaily && inc.hours > 0 && <span style={{fontSize:10,background:'rgba(245,158,11,0.1)',border:'1px solid rgba(245,158,11,0.25)',color:'#fcd34d',borderRadius:20,padding:'2px 9px'}}>⏱ {inc.hours}h on-call</span>}
+            </div>
           </div>
-        )}
+          {/* Action buttons */}
+          <div style={{display:'flex', gap:8, flexShrink:0, alignItems:'center'}}>
+            {canEdit && inc.status !== 'Resolved' && (
+              <button onClick={()=>{onResolve(inc.id); onClose();}} style={{
+                background:'rgba(34,197,94,0.12)', border:'1px solid rgba(34,197,94,0.3)',
+                borderRadius:8, padding:'7px 14px', cursor:'pointer',
+                color:'#4ade80', fontSize:12, fontWeight:600,
+              }}>✓ Resolve</button>
+            )}
+            {canEdit && (
+              <button onClick={()=>{onClose(); setTimeout(()=>onEdit(inc),50);}} style={{
+                background:'rgba(0,194,255,0.1)', border:'1px solid rgba(0,194,255,0.3)',
+                borderRadius:8, padding:'7px 14px', cursor:'pointer',
+                color:'var(--accent)', fontSize:12, fontWeight:600,
+              }}>✏ Edit</button>
+            )}
+            <button onClick={onClose} style={{
+              background:'rgba(255,255,255,0.06)', border:'1px solid rgba(255,255,255,0.1)',
+              borderRadius:8, width:34, height:34, cursor:'pointer',
+              color:'rgba(255,255,255,0.5)', fontSize:18,
+              display:'flex', alignItems:'center', justifyContent:'center',
+            }}>✕</button>
+          </div>
+        </div>
+
+        {/* Meta row */}
+        <div style={{
+          display:'flex', gap:0, flexShrink:0,
+          background:'rgba(255,255,255,0.015)',
+          borderBottom:'1px solid rgba(255,255,255,0.07)',
+          overflowX:'auto',
+        }}>
+          {[
+            { label:'Assigned To', value: assignee ? (
+              <span style={{display:'flex',alignItems:'center',gap:5}}>
+                <Avatar user={assignee} size={16}/>
+                <span>{assignee.name}</span>
+              </span>
+            ) : inc.assigned_to || '—' },
+            { label:'Date',       value: (inc.date||'').slice(0,10) || '—' },
+            { label:'Logged',     value: inc.created_at ? new Date(inc.created_at).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'2-digit',hour:'2-digit',minute:'2-digit'}) : '—' },
+            { label:'Updated',    value: inc.updated_at ? new Date(inc.updated_at).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'2-digit',hour:'2-digit',minute:'2-digit'}) : '—' },
+            ...(!inc.isDaily ? [{ label:'Payroll Hours', value: `${inc.hours || 1}h` }] : []),
+          ].map(({label, value}, i) => (
+            <div key={i} style={{
+              display:'flex', flexDirection:'column', justifyContent:'center',
+              padding:'8px 18px', borderRight:'1px solid rgba(255,255,255,0.06)', flexShrink:0,
+            }}>
+              <div style={{fontSize:9,color:'rgba(255,255,255,0.3)',textTransform:'uppercase',letterSpacing:'0.8px',marginBottom:3,fontWeight:600}}>{label}</div>
+              <div style={{fontSize:12,color:'rgba(255,255,255,0.75)',fontWeight:500,display:'flex',alignItems:'center',gap:4}}>{value}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Tab bar */}
+        <div style={{
+          display:'flex', borderBottom:'1px solid rgba(255,255,255,0.07)',
+          background:'rgba(255,255,255,0.015)', flexShrink:0,
+        }}>
+          {DETAIL_TABS.map(t => {
+            const hasContent = !!(inc[t.field]||'').trim();
+            return (
+              <button key={t.id} onClick={()=>setTab(t.id)} style={{
+                padding:'10px 22px', border:'none', cursor:'pointer',
+                background:tab===t.id?'rgba(255,255,255,0.05)':'transparent',
+                color:tab===t.id?'#fff':'rgba(255,255,255,0.35)',
+                borderBottom:`2px solid ${tab===t.id?'var(--accent)':'transparent'}`,
+                fontSize:13, fontWeight:tab===t.id?700:400,
+                display:'flex', alignItems:'center', gap:7, transition:'all .15s',
+              }}>
+                {t.label}
+                {hasContent && <span style={{width:6,height:6,borderRadius:'50%',background:t.id==='resolution'?'#22c55e':'var(--accent)',flexShrink:0}}/>}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Content */}
+        <div style={{flex:1, overflowY:'auto', padding:'24px 28px', minHeight:0}}>
+          {activeTab && (inc[activeTab.field]||'').trim() ? (
+            <div className="inc-pv" style={{fontSize:14, lineHeight:1.8, color:'rgba(255,255,255,0.75)'}}
+              dangerouslySetInnerHTML={{__html: renderMd(inc[activeTab.field])}}
+            />
+          ) : (
+            <div style={{
+              display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center',
+              height:'100%', gap:10, color:'rgba(255,255,255,0.2)',
+            }}>
+              <div style={{fontSize:36}}>
+                {tab==='issue'?'📋':tab==='diagnostics'?'🔍':'✅'}
+              </div>
+              <div style={{fontSize:14, fontWeight:600}}>No {tab} notes yet</div>
+              {canEdit && (
+                <button onClick={()=>{onClose(); setTimeout(()=>onEdit(inc),50);}} style={{
+                  marginTop:8, background:'rgba(0,194,255,0.1)', border:'1px solid rgba(0,194,255,0.25)',
+                  borderRadius:8, padding:'7px 16px', cursor:'pointer',
+                  color:'var(--accent)', fontSize:12, fontWeight:600,
+                }}>✏ Add notes in editor</button>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -583,6 +746,7 @@ export default function Incidents({
   const [view,setView]=useState('all');
   const [showModal,setShowModal]=useState(false);
   const [editId,setEditId]=useState(null);
+  const [detailInc,setDetailInc]=useState(null);
   const [form,setForm]=useState({...BLANK});
   const [filter,setFilter]=useState({status:'all',severity:'all',uid:'all'});
   const [notify,setNotify]=useState('');
@@ -760,7 +924,7 @@ export default function Incidents({
         <div style={{display:'flex',flexDirection:'column',gap:8}}>
           {sorted.map(inc=>(
             <IncCard key={inc.id} inc={inc} users={users} isManager={isManager}
-              currentUser={currentUser} onEdit={openEdit} onDelete={deleteIncident} onResolve={resolveIncident}/>
+              currentUser={currentUser} onEdit={openEdit} onDelete={deleteIncident} onResolve={resolveIncident} onView={setDetailInc}/>
           ))}
         </div>
       )}
@@ -769,6 +933,17 @@ export default function Incidents({
         <Modal editId={editId} form={form} setForm={setForm}
           onSave={saveIncident} onClose={()=>setShowModal(false)}
           users={users} currentUser={currentUser} isManager={isManager}/>
+      )}
+      {detailInc&&(
+        <DetailView
+          inc={detailInc}
+          users={users}
+          isManager={isManager}
+          currentUser={currentUser}
+          onClose={()=>setDetailInc(null)}
+          onEdit={(inc)=>{ setDetailInc(null); openEdit(inc); }}
+          onResolve={(id)=>{ resolveIncident(id); setDetailInc(prev=>prev&&prev.id===id?{...prev,status:'Resolved'}:prev); }}
+        />
       )}
     </div>
   );
