@@ -37,6 +37,43 @@ const FILES = {
 let folderId = null;
 let fileIds = {};
 
+// ── Conflict / concurrency tracking ──────────────────────────────────────────
+// Drive's `modifiedTime` on each file lets us detect "someone else saved this
+// file since I last read it" WITHOUT storing anything locally — we just ask
+// Drive for the file's current metadata before we overwrite it.
+let fileMeta = {}; // key -> { modifiedTime }
+
+// Thrown when a write is about to clobber a change made by another session.
+// Callers should re-read the file, merge their change on top of the latest
+// version, and retry — never blind-overwrite.
+export class DriveConflictError extends Error {
+  constructor(key) {
+    super(`Drive file for "${key}" was changed by another session since it was last read.`);
+    this.name = 'DriveConflictError';
+    this.key = key;
+  }
+}
+
+// ── Per-key write queue ──────────────────────────────────────────────────────
+// Every save() in App.js fires its own useEffect the instant state changes.
+// Without a queue, two rapid edits to the SAME file produce two overlapping
+// network requests, and whichever response lands last "wins" — even if it
+// was the older write. That silently discards the newer data.
+// This queue forces all writes to a given key to run strictly one-at-a-time,
+// in the order they were requested.
+let writeQueues = {};
+
+function enqueue(key, task) {
+  const prev = writeQueues[key] || Promise.resolve();
+  const run = prev.then(task, task); // run task regardless of previous outcome
+  // Swallow the error here so the QUEUE itself never gets stuck; the actual
+  // error is still delivered to the caller via the returned promise below.
+  writeQueues[key] = run.catch(() => {});
+  return run;
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
 // ── Auth ────────────────────────────────────────────────────────────────────
 
 export async function initGoogleAuth(clientId) {
@@ -124,7 +161,7 @@ async function bulkLoadFileIds(token, parentId) {
   do {
     const url = `https://www.googleapis.com/drive/v3/files`
       + `?q=${encodeURIComponent(`'${parentId}' in parents and trashed=false`)}`
-      + `&fields=nextPageToken,files(id,name)&pageSize=100`
+      + `&fields=nextPageToken,files(id,name,modifiedTime)&pageSize=100`
       + (pageToken ? `&pageToken=${pageToken}` : '');
     const res  = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
     const data = await res.json();
@@ -132,15 +169,32 @@ async function bulkLoadFileIds(token, parentId) {
     pageToken = data.nextPageToken || null;
   } while (pageToken);
 
-  // Populate fileIds cache from filename → key lookup
-  const nameToId = {};
-  all.forEach(f => { nameToId[f.name] = f.id; });
+  // Populate fileIds + fileMeta cache from filename → key lookup.
+  // Recording modifiedTime here means the very first write after login
+  // already has a correct baseline for the conflict check in driveWrite.
+  const byName = {};
+  all.forEach(f => { byName[f.name] = f; });
   Object.entries(FILES).forEach(([key, filename]) => {
-    if (nameToId[filename]) fileIds[key] = nameToId[filename];
+    const f = byName[filename];
+    if (f) {
+      fileIds[key] = f.id;
+      if (f.modifiedTime) fileMeta[key] = { modifiedTime: f.modifiedTime };
+    }
   });
 }
 
 // ── Read / Write ─────────────────────────────────────────────────────────────
+
+// Fetch just the metadata (id + modifiedTime) for a file, cheap and fast —
+// used to check "has this changed since I last read it?" before writing.
+async function getFileMeta(token, fileId) {
+  const res = await fetch(
+    `https://www.googleapis.com/drive/v3/files/${fileId}?fields=id,modifiedTime`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+  if (!res.ok) return null;
+  return res.json();
+}
 
 export async function driveRead(token, key) {
   try {
@@ -151,52 +205,93 @@ export async function driveRead(token, key) {
     if (!fileId) return null; // File doesn't exist yet
     fileIds[key] = fileId;
     const res = await fetch(
-      `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
-      { headers: { Authorization: `Bearer ${token}` } }
+      `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&_t=${Date.now()}`,
+      { headers: { Authorization: `Bearer ${token}`, 'Cache-Control': 'no-cache' } }
     );
     if (!res.ok) return null;
-    return await res.json();
+    const data = await res.json();
+    // Record what version of the file we just read, so a later write can
+    // detect whether someone else has changed it in the meantime.
+    const meta = await getFileMeta(token, fileId).catch(() => null);
+    if (meta?.modifiedTime) fileMeta[key] = { modifiedTime: meta.modifiedTime };
+    return data;
   } catch (e) {
     console.error('Drive read error:', e);
     return null;
   }
 }
 
-export async function driveWrite(token, key, data) {
-  try {
-    if (!folderId) folderId = await getOrCreateFolder(token);
-    const filename = FILES[key];
-    if (!filename) throw new Error('Unknown key: ' + key);
-    let fileId = fileIds[key] || await getFileId(token, filename, folderId);
-    const body = JSON.stringify(data, null, 2);
-    const blob = new Blob([body], { type: 'application/json' });
-    const form = new FormData();
-    form.append('metadata', new Blob([JSON.stringify(
-      fileId
-        ? { name: filename }
-        : { name: filename, parents: [folderId] }
-    )], { type: 'application/json' }));
-    form.append('file', blob);
-    const url = fileId
-      ? `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=multipart`
-      : 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart';
-    const method = fileId ? 'PATCH' : 'POST';
-    const res = await fetch(url, {
-      method,
-      headers: { Authorization: `Bearer ${token}` },
-      body: form,
-    });
-    const result = await res.json();
-    if (!res.ok) {
-      console.error(`Drive: write failed for "${filename}":`, res.status, result?.error?.message || result);
-      return null;
+// Single retryable write attempt. Throws on failure/conflict instead of
+// swallowing the error, so callers (and the UI) know a save genuinely failed.
+async function writeOnce(token, key, data, { skipConflictCheck = false } = {}) {
+  if (!folderId) folderId = await getOrCreateFolder(token);
+  const filename = FILES[key];
+  if (!filename) throw new Error('Unknown key: ' + key);
+  let fileId = fileIds[key] || await getFileId(token, filename, folderId);
+
+  // ── Conflict check ─────────────────────────────────────────────────────
+  // If we have a record of this file's last-known modifiedTime AND the live
+  // Drive copy has a NEWER modifiedTime than that, another session/tab has
+  // saved since we last read — overwriting now would silently discard their
+  // change. Bail out with a DriveConflictError so the caller can re-read,
+  // merge, and retry instead of blindly clobbering it.
+  if (fileId && !skipConflictCheck && fileMeta[key]?.modifiedTime) {
+    const liveMeta = await getFileMeta(token, fileId).catch(() => null);
+    if (liveMeta?.modifiedTime && liveMeta.modifiedTime !== fileMeta[key].modifiedTime) {
+      throw new DriveConflictError(key);
     }
-    if (result.id) fileIds[key] = result.id;
-    return result;
-  } catch (e) {
-    console.error('Drive write error:', e);
-    return null;
   }
+
+  const body = JSON.stringify(data, null, 2);
+  const blob = new Blob([body], { type: 'application/json' });
+  const form = new FormData();
+  form.append('metadata', new Blob([JSON.stringify(
+    fileId
+      ? { name: filename }
+      : { name: filename, parents: [folderId] }
+  )], { type: 'application/json' }));
+  form.append('file', blob);
+  const url = fileId
+    ? `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=multipart&fields=id,modifiedTime`
+    : 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,modifiedTime';
+  const method = fileId ? 'PATCH' : 'POST';
+  const res = await fetch(url, {
+    method,
+    headers: { Authorization: `Bearer ${token}` },
+    body: form,
+  });
+  const result = await res.json();
+  if (!res.ok) {
+    const msg = result?.error?.message || res.statusText;
+    console.error(`Drive: write failed for "${filename}":`, res.status, msg);
+    throw new Error(`Drive write failed for ${filename}: ${msg}`);
+  }
+  if (result.id) fileIds[key] = result.id;
+  if (result.modifiedTime) fileMeta[key] = { modifiedTime: result.modifiedTime };
+  return result;
+}
+
+// Public driveWrite: queued (never overlaps another write to the same key)
+// and retried with backoff on transient failures (network blips, 429s, etc).
+// Throws (does not silently return null) if all retries are exhausted, so
+// the UI can show the save actually failed instead of pretending it worked.
+export async function driveWrite(token, key, data, opts = {}) {
+  return enqueue(key, async () => {
+    const maxAttempts = 3;
+    let lastErr;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        return await writeOnce(token, key, data, opts);
+      } catch (e) {
+        lastErr = e;
+        // Conflicts aren't transient — retrying the SAME write will just
+        // conflict again. Surface immediately so the caller can merge.
+        if (e instanceof DriveConflictError) throw e;
+        if (attempt < maxAttempts) await sleep(500 * Math.pow(3, attempt - 1)); // 500ms, 1.5s
+      }
+    }
+    throw lastErr;
+  });
 }
 
 // ── Load all data from Drive ─────────────────────────────────────────────────
