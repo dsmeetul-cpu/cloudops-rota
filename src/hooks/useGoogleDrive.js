@@ -32,6 +32,10 @@ const FILES = {
   handoverNotes: 'handoverNotes.json',
   calendarEvents:'calendarEvents.json',
   userCalendars: 'userCalendars.json',
+  // ── FIX: payrollAdjustments is fully wired up in App.js (state, save
+  // effect, manual sync, load) but was missing here — every save/load for
+  // it was throwing "Unknown key: payrollAdjustments" ──────────────────────
+  payrollAdjustments: 'payrollAdjustments.json',
 };
 
 let folderId = null;
