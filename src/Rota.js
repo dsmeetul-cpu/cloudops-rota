@@ -257,8 +257,9 @@ function CellEditorPopover({ cell, users, rota, holidays, UK_BANK_HOLIDAYS, upgr
       {/* ── Actions footer ── */}
       <div style={{ padding:'10px 14px 13px', borderTop:'1px solid rgba(255,255,255,0.06)', display:'flex', gap:7 }}>
         <button onClick={() => onToggleLock(userId, date)}
+          title="Prevents this cell being overwritten by Generate — manual edits can still change it"
           style={{ flex:1, padding:'7px 10px', background:locked?'rgba(245,158,11,0.12)':'rgba(255,255,255,0.04)', border:`1px solid ${locked?'rgba(245,158,11,0.45)':'rgba(255,255,255,0.09)'}`, borderRadius:8, color:locked?'#fcd34d':'#64748b', fontSize:11, fontWeight:600, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', gap:5 }}>
-          {locked ? '🔒 Locked' : '🔓 Lock Cell'}
+          {locked ? '🔒 Locked from Generate' : '🔓 Lock from Generate'}
         </button>
         {currentShift !== 'off' && (
           <button onClick={() => { onDelete(userId, date); onClose(); }}
@@ -301,6 +302,96 @@ function RotaContent({
     const d = new Date();
     return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
   });
+
+  // ── Paint mode ──────────────────────────────────────────────────────────
+  // Pick a shift once, then click or drag across cells to apply it — instead
+  // of opening the popover for every single cell. Right-click (or the
+  // popover path when paint mode is off) still gives the detailed editor
+  // for lock/clear/holiday info. Currently wired up for the Compact view.
+  const [paintMode,   setPaintMode]   = useState(false);
+  const [paintBrush,  setPaintBrush]  = useState('daily');
+  const [rotaHistory, setRotaHistory] = useState([]); // undo stack (last 25 strokes)
+  const paintingRef      = useRef(false);
+  const paintSkippedRef  = useRef([]);
+
+  const PAINT_BRUSHES = [
+    { id:'off',     ...SHIFT_COLORS.inactive, label:'Off / Rest' },
+    { id:'daily',   ...SHIFT_COLORS.daily },
+    { id:'evening', ...SHIFT_COLORS.evening },
+    { id:'weekend', ...SHIFT_COLORS.weekend },
+    { id:'upgrade', ...SHIFT_COLORS.upgrade },
+    { id:'holiday', ...SHIFT_COLORS.holiday },
+  ];
+
+  // Mirrors CellEditorPopover's hideOn logic: a "Daily" or weekday
+  // "On-Call" brush silently skips cells it doesn't apply to (weekends /
+  // Fri-Sun for evening) rather than writing an out-of-taxonomy value.
+  const isBrushValidForDate = (brush, dateStr) => {
+    const dow = new Date(dateStr + 'T12:00:00').getDay();
+    const isWeekend = dow === 0 || dow === 6;
+    if (brush === 'daily')   return !isWeekend;
+    if (brush === 'evening') return dow >= 1 && dow <= 4;
+    return true;
+  };
+
+  const beginPaintStroke = () => {
+    setRotaHistory(prev => {
+      const next = [...prev, JSON.stringify(rota)];
+      return next.length > 25 ? next.slice(-25) : next;
+    });
+  };
+
+  const undoPaint = () => {
+    setRotaHistory(prev => {
+      if (prev.length === 0) return prev;
+      setRota(JSON.parse(prev[prev.length - 1]));
+      return prev.slice(0, -1);
+    });
+  };
+
+  const paintCell = useCallback((userId, date) => {
+    if (!canEdit) return;
+    const user = users.find(u => u.id === userId);
+    if (!isOnCallActive(user, date) && paintBrush !== 'off') { paintSkippedRef.current.push(user?.name); return; }
+    if (!isBrushValidForDate(paintBrush, date)) return; // brush doesn't apply to this day — skip silently
+    const dow = new Date(date + 'T12:00:00').getDay();
+    const isWeekend = dow === 0 || dow === 6;
+    const value = (paintBrush === 'daily' && isWeekend) ? 'weekend' : paintBrush;
+    setRota(prev => {
+      if (prev[userId]?.[date] === value) return prev; // no-op — avoids churn while dragging
+      return { ...prev, [userId]: { ...(prev[userId]||{}), [date]: value } };
+    });
+  }, [canEdit, users, paintBrush, setRota]);
+
+  const handlePaintDown = (userId, date, e) => {
+    if (!paintMode || !canEdit) return;
+    if (e.ctrlKey || e.metaKey || e.shiftKey) { toggleBulk(userId, date); return; } // discrete bulk-select still works
+    paintingRef.current = true;
+    paintSkippedRef.current = [];
+    beginPaintStroke();
+    paintCell(userId, date);
+  };
+
+  const handlePaintEnter = (userId, date) => {
+    if (!paintMode || !paintingRef.current) return;
+    paintCell(userId, date);
+  };
+
+  // End a paint stroke on mouseup anywhere on the page (not just over a
+  // cell), and show ONE summary alert for any skipped not-on-call cells
+  // instead of interrupting every cell of the drag with its own alert.
+  useEffect(() => {
+    const onUp = () => {
+      if (!paintingRef.current) return;
+      paintingRef.current = false;
+      if (paintSkippedRef.current.length) {
+        alert(`Skipped ${[...new Set(paintSkippedRef.current)].join(', ')} — not on-call active.`);
+      }
+      paintSkippedRef.current = [];
+    };
+    window.addEventListener('mouseup', onUp);
+    return () => window.removeEventListener('mouseup', onUp);
+  }, []);
 
   const toggleLock  = (userId, date) => {
     const key = `${userId}::${date}`;
@@ -698,6 +789,13 @@ function RotaContent({
           <button key={m} className={`btn btn-sm ${viewMode===m?'btn-primary':'btn-secondary'}`}
             onClick={()=>setViewMode(m)}>{l}</button>
         ))}
+        {canEdit && viewMode === 'compact' && (
+          <button className={`btn btn-sm ${paintMode?'btn-primary':'btn-secondary'}`}
+            onClick={() => setPaintMode(v => !v)}
+            title="Pick a shift, then click or drag across cells to apply it">
+            🖌 {paintMode ? 'Paint on' : 'Paint'}
+          </button>
+        )}
         {viewMode==='calendar' && (
           <div style={{ display:'flex', gap:6, alignItems:'center', marginLeft:4 }}>
             <button className="btn btn-secondary btn-sm" onClick={()=>setCalendarDate(d=>{ const n=new Date(d); n.setMonth(n.getMonth()-1); return n; })}>◀</button>
@@ -761,10 +859,45 @@ function RotaContent({
 
         {canEdit && viewMode !== 'calendar' && (
           <span style={{ fontSize:10, color:'rgba(255,255,255,0.2)', marginLeft:4 }}>
-            Click cell to edit · Ctrl+click to bulk select
+            {paintMode
+              ? 'Click or drag to paint · Right-click for detailed editor · Ctrl+click to bulk select'
+              : 'Click cell to edit · Ctrl+click to bulk select · Try 🖌 Paint for faster multi-cell entry'}
           </span>
         )}
       </div>
+
+      {/* ── Paint brush bar — only shown while Paint mode is on ─────────────── */}
+      {canEdit && viewMode === 'compact' && paintMode && (
+        <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap', marginBottom:14,
+          padding:'8px 14px', background:'var(--bg-card)', border:'1px solid var(--border)', borderRadius:10 }}>
+          <span style={{ fontSize:11, color:'#64748b', fontWeight:600 }}>Brush:</span>
+          {PAINT_BRUSHES.map(b => {
+            const active = paintBrush === b.id;
+            return (
+              <button key={b.id} onClick={() => setPaintBrush(b.id)}
+                style={{
+                  display:'flex', alignItems:'center', gap:6, padding:'5px 10px', borderRadius:7,
+                  fontSize:11, fontWeight:600, cursor:'pointer',
+                  background: active ? `${b.bg}cc` : `${b.bg}28`,
+                  border: `1.5px solid ${active ? b.bg : `${b.bg}55`}`,
+                  color: active ? b.text : 'rgba(255,255,255,0.5)',
+                }}>
+                <span style={{ width:16, height:16, borderRadius:4, background:b.bg, display:'inline-flex', alignItems:'center', justifyContent:'center', fontSize:8, fontWeight:900, color:'#fff' }}>
+                  {SHIFT_ABBR[b.id] || '—'}
+                </span>
+                {b.label}
+              </button>
+            );
+          })}
+          <div style={{ width:1, height:20, background:'rgba(255,255,255,0.1)' }} />
+          <button className="btn btn-secondary btn-sm" onClick={undoPaint} disabled={rotaHistory.length===0}
+            style={{ opacity: rotaHistory.length===0 ? 0.4 : 1 }}
+            title="Undo last paint stroke">
+            ↩ Undo{rotaHistory.length>0 ? ` (${rotaHistory.length})` : ''}
+          </button>
+          <span style={{ fontSize:10, color:'rgba(255,255,255,0.25)' }}>Click or drag cells to apply · Right-click a cell for the detailed editor</span>
+        </div>
+      )}
 
       {/* ── Calendar View ──────────────────────────────────────────────────── */}
       {viewMode === 'calendar' && (() => {
@@ -1081,12 +1214,26 @@ function RotaContent({
                           {(active || hol || bh) && (
                             <>
                               <div
+                                onMouseDown={e => {
+                                  if (!canEdit || !active) return;
+                                  handlePaintDown(u.id, ds, e);
+                                }}
+                                onMouseEnter={() => { if (canEdit && active) handlePaintEnter(u.id, ds); }}
                                 onClick={e => {
                                   if (!canEdit || !active) return;
+                                  if (paintMode) {
+                                    if (e.ctrlKey || e.metaKey || e.shiftKey) toggleBulk(u.id, ds);
+                                    return; // painting is already applied on mouseDown/mouseEnter above
+                                  }
                                   if (e.ctrlKey || e.metaKey || e.shiftKey) { toggleBulk(u.id, ds); }
                                   else { setEditCell(null); openCellEditor(u.id, ds, e); }
                                 }}
-                                title={canEdit&&active ? `${displayCol.label||s}${bhOverlay?' + Bank Holiday':''}${upg&&!hol?' + Upgrade Day':''}${isLocked(u.id,ds)?' 🔒 Locked':''} — click to edit, Ctrl+click to bulk select` : `${displayCol.label||s}`}
+                                onContextMenu={e => {
+                                  if (!canEdit || !active) return;
+                                  e.preventDefault();
+                                  setEditCell(null); openCellEditor(u.id, ds, e);
+                                }}
+                                title={canEdit&&active ? `${displayCol.label||s}${bhOverlay?' + Bank Holiday':''}${upg&&!hol?' + Upgrade Day':''}${isLocked(u.id,ds)?' 🔒 Locked':''} — ${paintMode ? 'click/drag to paint, right-click for detailed editor' : 'click to edit, right-click for detailed editor, Ctrl+click to bulk select'}` : `${displayCol.label||s}`}
                                 style={{
                                   background: isBulkSel ? 'rgba(59,130,246,0.25)' : displayCol.bg ? displayCol.bg+'55' : 'transparent',
                                   color: displayCol.text||'#475569',
