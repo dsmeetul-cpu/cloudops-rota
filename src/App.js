@@ -6,7 +6,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
 import {
   initGoogleAuth, gapiLoad, loadAllFromDrive, driveWrite, driveRead,
-  generateICalFeed, downloadIcal
+  generateICalFeed, downloadIcal, DriveConflictError
 } from './hooks/useGoogleDrive';
 import {
   DEFAULT_USERS, DEFAULT_HOLIDAYS, DEFAULT_INCIDENTS, DEFAULT_TIMESHEETS,
@@ -4168,6 +4168,15 @@ export default function App() {
   const [driveToken, setDriveToken]   = useState(null);
   const [syncing, setSyncing]         = useState(false);
   const [lastSync, setLastSync]       = useState(null);
+  // key -> human-readable error message. Populated whenever a Drive save
+  // genuinely fails after all retries, so the failure is VISIBLE instead of
+  // just sitting in the console. Cleared the moment that key saves OK again.
+  const [syncErrors, setSyncErrors]   = useState({});
+  // Debounce timers per key, so rapid edits (typing, dragging across rota
+  // cells, etc.) coalesce into a single Drive write instead of firing one
+  // request per state change.
+  const saveTimers = useRef({});
+  const latestData  = useRef({});
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [searchQ, setSearchQ]         = useState('');
   const [theme, setTheme]             = useState(() => localStorage.getItem('cr_theme') || 'dark');
@@ -4415,59 +4424,122 @@ export default function App() {
     }
   };
 
-  const save = useCallback(async (key, data) => {
-    if (!driveToken) return;
-    if (!driveDataLoaded.current) return;  // ← never overwrite Drive with defaults on first render
-    try {
-      setSyncing(true);
-      const own = {
-        users:'manager', rota:'manager', payconfig:'manager',
-        holidays:'shared', incidents:'shared', upgrades:'shared', wiki:'shared',
-        glossary:'shared', contacts:'shared', swapRequests:'shared', absences:'shared',
-        logbook:'shared', documents:'shared', whatsappChats:'shared',
-        obsidianNotes:'shared',   // ← was 'engineer': notes is a flat array not keyed by uid
-        timesheets:'engineer', overtime:'engineer',
-        toil:'shared',   // ← flat array keyed by record id, NOT by uid
-      }[key] || 'shared';
+  const SAVE_SCOPE = {
+    users:'manager', rota:'manager', payconfig:'manager',
+    holidays:'shared', incidents:'shared', upgrades:'shared', wiki:'shared',
+    glossary:'shared', contacts:'shared', swapRequests:'shared', absences:'shared',
+    logbook:'shared', documents:'shared', whatsappChats:'shared',
+    obsidianNotes:'shared',   // ← was 'engineer': notes is a flat array not keyed by uid
+    timesheets:'engineer', overtime:'engineer',
+    toil:'shared',   // ← flat array keyed by record id, NOT by uid
+  };
 
-      if (own === 'manager' && !isManager) { setSyncing(false); return; }
+  // Mark a key's save outcome. Clearing on success and setting a clear,
+  // human-readable message on failure means sync problems are always VISIBLE
+  // in the UI (see the sync-error banner below) instead of only reaching
+  // console.warn, where nobody would ever see them.
+  const markSyncOk = (key) => setSyncErrors(prev => {
+    if (!(key in prev)) return prev;
+    const next = { ...prev }; delete next[key]; return next;
+  });
+  const markSyncError = (key, message) => setSyncErrors(prev => ({ ...prev, [key]: message }));
 
+  // The actual network write for one key. Runs the engineer/manager/shared
+  // merge strategy, and if driveWrite reports a DriveConflictError (another
+  // session changed this file since we last read it) re-reads the CURRENT
+  // Drive copy, re-applies the same merge on top of it, and writes once more
+  // — so a concurrent edit from someone else is combined with yours instead
+  // of one of you silently losing your change.
+  const performSave = useCallback(async (key, data) => {
+    const own = SAVE_SCOPE[key] || 'shared';
+
+    if (own === 'manager' && !isManager) {
+      // Previously this returned silently — the engineer would see nothing
+      // saved, with no indication why. Now it's a visible, explicit message.
+      markSyncError(key, 'Only the manager account can save changes here — your edit was not written to Drive.');
+      return;
+    }
+
+    const attempt = async (forceOverwrite) => {
       if (own === 'engineer') {
-        // ── Per-user scoped save ─────────────────────────────────────────────
-        // Engineers only write their own slice to avoid overwriting each other.
-        // Managers write ALL slices — they modify entries for other engineers
-        // (via incidents and upgrade days) and must persist those changes.
-        // We always read Drive first and merge so we never lose entries that
-        // were added by another session since this user loaded the page.
+        // ── Per-user scoped save ─────────────────────────────────────────
+        // Engineers only write their own slice to avoid overwriting each
+        // other. Managers write ALL slices. We always read Drive first and
+        // merge so we never lose entries added by another session.
         const driveVal = await driveRead(driveToken, key).catch(() => null);
         const drive = driveVal || {};
         let merged;
         if (isManager) {
-          // Manager: merge all local user slices into Drive, local wins per-user
-          // Drive retains any user slices not present in local state
           merged = { ...drive };
-          Object.keys(data || {}).forEach(uid => {
-            merged[uid] = (data || {})[uid];
-          });
+          Object.keys(data || {}).forEach(uid => { merged[uid] = (data || {})[uid]; });
         } else {
-          // Engineer: only update own slice
           merged = { ...drive, [currentUser]: (data || {})[currentUser] };
         }
-        await driveWrite(driveToken, key, merged);
-      } else {
-        // ── Shared / manager keys ─────────────────────────────────────────
-        // Write local data as the authoritative source.
-        // We deliberately do NOT merge back from Drive here because merging
-        // causes deletions to be reversed: a deleted item has no local ID,
-        // so the merge would re-add it from Drive on the very next save.
-        // For a small team tool all writes go through the same React state,
-        // so the local array is always the correct truth after any add/edit/delete.
-        await driveWrite(driveToken, key, data);
+        return driveWrite(driveToken, key, merged, { skipConflictCheck: forceOverwrite });
       }
+      // ── Shared / manager keys ───────────────────────────────────────────
+      // Local state is authoritative (deliberately not merged — see below),
+      // so on a conflict we re-check current Drive state and just re-assert
+      // local as truth rather than attempting a field-level merge.
+      return driveWrite(driveToken, key, data, { skipConflictCheck: forceOverwrite });
+    };
+
+    try {
+      await attempt(false);
+      markSyncOk(key);
       setLastSync(new Date());
-    } catch (e) { console.warn('Drive save failed for', key, e?.message); }
-    finally { setSyncing(false); }
+    } catch (e) {
+      if (e instanceof DriveConflictError) {
+        // Someone else saved this file since we last read it. Re-read +
+        // re-merge + force-write once, rather than looping forever.
+        try {
+          await attempt(true);
+          markSyncOk(key);
+          setLastSync(new Date());
+          return;
+        } catch (e2) {
+          console.error('Drive save failed after conflict retry for', key, e2);
+          markSyncError(key, `Couldn't save "${key}" to Drive — a change may not have synced. (${e2?.message || 'unknown error'})`);
+          return;
+        }
+      }
+      console.error('Drive save failed for', key, e);
+      markSyncError(key, `Couldn't save "${key}" to Drive — check your connection. (${e?.message || 'unknown error'})`);
+    }
   }, [driveToken, isManager, currentUser]);
+
+  // Public save(): debounces rapid changes to the SAME key into one write.
+  // Rota drag-selects, fast typing, etc. previously fired one Drive request
+  // PER state change, which both hammered the API and made overlapping
+  // requests (and therefore races) far more likely. Now we wait 800ms after
+  // the last change to a key before writing, and always write the latest
+  // value at the time the timer fires (not the value from when it started).
+  const SAVE_DEBOUNCE_MS = 800;
+  const save = useCallback((key, data) => {
+    if (!driveToken) return;
+    if (!driveDataLoaded.current) return;  // ← never overwrite Drive with defaults on first render
+    latestData.current[key] = data;
+    setSyncing(true);
+    if (saveTimers.current[key]) clearTimeout(saveTimers.current[key]);
+    saveTimers.current[key] = setTimeout(async () => {
+      delete saveTimers.current[key];
+      const pending = latestData.current[key];
+      try {
+        await performSave(key, pending);
+      } finally {
+        if (Object.keys(saveTimers.current).length === 0) setSyncing(false);
+      }
+    }, SAVE_DEBOUNCE_MS);
+  }, [driveToken, performSave]);
+
+  // Force-flush every pending debounced save immediately (e.g. before the
+  // manual "☁️ sync" button also runs, or on logout) so nothing pending is lost.
+  const flushPendingSaves = useCallback(async () => {
+    const pending = Object.keys(saveTimers.current);
+    pending.forEach(key => clearTimeout(saveTimers.current[key]));
+    saveTimers.current = {};
+    await Promise.all(pending.map(key => performSave(key, latestData.current[key])));
+  }, [performSave]);
 
   // Save all data to Drive whenever it changes (only when token present)
   // IMPORTANT: driveToken is intentionally NOT in the dependency arrays.
@@ -4604,7 +4676,8 @@ export default function App() {
       const key = syncKeys[i];
       setSyncStatus(`Saving ${key}…`);
       setSyncProgress(Math.round(((i + 1) / syncKeys.length) * 100));
-      try { await ownedWrite(key, vals[key]); } catch (e) { console.warn('sync fail', key, e); }
+      try { await ownedWrite(key, vals[key]); markSyncOk(key); }
+      catch (e) { console.warn('sync fail', key, e); markSyncError(key, `Manual sync failed: ${e?.message || 'unknown error'}`); }
     }
 
     if (isManager) {
@@ -5057,6 +5130,35 @@ export default function App() {
 
           {/* Footer */}
           <div style={{ padding:'8px', borderTop:'1px solid var(--sidebar-border)', flexShrink:0 }}>
+            {/* ── Sync error banner ────────────────────────────────────────────
+                Any key that failed to save to Drive (after retries, and after
+                an automatic conflict-merge retry) shows up HERE, visibly, with
+                a Retry button — instead of silently vanishing into the console.
+                This is the single most important fix: you now always know
+                whether your edit actually made it to Drive. */}
+            {Object.keys(syncErrors).length > 0 && (
+              <div style={{ marginBottom:6, padding:'6px 8px', background:'rgba(239,68,68,0.1)', border:'1px solid rgba(239,68,68,0.35)', borderRadius:6 }}>
+                {sidebarOpen ? (
+                  <>
+                    <div style={{ fontSize:9, fontWeight:700, color:'#fca5a5', marginBottom:4 }}>
+                      ⚠ {Object.keys(syncErrors).length} item{Object.keys(syncErrors).length>1?'s':''} failed to save to Drive
+                    </div>
+                    {Object.entries(syncErrors).map(([key, msg]) => (
+                      <div key={key} style={{ fontSize:9, color:'#fca5a5', marginBottom:2, lineHeight:1.3 }}>
+                        <strong>{key}:</strong> {msg}
+                      </div>
+                    ))}
+                    <button
+                      style={{ width:'100%', marginTop:4, fontSize:9, padding:'3px 0', background:'rgba(239,68,68,0.15)', border:'1px solid rgba(239,68,68,0.4)', borderRadius:5, color:'#fca5a5', cursor:'pointer' }}
+                      onClick={() => flushPendingSaves().catch(() => {})}>
+                      🔄 Retry failed saves
+                    </button>
+                  </>
+                ) : (
+                  <div title={`${Object.keys(syncErrors).length} save(s) failed — click to expand sidebar`} style={{ fontSize:12, textAlign:'center', color:'#fca5a5' }}>⚠</div>
+                )}
+              </div>
+            )}
             {sidebarOpen && (
               <div style={{ display:'flex', alignItems:'center', gap:6, padding:'4px 4px 6px', fontSize:9, color: driveToken ? '#6ee7b7' : '#fcd34d' }}>
                 <div style={{ width:6, height:6, borderRadius:'50%', background: driveToken ? '#22c55e' : '#f59e0b', flexShrink:0 }} />
@@ -5076,7 +5178,25 @@ export default function App() {
                 title={sidebarOpen ? 'Collapse sidebar' : 'Expand sidebar'}>
                 {sidebarOpen ? '◀' : '▶'}
               </button>
-              <button onClick={() => setLoggedIn(false)}
+              <button onClick={async () => {
+                  // Flush any debounced-but-not-yet-written changes to Drive
+                  // BEFORE logging out. Without this, closing the tab within
+                  // the 800ms debounce window would lose the last edit.
+                  const pendingKeys = Object.keys(saveTimers.current);
+                  if (pendingKeys.length > 0) {
+                    setSyncing(true);
+                    await flushPendingSaves().catch(() => {});
+                    setSyncing(false);
+                  }
+                  if (Object.keys(syncErrors).length > 0) {
+                    const proceed = window.confirm(
+                      `${Object.keys(syncErrors).length} change(s) failed to save to Drive and are NOT stored anywhere else. ` +
+                      `Signing out now will lose them. Sign out anyway?`
+                    );
+                    if (!proceed) return;
+                  }
+                  setLoggedIn(false);
+                }}
                 style={{ flex:1, padding:'4px 0', background:'rgba(239,68,68,0.08)', border:'1px solid rgba(239,68,68,0.2)', borderRadius:5, color:'#fca5a5', cursor:'pointer', fontSize:10 }}
                 title="Sign Out">
                 {sidebarOpen ? '⎋ Out' : '⎋'}
