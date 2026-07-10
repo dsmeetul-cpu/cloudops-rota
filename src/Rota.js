@@ -303,11 +303,22 @@ function RotaContent({
     return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
   });
 
+  const toggleLock  = (userId, date) => {
+    const key = `${userId}::${date}`;
+    setLockedCells(prev => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n; });
+  };
+  const isLocked  = (userId, date) => lockedCells.has(`${userId}::${date}`);
+  const canEdit   = isManager && managerUnlocked;
+
   // ── Paint mode ──────────────────────────────────────────────────────────
   // Pick a shift once, then click or drag across cells to apply it — instead
   // of opening the popover for every single cell. Right-click (or the
   // popover path when paint mode is off) still gives the detailed editor
   // for lock/clear/holiday info. Currently wired up for the Compact view.
+  // NOTE: this block must come AFTER `canEdit` above — paintCell's
+  // useCallback dependency array references canEdit immediately on render,
+  // and referencing a const before its declaration line throws a temporal-
+  // dead-zone ReferenceError. (This is what broke the last version.)
   const [paintMode,   setPaintMode]   = useState(false);
   const [paintBrush,  setPaintBrush]  = useState('daily');
   const [rotaHistory, setRotaHistory] = useState([]); // undo stack (last 25 strokes)
@@ -392,13 +403,6 @@ function RotaContent({
     window.addEventListener('mouseup', onUp);
     return () => window.removeEventListener('mouseup', onUp);
   }, []);
-
-  const toggleLock  = (userId, date) => {
-    const key = `${userId}::${date}`;
-    setLockedCells(prev => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n; });
-  };
-  const isLocked  = (userId, date) => lockedCells.has(`${userId}::${date}`);
-  const canEdit   = isManager && managerUnlocked;
 
   const rangeStart = (() => { const d = new Date(startDate+'T12:00:00'); const dow=d.getDay(); d.setDate(d.getDate()+(dow===0?-6:1-dow)); return d.toISOString().slice(0,10); })();
   const rangeEndDate = new Date(rangeStart+'T12:00:00'); rangeEndDate.setDate(rangeEndDate.getDate()+weeks*7);
