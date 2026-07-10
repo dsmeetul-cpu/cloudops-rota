@@ -1,4 +1,4 @@
-// src/Rota.js
+// src/Rota.js 10th July 2026
 // CloudOps Rota — improved editing: floating cell editor, sticky toolbar, floating bulk bar 30th May 2026
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 
