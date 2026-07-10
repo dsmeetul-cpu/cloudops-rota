@@ -1,4 +1,4 @@
-// src/Rota.js 10th July 2026
+// src/Rota.js
 // CloudOps Rota — improved editing: floating cell editor, sticky toolbar, floating bulk bar 30th May 2026
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 
@@ -661,12 +661,6 @@ function RotaContent({
                 <div style={{ fontSize:10, color:'#475569', marginBottom:4, fontWeight:600, letterSpacing:'0.05em', textTransform:'uppercase' }}>Start Date</div>
                 <input className="input" type="date" value={startDate} onChange={e=>setStartDate(e.target.value)} style={{ width:164 }} />
               </div>
-              <div>
-                <div style={{ fontSize:10, color:'#475569', marginBottom:4, fontWeight:600, letterSpacing:'0.05em', textTransform:'uppercase' }}>Period</div>
-                <select className="select" value={weeks} onChange={e=>setWeeks(+e.target.value)} style={{ width:140 }}>
-                  {[2,4,6,8,12,16,24,26,52].map(w=><option key={w} value={w}>{w} week{w>=52?' (1yr)':w>=26?' (6mo)':w>=12?' (3mo)':''}</option>)}
-                </select>
-              </div>
 
               <div style={{ width:1, height:36, background:'rgba(255,255,255,0.07)', alignSelf:'flex-end', marginBottom:1 }} />
 
@@ -831,6 +825,21 @@ function RotaContent({
         <button className="btn btn-secondary btn-sm" onClick={()=>setStartDate(d=>{
           const dt=new Date(d+'T12:00:00'); dt.setDate(dt.getDate()+7*weeks); return dt.toISOString().slice(0,10);
         })}>{weeks}w ▶▶</button>
+
+        <div style={{ width:1, height:22, background:'rgba(255,255,255,0.1)' }} />
+
+        {/* Showing period — how far ahead the rota displays. Available to
+            EVERYONE (not gated behind manager edit-unlock) since choosing
+            how far ahead to look is a viewing preference, not an edit. */}
+        <span style={{ fontSize:11, color:'#64748b', fontWeight:600 }}>Showing:</span>
+        <select className="select" value={weeks} onChange={e=>setWeeks(+e.target.value)}
+          style={{ fontSize:11, padding:'4px 8px', width:120 }}>
+          <option value={8}>8 weeks</option>
+          <option value={16}>16 weeks</option>
+          <option value={13}>3 months</option>
+          <option value={26}>6 months</option>
+          <option value={52}>1 year</option>
+        </select>
 
         <div style={{ width:1, height:22, background:'rgba(255,255,255,0.1)' }} />
 
@@ -1744,14 +1753,222 @@ function RotaAnalytics({ users, rota, holidays, UK_BANK_HOLIDAYS, upgrades }) {
   );
 }
 
+// ── Bulk Entry (manager-only) ────────────────────────────────────────────────
+// A form-driven alternative to clicking/painting individual cells: queue up
+// (engineer, date range, shift) entries, review them as a batch, then apply
+// them all in one go. Useful for entering a big block of dates at once
+// (e.g. "Priya is on Daily Shift for the whole of March") without touching
+// the grid at all.
+const BULK_SHIFTS = [
+  { id:'daily',       label:'Daily Shift' },
+  { id:'evening',     label:'Weekday On-Call (Mon–Thu)' },
+  { id:'weekend',     label:'Weekend On-Call' },
+  { id:'upgrade',     label:'Upgrade Day' },
+  { id:'holiday',     label:'Holiday' },
+  { id:'bankholiday', label:'Bank Holiday' },
+  { id:'off',         label:'Off / Clear' },
+];
+
+function RotaBulkEntry({ users, rota, setRota, isManager }) {
+  const today = new Date().toISOString().slice(0,10);
+  const [draftUser,  setDraftUser]  = useState(users[0]?.id || '');
+  const [draftStart, setDraftStart] = useState(today);
+  const [draftEnd,   setDraftEnd]   = useState(today);
+  const [draftShift, setDraftShift] = useState('daily');
+  const [queue,       setQueue]     = useState([]); // [{id, userId, start, end, shift}]
+  const [applying,    setApplying]  = useState(false);
+  const [result,      setResult]    = useState(null); // { appliedCount, skipped: [] } | null
+
+  if (!isManager) {
+    return (
+      <div style={{ padding:40, textAlign:'center', color:'#64748b', fontSize:13 }}>
+        Bulk Entry is only available to managers.
+      </div>
+    );
+  }
+
+  const sortedUsers = [...users].sort((a,b) => a.name.localeCompare(b.name));
+
+  const addToQueue = () => {
+    if (!draftUser || !draftStart || !draftEnd) return;
+    if (draftEnd < draftStart) { alert('End date must be on or after the start date.'); return; }
+    setQueue(q => [...q, { id: `${Date.now()}-${Math.random().toString(36).slice(2,7)}`, userId: draftUser, start: draftStart, end: draftEnd, shift: draftShift }]);
+    setResult(null);
+  };
+
+  const removeFromQueue = (id) => setQueue(q => q.filter(r => r.id !== id));
+  const clearQueue = () => { setQueue([]); setResult(null); };
+
+  const dateRange = (start, end) => {
+    const out = [];
+    const d = new Date(start + 'T12:00:00');
+    const last = new Date(end + 'T12:00:00');
+    while (d <= last) { out.push(d.toISOString().slice(0,10)); d.setDate(d.getDate() + 1); }
+    return out;
+  };
+
+  const applyQueue = () => {
+    if (queue.length === 0) return;
+    setApplying(true);
+    const merged = JSON.parse(JSON.stringify(rota));
+    const skipped = []; // { userName, date, reason }
+    let appliedCount = 0;
+
+    queue.forEach(entry => {
+      const user = users.find(u => u.id === entry.userId);
+      dateRange(entry.start, entry.end).forEach(dateStr => {
+        const dow = new Date(dateStr + 'T12:00:00').getDay();
+        const isWeekend = dow === 0 || dow === 6;
+
+        if (!isOnCallActive(user, dateStr) && entry.shift !== 'off') {
+          skipped.push({ userName: user?.name || entry.userId, date: dateStr, reason: 'not on-call active' });
+          return;
+        }
+        // Same rule the popover uses: Weekday On-Call only applies Mon–Thu.
+        if (entry.shift === 'evening' && !(dow >= 1 && dow <= 4)) {
+          skipped.push({ userName: user?.name || entry.userId, date: dateStr, reason: 'Weekday On-Call doesn\u2019t apply on this day' });
+          return;
+        }
+        // Same rule setCell() already applies: Daily Shift on a weekend
+        // date becomes Weekend On-Call rather than being written as-is.
+        const value = (entry.shift === 'daily' && isWeekend) ? 'weekend' : entry.shift;
+        merged[entry.userId] = { ...(merged[entry.userId] || {}), [dateStr]: value };
+        appliedCount++;
+      });
+    });
+
+    setRota(merged);
+    setResult({ appliedCount, skipped });
+    setQueue([]);
+    setApplying(false);
+  };
+
+  return (
+    <div>
+      <div style={{ marginBottom:16 }}>
+        <h1 style={{ margin:0, fontSize:22, fontWeight:700, letterSpacing:'-0.5px' }}>🗂 Bulk Entry</h1>
+        <div style={{ fontSize:12, color:'#64748b', marginTop:3 }}>
+          Queue up date-range entries per engineer, review them, then apply them all at once.
+        </div>
+      </div>
+
+      {/* ── Draft entry form ──────────────────────────────────────────────── */}
+      <div style={{ display:'flex', gap:10, flexWrap:'wrap', alignItems:'flex-end', padding:'14px 16px',
+        background:'var(--bg-card)', border:'1px solid var(--border)', borderRadius:10, marginBottom:14 }}>
+        <div>
+          <div style={{ fontSize:10, color:'#475569', marginBottom:4, fontWeight:600, letterSpacing:'0.05em', textTransform:'uppercase' }}>Engineer / Manager</div>
+          <select className="select" value={draftUser} onChange={e=>setDraftUser(e.target.value)} style={{ width:200 }}>
+            {sortedUsers.map(u => <option key={u.id} value={u.id}>{u.name}{u.role==='Manager' ? ' (Manager)' : ''}</option>)}
+          </select>
+        </div>
+        <div>
+          <div style={{ fontSize:10, color:'#475569', marginBottom:4, fontWeight:600, letterSpacing:'0.05em', textTransform:'uppercase' }}>From</div>
+          <input className="input" type="date" value={draftStart} onChange={e=>setDraftStart(e.target.value)} style={{ width:150 }} />
+        </div>
+        <div>
+          <div style={{ fontSize:10, color:'#475569', marginBottom:4, fontWeight:600, letterSpacing:'0.05em', textTransform:'uppercase' }}>To</div>
+          <input className="input" type="date" value={draftEnd} onChange={e=>setDraftEnd(e.target.value)} style={{ width:150 }} />
+        </div>
+        <div>
+          <div style={{ fontSize:10, color:'#475569', marginBottom:4, fontWeight:600, letterSpacing:'0.05em', textTransform:'uppercase' }}>Shift</div>
+          <select className="select" value={draftShift} onChange={e=>setDraftShift(e.target.value)} style={{ width:200 }}>
+            {BULK_SHIFTS.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
+          </select>
+        </div>
+        <button className="btn btn-primary btn-sm" onClick={addToQueue} style={{ padding:'8px 16px' }}>+ Add to batch</button>
+      </div>
+
+      {/* ── Queued entries ────────────────────────────────────────────────── */}
+      {queue.length > 0 ? (
+        <div style={{ background:'var(--bg-card)', border:'1px solid var(--border)', borderRadius:10, marginBottom:14, overflow:'hidden' }}>
+          <table style={{ width:'100%', borderCollapse:'collapse' }}>
+            <thead>
+              <tr style={{ background:'rgba(255,255,255,0.03)' }}>
+                <th style={{ textAlign:'left', padding:'8px 12px', fontSize:11, color:'#64748b' }}>Engineer</th>
+                <th style={{ textAlign:'left', padding:'8px 12px', fontSize:11, color:'#64748b' }}>Dates</th>
+                <th style={{ textAlign:'left', padding:'8px 12px', fontSize:11, color:'#64748b' }}>Shift</th>
+                <th style={{ padding:'8px 12px' }} />
+              </tr>
+            </thead>
+            <tbody>
+              {queue.map(entry => {
+                const user = users.find(u => u.id === entry.userId);
+                const col = SHIFT_COLORS[entry.shift] || SHIFT_COLORS.inactive;
+                const dayCount = dateRange(entry.start, entry.end).length;
+                return (
+                  <tr key={entry.id} style={{ borderTop:'1px solid var(--border)' }}>
+                    <td style={{ padding:'8px 12px', fontSize:12 }}>{user?.name || entry.userId}</td>
+                    <td style={{ padding:'8px 12px', fontSize:12, color:'#94a3b8' }}>{entry.start} → {entry.end} ({dayCount} day{dayCount!==1?'s':''})</td>
+                    <td style={{ padding:'8px 12px' }}>
+                      <span style={{ fontSize:10, fontWeight:700, padding:'2px 8px', borderRadius:5, background:(col.bg||'#334155')+'33', color:col.text||'#94a3b8' }}>
+                        {SHIFT_ABBR[entry.shift] || entry.shift} — {BULK_SHIFTS.find(s=>s.id===entry.shift)?.label}
+                      </span>
+                    </td>
+                    <td style={{ padding:'8px 12px', textAlign:'right' }}>
+                      <button className="btn btn-secondary btn-sm" onClick={()=>removeFromQueue(entry.id)} style={{ fontSize:10, padding:'3px 8px' }}>✕</button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          <div style={{ display:'flex', gap:8, padding:'10px 12px', borderTop:'1px solid var(--border)' }}>
+            <button className="btn btn-primary btn-sm" onClick={applyQueue} disabled={applying}
+              style={{ opacity: applying ? 0.6 : 1 }}>
+              {applying ? 'Applying…' : `✓ Apply ${queue.length} entr${queue.length!==1?'ies':'y'}`}
+            </button>
+            <button className="btn btn-secondary btn-sm" onClick={clearQueue}>🗑 Clear batch</button>
+          </div>
+        </div>
+      ) : (
+        <div style={{ padding:'20px 16px', textAlign:'center', color:'#475569', fontSize:12, border:'1px dashed var(--border)', borderRadius:10, marginBottom:14 }}>
+          No entries queued yet — fill in the form above and click "Add to batch".
+        </div>
+      )}
+
+      {/* ── Last apply result ─────────────────────────────────────────────── */}
+      {result && (
+        <div style={{ padding:'12px 16px', borderRadius:10, marginBottom:14,
+          background: result.skipped.length ? 'rgba(245,158,11,0.08)' : 'rgba(34,197,94,0.08)',
+          border: `1px solid ${result.skipped.length ? 'rgba(245,158,11,0.3)' : 'rgba(34,197,94,0.3)'}` }}>
+          <div style={{ fontSize:12, fontWeight:700, color: result.skipped.length ? '#fcd34d' : '#4ade80', marginBottom: result.skipped.length ? 6 : 0 }}>
+            ✓ Applied {result.appliedCount} day{result.appliedCount!==1?'s':''} to the rota.
+          </div>
+          {result.skipped.length > 0 && (
+            <>
+              <div style={{ fontSize:11, color:'#fcd34d', marginBottom:4 }}>Skipped {result.skipped.length} day{result.skipped.length!==1?'s':''}:</div>
+              <div style={{ maxHeight:120, overflowY:'auto' }}>
+                {result.skipped.map((s,i) => (
+                  <div key={i} style={{ fontSize:10, color:'rgba(252,211,77,0.8)', lineHeight:1.5 }}>
+                    {s.userName} — {s.date} ({s.reason})
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      <div style={{ fontSize:10, color:'rgba(255,255,255,0.2)' }}>
+        Entries are applied against the current saved rota — reload after applying to confirm everything synced to Drive.
+      </div>
+    </div>
+  );
+}
+
 // ── Main RotaPage with tabs ────────────────────────────────────────────────────
 export default function RotaPage(props) {
   const [activeTab, setActiveTab] = React.useState('rota');
+  const tabs = [
+    ['rota','📅 Rota','Schedule & manage on-call shifts'],
+    ['analytics','📊 Analytics','Reports, trends & coverage insights'],
+    ...(props.isManager ? [['bulk','🗂 Bulk Entry','Queue up date ranges per engineer — managers only']] : []),
+  ];
   return (
     <div>
       {/* ── Top tab nav ─────────────────────────────────────────────────── */}
       <div style={{ display:'flex', gap:0, marginBottom:16, borderBottom:'2px solid var(--border)' }}>
-        {[['rota','📅 Rota','Schedule & manage on-call shifts'],['analytics','📊 Analytics','Reports, trends & coverage insights']].map(([id,label,hint])=>(
+        {tabs.map(([id,label,hint])=>(
           <button key={id} onClick={()=>setActiveTab(id)} style={{
             padding:'10px 20px', border:'none', background:'none', cursor:'pointer',
             fontSize:13, fontWeight:700,
@@ -1767,6 +1984,7 @@ export default function RotaPage(props) {
       </div>
       {activeTab === 'rota'      && <RotaContent {...props} />}
       {activeTab === 'analytics' && <RotaAnalytics {...props} />}
+      {activeTab === 'bulk'      && props.isManager && <RotaBulkEntry {...props} />}
     </div>
   );
 }
