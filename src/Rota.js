@@ -1769,15 +1769,17 @@ const BULK_SHIFTS = [
   { id:'off',         label:'Off / Clear' },
 ];
 
-function RotaBulkEntry({ users, rota, setRota, isManager }) {
+function RotaBulkEntry({ users, rota, setRota, holidays, isManager }) {
   const today = new Date().toISOString().slice(0,10);
   const [draftUser,  setDraftUser]  = useState(users[0]?.id || '');
   const [draftStart, setDraftStart] = useState(today);
   const [draftEnd,   setDraftEnd]   = useState(today);
   const [draftShift, setDraftShift] = useState('daily');
-  const [queue,       setQueue]     = useState([]); // [{id, userId, start, end, shift}]
-  const [applying,    setApplying]  = useState(false);
-  const [result,      setResult]    = useState(null); // { appliedCount, skipped: [] } | null
+  const [queue,       setQueue]       = useState([]); // [{id, userId, start, end, shift}]
+  const [preview,     setPreview]     = useState(null); // computed changes, awaiting confirmation
+  const [applying,    setApplying]    = useState(false);
+  const [result,      setResult]      = useState(null); // { appliedCount, skipped: [] } | null
+  const [lastBatch,   setLastBatch]   = useState(null);  // rota snapshot from before the last apply, for undo
 
   if (!isManager) {
     return (
@@ -1794,10 +1796,11 @@ function RotaBulkEntry({ users, rota, setRota, isManager }) {
     if (draftEnd < draftStart) { alert('End date must be on or after the start date.'); return; }
     setQueue(q => [...q, { id: `${Date.now()}-${Math.random().toString(36).slice(2,7)}`, userId: draftUser, start: draftStart, end: draftEnd, shift: draftShift }]);
     setResult(null);
+    setPreview(null); // queue changed — any existing preview is stale
   };
 
-  const removeFromQueue = (id) => setQueue(q => q.filter(r => r.id !== id));
-  const clearQueue = () => { setQueue([]); setResult(null); };
+  const removeFromQueue = (id) => { setQueue(q => q.filter(r => r.id !== id)); setPreview(null); };
+  const clearQueue = () => { setQueue([]); setResult(null); setPreview(null); };
 
   const dateRange = (start, end) => {
     const out = [];
@@ -1807,49 +1810,93 @@ function RotaBulkEntry({ users, rota, setRota, isManager }) {
     return out;
   };
 
-  const applyQueue = () => {
-    if (queue.length === 0) return;
-    setApplying(true);
+  const isOnApprovedHoliday = (userId, dateStr) =>
+    (holidays || []).some(h => h.userId === userId && dateStr >= h.start && dateStr <= h.end);
+
+  // Pure: computes what applying the current queue WOULD do, without writing
+  // anything. Used both to show the preview and (once confirmed) to actually
+  // apply — so the preview can never drift from what really gets written.
+  const computeChanges = () => {
     const merged = JSON.parse(JSON.stringify(rota));
-    const skipped = []; // { userName, date, reason }
-    let appliedCount = 0;
+    const skipped = [];   // { userName, date, reason }
+    const overwrites = []; // { userName, date, from, to }
+    let newCount = 0;
 
     queue.forEach(entry => {
       const user = users.find(u => u.id === entry.userId);
       dateRange(entry.start, entry.end).forEach(dateStr => {
         const dow = new Date(dateStr + 'T12:00:00').getDay();
         const isWeekend = dow === 0 || dow === 6;
+        const userName = user?.name || entry.userId;
 
         if (!isOnCallActive(user, dateStr) && entry.shift !== 'off') {
-          skipped.push({ userName: user?.name || entry.userId, date: dateStr, reason: 'not on-call active' });
+          skipped.push({ userName, date: dateStr, reason: 'not on-call active' });
           return;
         }
-        // Same rule the popover uses: Weekday On-Call only applies Mon–Thu.
         if (entry.shift === 'evening' && !(dow >= 1 && dow <= 4)) {
-          skipped.push({ userName: user?.name || entry.userId, date: dateStr, reason: 'Weekday On-Call doesn\u2019t apply on this day' });
+          skipped.push({ userName, date: dateStr, reason: 'Weekday On-Call doesn\u2019t apply on this day' });
           return;
         }
-        // Same rule setCell() already applies: Daily Shift on a weekend
-        // date becomes Weekend On-Call rather than being written as-is.
+        // Don't silently paper over someone's approved leave — skip and
+        // report it instead, unless the entry is itself marking a holiday.
+        if (entry.shift !== 'holiday' && isOnApprovedHoliday(entry.userId, dateStr)) {
+          skipped.push({ userName, date: dateStr, reason: 'already on approved leave' });
+          return;
+        }
         const value = (entry.shift === 'daily' && isWeekend) ? 'weekend' : entry.shift;
-        merged[entry.userId] = { ...(merged[entry.userId] || {}), [dateStr]: value };
-        appliedCount++;
+        const existing = merged[entry.userId]?.[dateStr] || 'off';
+        if (existing !== value) {
+          if (existing !== 'off') overwrites.push({ userName, date: dateStr, from: existing, to: value });
+          else newCount++;
+          merged[entry.userId] = { ...(merged[entry.userId] || {}), [dateStr]: value };
+        }
       });
     });
 
-    setRota(merged);
-    setResult({ appliedCount, skipped });
+    return { merged, skipped, overwrites, newCount };
+  };
+
+  // Step 1: compute and show what would happen — nothing is written yet.
+  const reviewQueue = () => {
+    if (queue.length === 0) return;
+    setPreview(computeChanges());
+  };
+
+  // Step 2: only reached after the manager has seen the preview and confirmed.
+  const confirmApply = () => {
+    if (!preview) return;
+    setApplying(true);
+    setLastBatch(JSON.stringify(rota)); // snapshot for undo, taken right before writing
+    setRota(preview.merged);
+    setResult({ appliedCount: preview.newCount + preview.overwrites.length, skipped: preview.skipped });
     setQueue([]);
+    setPreview(null);
     setApplying(false);
+  };
+
+  const cancelPreview = () => setPreview(null);
+
+  const undoLastApply = () => {
+    if (!lastBatch) return;
+    setRota(JSON.parse(lastBatch));
+    setLastBatch(null);
+    setResult(null);
   };
 
   return (
     <div>
-      <div style={{ marginBottom:16 }}>
-        <h1 style={{ margin:0, fontSize:22, fontWeight:700, letterSpacing:'-0.5px' }}>🗂 Bulk Entry</h1>
-        <div style={{ fontSize:12, color:'#64748b', marginTop:3 }}>
-          Queue up date-range entries per engineer, review them, then apply them all at once.
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:16, flexWrap:'wrap', gap:10 }}>
+        <div>
+          <h1 style={{ margin:0, fontSize:22, fontWeight:700, letterSpacing:'-0.5px' }}>🗂 Bulk Entry</h1>
+          <div style={{ fontSize:12, color:'#64748b', marginTop:3 }}>
+            Queue up date-range entries per engineer, review exactly what will change, then apply.
+          </div>
         </div>
+        {lastBatch && (
+          <button className="btn btn-secondary btn-sm" onClick={undoLastApply} title="Revert the rota to how it was before the last apply">
+            ↩ Undo last apply
+          </button>
+        )}
       </div>
 
       {/* ── Draft entry form ──────────────────────────────────────────────── */}
@@ -1913,9 +1960,8 @@ function RotaBulkEntry({ users, rota, setRota, isManager }) {
             </tbody>
           </table>
           <div style={{ display:'flex', gap:8, padding:'10px 12px', borderTop:'1px solid var(--border)' }}>
-            <button className="btn btn-primary btn-sm" onClick={applyQueue} disabled={applying}
-              style={{ opacity: applying ? 0.6 : 1 }}>
-              {applying ? 'Applying…' : `✓ Apply ${queue.length} entr${queue.length!==1?'ies':'y'}`}
+            <button className="btn btn-primary btn-sm" onClick={reviewQueue}>
+              👁 Review {queue.length} entr{queue.length!==1?'ies':'y'}
             </button>
             <button className="btn btn-secondary btn-sm" onClick={clearQueue}>🗑 Clear batch</button>
           </div>
@@ -1926,13 +1972,60 @@ function RotaBulkEntry({ users, rota, setRota, isManager }) {
         </div>
       )}
 
+      {/* ── Preview / confirm panel ──────────────────────────────────────────
+          Nothing is written to the rota until "Confirm & Apply" is clicked
+          here. Overwrites are called out explicitly so a manager can't
+          accidentally clobber existing entries without seeing it coming. */}
+      {preview && (
+        <div style={{ padding:'14px 16px', borderRadius:10, marginBottom:14,
+          background: preview.overwrites.length ? 'rgba(245,158,11,0.08)' : 'rgba(59,130,246,0.08)',
+          border: `1px solid ${preview.overwrites.length ? 'rgba(245,158,11,0.35)' : 'rgba(59,130,246,0.3)'}` }}>
+          <div style={{ fontSize:13, fontWeight:700, marginBottom:8, color: preview.overwrites.length ? '#fcd34d' : '#93c5fd' }}>
+            {preview.overwrites.length > 0
+              ? `⚠️ This will overwrite ${preview.overwrites.length} existing shift${preview.overwrites.length!==1?'s':''}`
+              : '👁 Review before applying'}
+          </div>
+          <div style={{ fontSize:11, color:'#94a3b8', marginBottom:10 }}>
+            {preview.newCount} new day{preview.newCount!==1?'s':''} · {preview.overwrites.length} overwrite{preview.overwrites.length!==1?'s':''} · {preview.skipped.length} skipped
+          </div>
+
+          {preview.overwrites.length > 0 && (
+            <div style={{ maxHeight:160, overflowY:'auto', marginBottom:10, background:'rgba(0,0,0,0.15)', borderRadius:6, padding:'6px 10px' }}>
+              {preview.overwrites.map((o,i) => (
+                <div key={i} style={{ fontSize:10, color:'#fde68a', lineHeight:1.6 }}>
+                  {o.userName} — {o.date}: <strong>{SHIFT_ABBR[o.from]||o.from}</strong> → <strong>{SHIFT_ABBR[o.to]||o.to}</strong>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {preview.skipped.length > 0 && (
+            <div style={{ maxHeight:100, overflowY:'auto', marginBottom:10 }}>
+              {preview.skipped.map((s,i) => (
+                <div key={i} style={{ fontSize:10, color:'rgba(255,255,255,0.4)', lineHeight:1.6 }}>
+                  Skipping {s.userName} — {s.date} ({s.reason})
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div style={{ display:'flex', gap:8 }}>
+            <button className="btn btn-primary btn-sm" onClick={confirmApply} disabled={applying}
+              style={{ opacity: applying ? 0.6 : 1 }}>
+              {applying ? 'Applying…' : `✓ Confirm & Apply`}
+            </button>
+            <button className="btn btn-secondary btn-sm" onClick={cancelPreview}>✕ Cancel</button>
+          </div>
+        </div>
+      )}
+
       {/* ── Last apply result ─────────────────────────────────────────────── */}
       {result && (
         <div style={{ padding:'12px 16px', borderRadius:10, marginBottom:14,
           background: result.skipped.length ? 'rgba(245,158,11,0.08)' : 'rgba(34,197,94,0.08)',
           border: `1px solid ${result.skipped.length ? 'rgba(245,158,11,0.3)' : 'rgba(34,197,94,0.3)'}` }}>
           <div style={{ fontSize:12, fontWeight:700, color: result.skipped.length ? '#fcd34d' : '#4ade80', marginBottom: result.skipped.length ? 6 : 0 }}>
-            ✓ Applied {result.appliedCount} day{result.appliedCount!==1?'s':''} to the rota.
+            ✓ Applied {result.appliedCount} day{result.appliedCount!==1?'s':''} to the rota. {lastBatch && '— use "Undo last apply" above if that wasn\u2019t right.'}
           </div>
           {result.skipped.length > 0 && (
             <>
