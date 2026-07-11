@@ -145,7 +145,7 @@ async function driveReadJson(token, fileId) {
 }
 
 // Write a JSON file into the app folder (or a specific parent folder)
-async function driveWriteJson(token, name, data, parentId) {
+async function driveWriteJsonOnce(token, name, data, parentId) {
   const body = JSON.stringify(data);
   const pid  = parentId || await getAppFolderId(token);
   const cacheKey = `${pid}/${name}`;
@@ -182,11 +182,40 @@ async function driveWriteJson(token, name, data, parentId) {
     body: JSON.stringify(meta),
   }).then(r => r.json());
   if (created.id) _fileIdCache[cacheKey] = created.id;
-  return fetch(`https://www.googleapis.com/upload/drive/v3/files/${created.id}?uploadType=media`, {
+  const uploadResult = await fetch(`https://www.googleapis.com/upload/drive/v3/files/${created.id}?uploadType=media`, {
     method: 'PATCH',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body,
   }).then(r => r.json());
+  if (uploadResult.error) throw new Error(uploadResult.error.message || 'Drive write failed');
+  return uploadResult;
+}
+
+// ── Per-filename write queue + retry ─────────────────────────────────────────
+// This is a SEPARATE write path from useGoogleDrive.js's driveWrite (used for
+// profile_pictures.json / auth_registry.json, which aren't in that module's
+// FILES map). It was previously completely unprotected: no queue, no retry,
+// errors silently swallowed via .catch(()=>{}). That meant a write here could
+// race a concurrent write here (two calls to the same filename overlapping)
+// with no coordination at all. Same queue+retry pattern as useGoogleDrive.js.
+const _writeJsonQueues = {};
+function driveWriteJson(token, name, data, parentId) {
+  const key = `${parentId || 'app'}/${name}`;
+  const prev = _writeJsonQueues[key] || Promise.resolve();
+  const run = prev.then(async () => {
+    const maxAttempts = 3;
+    let lastErr;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try { return await driveWriteJsonOnce(token, name, data, parentId); }
+      catch (e) {
+        lastErr = e;
+        if (attempt < maxAttempts) await new Promise(r => setTimeout(r, 500 * Math.pow(3, attempt - 1)));
+      }
+    }
+    throw lastErr;
+  }, () => driveWriteJsonOnce(token, name, data, parentId)); // if previous write failed, still attempt this one
+  _writeJsonQueues[key] = run.catch(() => {});
+  return run;
 }
 
 // Delete a file from Drive by its file ID
@@ -1163,8 +1192,13 @@ function ShiftSwaps({ users, swapRequests, setSwapRequests, rota, setRota, curre
   });
 
   const persist = (next) => {
+    // setSwapRequests alone is enough — it triggers the app-level save()
+    // effect, which writes 'swapRequests' through the queued, retried,
+    // conflict-checked driveWrite path. A direct driveWriteJson call used to
+    // sit here too, firing a SECOND, uncoordinated write to the same Drive
+    // file on every action — two independent writers racing each other with
+    // no idea the other existed. Removed; one writer, one file, no race.
     setSwapRequests(next);
-    if (driveToken) driveWriteJson(driveToken, 'swapRequests.json', next).catch(()=>{});
   };
 
   const submitRequest = () => {
@@ -1784,12 +1818,9 @@ function Absence({ users, absences, setAbsences, currentUser, isManager, driveTo
       }));
       if (loaded.length > 0) {
         setAbsences(loaded);
-        // ── CRITICAL FIX: also write back to absences.json so loadAllFromDrive
-        // finds the data on the next page load. Without this, the Sheet and the
-        // JSON file are out of sync and engineers on other machines see nothing.
-        if (driveToken) {
-          driveWriteJson(driveToken, 'absences.json', loaded).catch(() => {});
-        }
+        // setAbsences alone writes 'absences.json' through the safe, queued
+        // save() path — a direct driveWriteJson call used to also fire here,
+        // racing that same write. Removed for the same reason as swapRequests.
         setSheetMsg(`✅ Loaded ${loaded.length} records from Google Sheet.`);
       } else {
         setSheetMsg('Sheet is empty.');
@@ -2017,8 +2048,10 @@ function Overtime({ users, overtime: overtimeProp, setOvertime, currentUser, isM
         }]})
       });
 
-      // Also write back to overtime.json so loadAllFromDrive finds it on next load
-      await driveWriteJson(driveToken, 'overtime.json', data).catch(() => {});
+      // NOTE: overtime.json is already kept in sync via the app-level save()
+      // effect whenever `overtime` state changes — no need to write it again
+      // here. A duplicate driveWriteJson call used to sit here, re-writing
+      // identical data and racing the safe path for no benefit.
 
       notifySheet(`✅ Synced to Google Sheet "${OT_SHEET_NAME}" — ${new Date().toLocaleTimeString('en-GB', { hour:'2-digit', minute:'2-digit' })}`);
     } catch (e) {
@@ -2074,8 +2107,8 @@ function Overtime({ users, overtime: overtimeProp, setOvertime, currentUser, isM
 
       if (loaded.length > 0) {
         setOvertime(loaded);
-        // Write back to overtime.json so next load picks it up without needing Sheet
-        await driveWriteJson(driveToken, 'overtime.json', loaded).catch(() => {});
+        // setOvertime alone writes 'overtime.json' through the safe, queued
+        // save() path — the direct driveWriteJson call here used to race it.
         notifySheet(`✅ Loaded ${loaded.length} records from Google Sheet.`);
       } else {
         notifySheet('Sheet exists but has no data rows.');
