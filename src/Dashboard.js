@@ -139,9 +139,93 @@ export default function Dashboard({ users, rota, holidays, incidents, timesheets
   const absencesThisMonth = (absences || []).filter(a => a.start?.startsWith(thisMonth)).length;
   const disasters         = sevCounts.Disaster;
 
+  // ── Coverage risk — next 14 days ─────────────────────────────────────────
+  // Reuses the same "zero cover / single cover" idea as the Coverage Gaps
+  // view in Rota Analytics, but scoped to the next two weeks and surfaced
+  // right here so a manager doesn't have to go looking for it.
+  const next14 = Array.from({ length: 14 }, (_, i) => {
+    const d = new Date(); d.setDate(d.getDate() + i);
+    return d.toISOString().slice(0, 10);
+  });
+  const coverageRisk = next14
+    .map(ds => ({ date: ds, covering: users.filter(u => rota[u.id]?.[ds] && rota[u.id][ds] !== 'off').length }))
+    .filter(d => d.covering <= 1);
+
+  // ── Load balance / burnout risk ──────────────────────────────────────────
+  // Flags anyone carrying notably more OC hours than the team average, and
+  // anyone currently mid-way through a long unbroken on-call stretch. Neither
+  // of these is visible from the hours bar chart alone — you'd have to do
+  // the comparison yourself.
+  const teamAvgOC = ocByUser.reduce((a, u) => a + u.total, 0) / Math.max(ocByUser.length, 1);
+  const overloaded = ocByUser.filter(u => teamAvgOC > 0 && u.total > teamAvgOC * 1.3);
+
+  const BURNOUT_STREAK_THRESHOLD = 4; // consecutive on-call days considered worth flagging
+  const currentStreak = (userId) => {
+    let streak = 0;
+    const d = new Date(today + 'T12:00:00');
+    // walk backward from today (inclusive) while on-call
+    while (rota[userId]?.[d.toISOString().slice(0,10)] && rota[userId][d.toISOString().slice(0,10)] !== 'off') {
+      streak++; d.setDate(d.getDate() - 1);
+    }
+    // walk forward from tomorrow while on-call
+    const f = new Date(today + 'T12:00:00'); f.setDate(f.getDate() + 1);
+    while (rota[userId]?.[f.toISOString().slice(0,10)] && rota[userId][f.toISOString().slice(0,10)] !== 'off') {
+      streak++; f.setDate(f.getDate() + 1);
+    }
+    return streak;
+  };
+  const burnoutRisk = users
+    .map(u => ({ user: u, streak: currentStreak(u.id) }))
+    .filter(x => x.streak >= BURNOUT_STREAK_THRESHOLD);
+
+  // ── TOIL at risk of being lost ───────────────────────────────────────────
+  const TOIL_AT_RISK_THRESHOLD = TOIL_MAX_CARRYOVER_HOURS * 0.8; // 32h of the 40h cap
+  const toilAtRisk = users
+    .map(u => ({ user: u, bal: calcTOILBalance(timesheets[u.id] || [], toil || [], u.id) }))
+    .filter(x => x.bal.balance >= TOIL_AT_RISK_THRESHOLD);
+
+  const attentionCount = pendingSwaps.length + coverageRisk.length + overloaded.length + burnoutRisk.length + toilAtRisk.length;
+
   return (
     <div>
       <PageHeader title="Manager Dashboard" sub="Cloud Run Operations · Full team visibility" />
+
+      {/* ── Needs Your Attention ─────────────────────────────────────────────
+          One place to see everything that wants a manager decision, instead
+          of scanning five separate cards to piece it together. */}
+      {attentionCount > 0 && (
+        <div className="card mb-16" style={{ border: '1px solid rgba(245,158,11,0.35)', background: 'rgba(245,158,11,0.06)' }}>
+          <div className="card-title" style={{ color: '#fcd34d' }}>🚦 Needs Your Attention ({attentionCount})</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {pendingSwaps.length > 0 && (
+              <div className="row-item" style={{ fontSize: 12 }}>
+                🔁 <strong>{pendingSwaps.length}</strong> swap request{pendingSwaps.length !== 1 ? 's' : ''} awaiting approval
+              </div>
+            )}
+            {coverageRisk.length > 0 && (
+              <div className="row-item" style={{ fontSize: 12 }}>
+                🗓 <strong>{coverageRisk.length}</strong> day{coverageRisk.length !== 1 ? 's' : ''} with zero/single cover in the next 14 days
+              </div>
+            )}
+            {overloaded.length > 0 && (
+              <div className="row-item" style={{ fontSize: 12 }}>
+                ⚖️ <strong>{overloaded.map(u => u.name).join(', ')}</strong> carrying notably more on-call load than the team average
+              </div>
+            )}
+            {burnoutRisk.length > 0 && (
+              <div className="row-item" style={{ fontSize: 12 }}>
+                🔥 <strong>{burnoutRisk.map(x => x.user.name).join(', ')}</strong> on an on-call stretch of {BURNOUT_STREAK_THRESHOLD}+ consecutive days
+              </div>
+            )}
+            {toilAtRisk.length > 0 && (
+              <div className="row-item" style={{ fontSize: 12 }}>
+                ⏳ <strong>{toilAtRisk.map(x => x.user.name).join(', ')}</strong> near the {TOIL_MAX_CARRYOVER_HOURS}h TOIL cap — at risk of losing accrued time
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
 
       <div className="grid-4 mb-16">
         <StatCard label="Team Size"      value={users.length}        sub="engineers + manager"    accent="#3b82f6" icon="👥" />
@@ -255,6 +339,56 @@ export default function Dashboard({ users, rota, holidays, incidents, timesheets
               );
             })}
           </div>
+        </div>
+      </div>
+
+      {/* ── Coverage Risk + Load Balance/Burnout ─────────────────────────── */}
+      <div className="grid-2 mb-16">
+        <div className="card">
+          <div className="card-title">🗓 Coverage Risk — Next 14 Days</div>
+          {coverageRisk.length === 0 ? (
+            <p className="muted-sm">✅ Every day has at least 2 people covering</p>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {coverageRisk.map(d => (
+                <div key={d.date} className="flex-between row-item">
+                  <span style={{ fontSize: 12 }}>{d.date}</span>
+                  <Tag label={d.covering === 0 ? 'Zero cover' : 'Single cover'} type={d.covering === 0 ? 'red' : 'amber'} />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="card">
+          <div className="card-title">⚖️ Load Balance &amp; Burnout Risk</div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10 }}>
+            Team average: <strong style={{ color: '#6ee7b7' }}>{teamAvgOC.toFixed(1)}h</strong> on-call per engineer
+          </div>
+          {overloaded.length === 0 && burnoutRisk.length === 0 ? (
+            <p className="muted-sm">✅ Load looks balanced, no long unbroken stretches</p>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {overloaded.map(u => (
+                <div key={u.name} className="flex-between row-item">
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <Avatar user={u.user} size={20} />
+                    <span style={{ fontSize: 12 }}>{u.name}</span>
+                  </div>
+                  <span style={{ fontSize: 11, fontFamily: 'DM Mono', color: '#f59e0b' }}>{u.total}h ({Math.round((u.total / Math.max(teamAvgOC,1) - 1) * 100)}% above avg)</span>
+                </div>
+              ))}
+              {burnoutRisk.map(x => (
+                <div key={x.user.id} className="flex-between row-item">
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <Avatar user={x.user} size={20} />
+                    <span style={{ fontSize: 12 }}>{x.user.name}</span>
+                  </div>
+                  <Tag label={`${x.streak}d streak`} type="red" />
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
@@ -395,7 +529,9 @@ export default function Dashboard({ users, rota, holidays, incidents, timesheets
                     <td style={{ fontFamily: 'DM Mono', fontSize: 12, color: '#10b981' }}>{resolvedUserInc}</td>
                     <td style={{ fontFamily: 'DM Mono', fontSize: 12, color: incHrs > 0 ? '#f59e0b' : 'var(--text-muted)' }}>{incHrs > 0 ? `${incHrs}h` : '—'}</td>
                     <td style={{ fontFamily: 'DM Mono', fontSize: 12 }}>{holDays}/25d</td>
-                    <td style={{ fontFamily: 'DM Mono', fontSize: 12, color: toilBal.balance > 0 ? '#38bdf8' : '#fca5a5' }}>{toilBal.balance}h</td>
+                    <td style={{ fontFamily: 'DM Mono', fontSize: 12, color: toilBal.balance >= TOIL_AT_RISK_THRESHOLD ? '#fcd34d' : toilBal.balance > 0 ? '#38bdf8' : '#fca5a5' }}>
+                      {toilBal.balance}h{toilBal.balance >= TOIL_AT_RISK_THRESHOLD ? ' ⚠️' : ''}
+                    </td>
                   </tr>
                 );
               })}
