@@ -1,7 +1,24 @@
 // src/hooks/useGoogleDrive.js
 // Google Drive API integration - stores all data as JSON files in Drive
 
-const SCOPES = 'https://www.googleapis.com/auth/drive.file';
+// ── OAuth scope ───────────────────────────────────────────────────────────
+// This USED to be 'drive.file', which only grants access to files the
+// current Google account created (or explicitly opened via a Picker) —
+// NOT files merely shared with them through Drive's normal Share dialog.
+// Since the "CloudOps-Rota" folder was created under one person's account
+// (whoever ran the app first), every other user got 403s on every file they
+// didn't personally create, even after the folder was shared with them.
+//
+// Full 'drive' scope respects real Drive sharing/ACLs instead, so once the
+// folder is actually shared (Editor) with each person's Google account,
+// they can read/write it like any other shared Drive file.
+//
+// This is a "restricted" scope, so Google will show an "unverified app"
+// warning to anyone who isn't listed as a Test user in the Cloud Console's
+// OAuth consent screen (Audience tab) — add every engineer's email there.
+// Test users can click through the warning; verification isn't required
+// until this needs to scale past ~100 users.
+const SCOPES = 'https://www.googleapis.com/auth/drive';
 const FOLDER_NAME = 'CloudOps-Rota';
 const FILES = {
   users:         'users.json',
