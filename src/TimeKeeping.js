@@ -542,15 +542,21 @@ function MonthView({ entries, year, month, bankHolidays = [], onLogDay }) {
 // feature don't pay for loading it. Cached as a promise so clicking export
 // twice in a row (e.g. before the first load finishes) doesn't inject the
 // CDN script a second time.
+//
+// NOTE: this loads "xlsx-js-style" rather than plain SheetJS. Standard
+// SheetJS Community Edition can READ cell styles but can't WRITE them —
+// colored fills/fonts on export are a Pro-only feature there. xlsx-js-style
+// is a community fork that adds writable cell styling while keeping the
+// exact same XLSX.* API, so nothing else about how it's called changes.
 let _xlsxLoadPromise = null;
 function loadXLSX() {
-  if (window.XLSX) return Promise.resolve(window.XLSX);
+  if (window.XLSX && window.XLSX.__styled) return Promise.resolve(window.XLSX);
   if (_xlsxLoadPromise) return _xlsxLoadPromise;
   _xlsxLoadPromise = new Promise((resolve, reject) => {
     const s = document.createElement('script');
-    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+    s.src = 'https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js';
     s.onload = () => {
-      if (window.XLSX) resolve(window.XLSX);
+      if (window.XLSX) { window.XLSX.__styled = true; resolve(window.XLSX); }
       else reject(new Error('SheetJS script loaded but window.XLSX is still missing.'));
     };
     s.onerror = () => {
@@ -560,6 +566,40 @@ function loadXLSX() {
     document.head.appendChild(s);
   });
   return _xlsxLoadPromise;
+}
+
+// ── Shared cell styles for every Excel export in this file ──────────────────
+const XSTYLE = {
+  header:   { font: { bold: true, color: { rgb: 'FFFFFF' } }, fill: { fgColor: { rgb: '1F2937' } }, alignment: { vertical: 'center', horizontal: 'center', wrapText: true }, border: allBorder('B8BFC7') },
+  title:    { font: { bold: true, sz: 16, color: { rgb: '111827' } } },
+  subtitle: { font: { italic: true, sz: 10, color: { rgb: '6B7280' } } },
+  office:   { fill: { fgColor: { rgb: 'DCEAFB' } }, font: { color: { rgb: '1D4ED8' } }, border: allBorder('E2E8F0') },
+  wfh:      { fill: { fgColor: { rgb: 'E4DCFB' } }, font: { color: { rgb: '6D28D9' } }, border: allBorder('E2E8F0') },
+  absent:   { fill: { fgColor: { rgb: 'FBDCDC' } }, font: { color: { rgb: 'B91C1C' } }, border: allBorder('E2E8F0') },
+  holiday:  { fill: { fgColor: { rgb: 'FDEFC7' } }, font: { color: { rgb: 'B45309' } }, border: allBorder('E2E8F0') },
+  bankhol:  { fill: { fgColor: { rgb: 'E0F2E9' } }, font: { color: { rgb: '15803D' } }, border: allBorder('E2E8F0') },
+  late:     { fill: { fgColor: { rgb: 'FBDCDC' } }, font: { bold: true, color: { rgb: 'B91C1C' } }, border: allBorder('E2E8F0') },
+  ontime:   { fill: { fgColor: { rgb: 'DCFBE4' } }, font: { color: { rgb: '15803D' } }, border: allBorder('E2E8F0') },
+  plain:    { border: allBorder('E2E8F0') },
+  goodPct:  { fill: { fgColor: { rgb: 'DCFBE4' } }, font: { bold: true, color: { rgb: '15803D' } }, border: allBorder('E2E8F0') },
+  badPct:   { fill: { fgColor: { rgb: 'FBDCDC' } }, font: { bold: true, color: { rgb: 'B91C1C' } }, border: allBorder('E2E8F0') },
+};
+function allBorder(rgb) {
+  const side = { style: 'thin', color: { rgb } };
+  return { top: side, bottom: side, left: side, right: side };
+}
+function styleCell(v, style) { return { v, s: style, t: typeof v === 'number' ? 'n' : 's' }; }
+function statusStyle(status) {
+  if (status === 'office')        return XSTYLE.office;
+  if (status === 'wfh')           return XSTYLE.wfh;
+  if (status === 'absent')        return XSTYLE.absent;
+  if (status === 'Holiday')       return XSTYLE.holiday;
+  if (status === 'Bank Holiday')  return XSTYLE.bankhol;
+  return XSTYLE.plain;
+}
+// Safe Excel sheet name: max 31 chars, no : \ / ? * [ ]
+function safeSheetName(name) {
+  return (name || 'Sheet').replace(/[:\\/?*[\]]/g, ' ').slice(0, 31) || 'Sheet';
 }
 
 async function exportAttendanceExcel(users, timekeeping, bankHolidays, holidays, from, to) {
@@ -572,35 +612,194 @@ async function exportAttendanceExcel(users, timekeeping, bankHolidays, holidays,
   }
   const bh  = (bankHolidays || []).map(b => b.date || b);
   const fmt = ds => new Date(ds + 'T12:00:00').toLocaleDateString('en-GB');
-  const hdrs = ['ID', 'Name', 'Date', 'Day', 'Status', 'Check In', 'Check Out', 'Hours', 'Late Status', 'Check-In Device', 'Check-Out Device', 'Confirmed', 'Notes'];
-  const rows = [];
-  (users || []).forEach(u => {
+  const hdrs = ['Date', 'Day', 'Status', 'Check In', 'Check Out', 'Hours', 'Late Status', 'Check-In Device', 'Check-Out Device', 'Confirmed', 'Notes'];
+  const colWidths = [12, 12, 14, 9, 10, 8, 12, 18, 18, 10, 30].map(w => ({ wch: w }));
+  const wb = XLSX.utils.book_new();
+  const engineerList = users || [];
+
+  // ── Summary sheet first — quick per-engineer glance before the detail tabs
+  const summaryHdrs = ['Engineer', 'Office Days', 'WFH Days', 'Absent Days', 'Late Arrivals', 'Total Entries'];
+  const summaryRows = engineerList.map(u => {
+    const entries = normaliseEntries(u.id, (timekeeping || {})[u.id])
+      .filter(e => e.date && (!from || e.date >= from) && (!to || e.date <= to));
+    const office = entries.filter(e => e.status === 'office').length;
+    const wfh    = entries.filter(e => e.status === 'wfh').length;
+    const absent = entries.filter(e => e.status === 'absent').length;
+    const late   = entries.filter(e => e.checkIn && computeLateStatus(e.checkIn)?.status === 'late').length;
+    return [u.name, office, wfh, absent, late, entries.length];
+  });
+  const summaryAoA = [
+    summaryHdrs.map(h => styleCell(h, XSTYLE.header)),
+    ...summaryRows.map(r => r.map((v, i) => styleCell(v, i === 4 && v > 0 ? XSTYLE.late : XSTYLE.plain))),
+  ];
+  const summaryWs = XLSX.utils.aoa_to_sheet(summaryAoA);
+  summaryWs['!cols'] = [22, 12, 10, 12, 13, 12].map(w => ({ wch: w }));
+  XLSX.utils.book_append_sheet(wb, summaryWs, 'Summary');
+
+  // ── One sheet per engineer ─────────────────────────────────────────────
+  engineerList.forEach(u => {
     const entries = normaliseEntries(u.id, (timekeeping || {})[u.id])
       .filter(e => e.date && (!from || e.date >= from) && (!to || e.date <= to))
       .sort((a, b) => (a.date || '').localeCompare(b.date || ''));
-    entries.forEach(e => {
+    const rows = entries.map(e => {
       const day  = new Date(e.date + 'T12:00:00').toLocaleDateString('en-GB', { weekday: 'long' });
       const isBH = isBankHoliday(e.date, bh);
       const isH  = isOnHoliday(e.date, u.id, holidays);
       const ls   = e.checkIn ? computeLateStatus(e.checkIn) : null;
       const hrs  = fmtHours(e.checkIn, e.checkOut) || '';
-      rows.push([
-        u.id, u.name, fmt(e.date), day,
-        isBH ? 'Bank Holiday' : isH ? 'Holiday' : (e.status || '—'),
-        e.checkIn || '—', e.checkOut || '—', hrs,
-        ls ? ls.label : (e.status === 'wfh' ? 'WFH' : e.status === 'absent' ? 'Absent' : '—'),
-        e.device          ? (DEVICE_META[e.device]?.label          || e.device)          : '—',
-        e.checkOutDevice  ? (DEVICE_META[e.checkOutDevice]?.label  || e.checkOutDevice)  : '—',
-        e.confirmedByManager ? '✓' : '—',
-        e.notes || '',
-      ]);
+      const statusLabel = isBH ? 'Bank Holiday' : isH ? 'Holiday' : (e.status || '—');
+      const lateLabel = ls ? ls.label : (e.status === 'wfh' ? 'WFH' : e.status === 'absent' ? 'Absent' : '—');
+      const sStyle = statusStyle(statusLabel === 'Holiday' || statusLabel === 'Bank Holiday' ? statusLabel : e.status);
+      return [
+        styleCell(fmt(e.date), XSTYLE.plain),
+        styleCell(day, XSTYLE.plain),
+        styleCell(statusLabel, sStyle),
+        styleCell(e.checkIn || '—', XSTYLE.plain),
+        styleCell(e.checkOut || '—', XSTYLE.plain),
+        styleCell(hrs, XSTYLE.plain),
+        styleCell(lateLabel, ls?.status === 'late' ? XSTYLE.late : ls?.status === 'ontime' ? XSTYLE.ontime : XSTYLE.plain),
+        styleCell(e.device ? (DEVICE_META[e.device]?.label || e.device) : '—', XSTYLE.plain),
+        styleCell(e.checkOutDevice ? (DEVICE_META[e.checkOutDevice]?.label || e.checkOutDevice) : '—', XSTYLE.plain),
+        styleCell(e.confirmedByManager ? '✓' : '—', XSTYLE.plain),
+        styleCell(e.notes || '', XSTYLE.plain),
+      ];
     });
+    const aoa = [
+      [styleCell(u.name, XSTYLE.title)],
+      [styleCell(`${from || 'All time'} → ${to || 'now'}`, XSTYLE.subtitle)],
+      [],
+      hdrs.map(h => styleCell(h, XSTYLE.header)),
+      ...rows,
+    ];
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!cols'] = colWidths;
+    ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: hdrs.length - 1 } }, { s: { r: 1, c: 0 }, e: { r: 1, c: hdrs.length - 1 } }];
+    XLSX.utils.book_append_sheet(wb, ws, safeSheetName(u.name));
   });
-  const ws = XLSX.utils.aoa_to_sheet([hdrs, ...rows]);
-  ws['!cols'] = [10, 22, 12, 12, 12, 9, 10, 8, 12, 18, 18, 10, 28].map(w => ({ wch: w }));
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, 'Attendance');
+
   XLSX.writeFile(wb, `CloudOps-Attendance-${(from || 'all').replace(/-/g, '')}-${(to || 'now').replace(/-/g, '')}.xlsx`);
+}
+
+// ── Word (.docx) — lazy-loaded the same way as XLSX ──────────────────────────
+let _docxLoadPromise = null;
+function loadDocx() {
+  if (window.docx) return Promise.resolve(window.docx);
+  if (_docxLoadPromise) return _docxLoadPromise;
+  _docxLoadPromise = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.umd.min.js';
+    s.onload = () => {
+      if (window.docx) resolve(window.docx);
+      else reject(new Error('docx script loaded but window.docx is still missing.'));
+    };
+    s.onerror = () => {
+      _docxLoadPromise = null;
+      reject(new Error('Could not load the Word export library from the CDN — check your network connection.'));
+    };
+    document.head.appendChild(s);
+  });
+  return _docxLoadPromise;
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ── Analytics export: Markdown ───────────────────────────────────────────────
+function exportAnalyticsMarkdown(rows, from, to) {
+  const lines = [
+    `# CloudOps Attendance Analytics`,
+    ``,
+    `**Period:** ${from || 'All time'} → ${to || 'now'}`,
+    ``,
+    `| Engineer | Office Days | WFH Days | Absent | RTO Compliance | Late Arrivals | Longest Late Streak |`,
+    `|---|---|---|---|---|---|---|`,
+    ...rows.map(r => `| ${r.name} | ${r.officeDays} | ${r.wfhDays} | ${r.absentDays} | ${r.rtoCompliance}% | ${r.lateCount} | ${r.maxLateStreak} |`),
+    ``,
+    `_Generated ${new Date().toLocaleString('en-GB')}_`,
+  ];
+  downloadBlob(new Blob([lines.join('\n')], { type: 'text/markdown' }), `CloudOps-Analytics-${(from||'all')}-${(to||'now')}.md`);
+}
+
+// ── Analytics export: Word ───────────────────────────────────────────────────
+async function exportAnalyticsWord(rows, from, to) {
+  let docx;
+  try { docx = await loadDocx(); }
+  catch (e) { alert(`Couldn't load the Word export library: ${e.message}`); return; }
+  const { Document, Paragraph, TextRun, Table, TableRow, TableCell, HeadingLevel, Packer, WidthType, AlignmentType, ShadingType } = docx;
+
+  const headerCell = (text) => new TableCell({
+    shading: { type: ShadingType.CLEAR, fill: '1F2937' },
+    children: [new Paragraph({ children: [new TextRun({ text, bold: true, color: 'FFFFFF' })] })],
+  });
+  const dataCell = (text, bad) => new TableCell({
+    shading: bad ? { type: ShadingType.CLEAR, fill: 'FBDCDC' } : undefined,
+    children: [new Paragraph({ children: [new TextRun({ text: String(text), color: bad ? 'B91C1C' : undefined })] })],
+  });
+
+  const headerRow = new TableRow({
+    children: ['Engineer', 'Office Days', 'WFH Days', 'Absent', 'RTO %', 'Late Arrivals', 'Longest Late Streak'].map(headerCell),
+  });
+  const bodyRows = rows.map(r => new TableRow({
+    children: [
+      dataCell(r.name),
+      dataCell(r.officeDays),
+      dataCell(r.wfhDays),
+      dataCell(r.absentDays),
+      dataCell(`${r.rtoCompliance}%`, r.rtoCompliance < 60),
+      dataCell(r.lateCount, r.lateCount > 3),
+      dataCell(r.maxLateStreak, r.maxLateStreak >= 3),
+    ],
+  }));
+
+  const doc = new Document({
+    sections: [{
+      children: [
+        new Paragraph({ heading: HeadingLevel.HEADING_1, children: [new TextRun('CloudOps Attendance Analytics')] }),
+        new Paragraph({ children: [new TextRun({ text: `Period: ${from || 'All time'} → ${to || 'now'}`, italics: true, color: '6B7280' })] }),
+        new Paragraph({ text: '' }),
+        new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: [headerRow, ...bodyRows] }),
+        new Paragraph({ text: '' }),
+        new Paragraph({ children: [new TextRun({ text: `Generated ${new Date().toLocaleString('en-GB')}`, italics: true, size: 16, color: '9CA3AF' })] }),
+      ],
+    }],
+  });
+
+  const blob = await Packer.toBlob(doc);
+  downloadBlob(blob, `CloudOps-Analytics-${(from||'all')}-${(to||'now')}.docx`);
+}
+
+// ── Analytics export: Excel ──────────────────────────────────────────────────
+async function exportAnalyticsExcel(rows, from, to) {
+  let XLSX;
+  try { XLSX = await loadXLSX(); }
+  catch (e) { alert(`Couldn't load the Excel export library: ${e.message}`); return; }
+
+  const hdrs = ['Engineer', 'Office Days', 'WFH Days', 'Absent', 'RTO Compliance', 'Late Arrivals', 'Longest Late Streak'];
+  const aoa = [
+    [styleCell('CloudOps Attendance Analytics', XSTYLE.title)],
+    [styleCell(`${from || 'All time'} → ${to || 'now'}`, XSTYLE.subtitle)],
+    [],
+    hdrs.map(h => styleCell(h, XSTYLE.header)),
+    ...rows.map(r => [
+      styleCell(r.name, XSTYLE.plain),
+      styleCell(r.officeDays, XSTYLE.plain),
+      styleCell(r.wfhDays, XSTYLE.plain),
+      styleCell(r.absentDays, r.absentDays > 0 ? XSTYLE.late : XSTYLE.plain),
+      styleCell(`${r.rtoCompliance}%`, r.rtoCompliance >= 80 ? XSTYLE.goodPct : r.rtoCompliance < 60 ? XSTYLE.badPct : XSTYLE.plain),
+      styleCell(r.lateCount, r.lateCount > 3 ? XSTYLE.late : XSTYLE.plain),
+      styleCell(r.maxLateStreak, r.maxLateStreak >= 3 ? XSTYLE.late : XSTYLE.plain),
+    ]),
+  ];
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!cols'] = [22, 12, 10, 10, 15, 14, 18].map(w => ({ wch: w }));
+  ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: hdrs.length - 1 } }, { s: { r: 1, c: 0 }, e: { r: 1, c: hdrs.length - 1 } }];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Analytics');
+  XLSX.writeFile(wb, `CloudOps-Analytics-${(from||'all')}-${(to||'now')}.xlsx`);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -658,8 +857,13 @@ export default function TimeKeeping({
 
   // ── Export modal ────────────────────────────────────────────────────────────
   const [showExport, setShowExport] = useState(false);
+  const [exportUser, setExportUser] = useState('all');
   const [exportFrom, setExportFrom] = useState('');
   const [exportTo,   setExportTo]   = useState('');
+  const [anaFrom, setAnaFrom] = useState(() => addDays(today, -29));
+  const [anaTo,   setAnaTo]   = useState(today);
+  const [anaUser, setAnaUser] = useState('all');
+  const [anaExporting, setAnaExporting] = useState(false);
   const [exporting,  setExporting]  = useState(false);
 
   // ── Drive save (queued to prevent race conditions) ─────────────────────────
@@ -1327,6 +1531,7 @@ export default function TimeKeeping({
   const mgTabs = [
     { id: 'today',     label: "📍 Today" },
     { id: 'dashboard', label: '◈ Dashboard' },
+    { id: 'analytics', label: '📊 Analytics' },
     { id: 'week',      label: '📅 Weekly' },
     { id: 'month',     label: '📆 Monthly' },
     { id: 'heatmap',   label: '🔥 Heat Map' },
@@ -1584,6 +1789,108 @@ export default function TimeKeeping({
           })()}
         </div>
       )}
+
+      {/* ══ ANALYTICS ══ */}
+      {tab === 'analytics' && (() => {
+        const scopedUsers = anaUser === 'all' ? (users || []) : (users || []).filter(u => u.id === anaUser);
+        const anaRows = scopedUsers.map(u => {
+          const s = getUserStats(u.id, anaFrom, anaTo);
+          return {
+            id: u.id, name: u.name, officeDays: s.officeDays, wfhDays: s.wfhDays,
+            absentDays: s.absentDays, rtoCompliance: s.rtoCompliance,
+            lateCount: s.lateArrivals.length, maxLateStreak: s.maxLateStreak,
+          };
+        });
+        const teamAvgRto = anaRows.length ? Math.round(anaRows.reduce((a, r) => a + r.rtoCompliance, 0) / anaRows.length) : 0;
+        const totalLate  = anaRows.reduce((a, r) => a + r.lateCount, 0);
+        const belowRto   = anaRows.filter(r => r.rtoCompliance < 60).length;
+
+        return (
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', flexWrap: 'wrap', gap: 12, marginBottom: 16 }}>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+                <FormGroup label="Engineer">
+                  <select className="select" value={anaUser} onChange={e => setAnaUser(e.target.value)} style={{ width: 170 }}>
+                    <option value="all">All Engineers</option>
+                    {(users || []).map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+                  </select>
+                </FormGroup>
+                <FormGroup label="From">
+                  <input className="input" type="date" value={anaFrom} onChange={e => setAnaFrom(e.target.value)} />
+                </FormGroup>
+                <FormGroup label="To">
+                  <input className="input" type="date" value={anaTo} onChange={e => setAnaTo(e.target.value)} />
+                </FormGroup>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  {[
+                    ['30d', () => { setAnaFrom(addDays(today, -29)); setAnaTo(today); }],
+                    ['90d', () => { setAnaFrom(addDays(today, -89)); setAnaTo(today); }],
+                    ['YTD', () => { setAnaFrom(`${today.slice(0,4)}-01-01`); setAnaTo(today); }],
+                  ].map(([l, fn]) => <button key={l} className="btn btn-secondary btn-sm" onClick={fn}>{l}</button>)}
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button className="btn btn-secondary btn-sm" onClick={() => exportAnalyticsMarkdown(anaRows, anaFrom, anaTo)}>📝 .md</button>
+                <button className="btn btn-secondary btn-sm" disabled={anaExporting}
+                  onClick={async () => { setAnaExporting(true); await exportAnalyticsWord(anaRows, anaFrom, anaTo); setAnaExporting(false); }}>
+                  📄 Word
+                </button>
+                <button className="btn btn-primary btn-sm" disabled={anaExporting}
+                  onClick={async () => { setAnaExporting(true); await exportAnalyticsExcel(anaRows, anaFrom, anaTo); setAnaExporting(false); }}>
+                  {anaExporting ? '⏳…' : '📊 Excel'}
+                </button>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 20 }}>
+              {[
+                ['Team Avg RTO', `${teamAvgRto}%`, teamAvgRto >= 80 ? '#22c55e' : teamAvgRto < 60 ? '#ef4444' : '#f59e0b'],
+                ['Total Late Arrivals', totalLate, totalLate > 0 ? '#ef4444' : '#22c55e'],
+                ['Below 60% RTO', belowRto, belowRto > 0 ? '#ef4444' : '#22c55e'],
+                ['Engineers Shown', anaRows.length, '#38bdf8'],
+              ].map(([label, val, color]) => (
+                <div key={label} style={{ flex: '1 1 160px', padding: '14px 16px', borderRadius: 12, background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+                  <div style={{ fontSize: 24, fontWeight: 700, color, fontFamily: 'DM Mono' }}>{val}</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{label}</div>
+                </div>
+              ))}
+            </div>
+
+            <div className="card" style={{ overflowX: 'auto' }}>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Engineer</th><th>Office Days</th><th>WFH Days</th><th>Absent</th>
+                    <th>RTO Compliance</th><th>Late Arrivals</th><th>Longest Late Streak</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {anaRows.map(r => (
+                    <tr key={r.id}>
+                      <td>{r.name}</td>
+                      <td>{r.officeDays}</td>
+                      <td>{r.wfhDays}</td>
+                      <td style={{ color: r.absentDays > 0 ? '#ef4444' : undefined }}>{r.absentDays}</td>
+                      <td>
+                        <span style={{
+                          fontWeight: 700, padding: '2px 8px', borderRadius: 6, fontSize: 12,
+                          color: r.rtoCompliance >= 80 ? '#22c55e' : r.rtoCompliance < 60 ? '#ef4444' : '#f59e0b',
+                          background: r.rtoCompliance >= 80 ? 'rgba(34,197,94,0.1)' : r.rtoCompliance < 60 ? 'rgba(239,68,68,0.1)' : 'rgba(245,158,11,0.1)',
+                        }}>{r.rtoCompliance}%</span>
+                      </td>
+                      <td style={{ color: r.lateCount > 3 ? '#ef4444' : undefined }}>{r.lateCount}</td>
+                      <td style={{ color: r.maxLateStreak >= 3 ? '#ef4444' : undefined }}>{r.maxLateStreak}</td>
+                    </tr>
+                  ))}
+                  {anaRows.length === 0 && (
+                    <tr><td colSpan={7} style={{ textAlign: 'center', padding: 24, color: 'var(--text-muted)' }}>No engineers match this filter.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ══ WEEKLY ══ */}
       {tab === 'week' && (
@@ -1955,6 +2262,12 @@ export default function TimeKeeping({
       {/* ── Export modal ── */}
       {showExport && (
         <Modal title="📥 Export Attendance to Excel" onClose={() => setShowExport(false)}>
+          <FormGroup label="Engineer">
+            <select className="select" value={exportUser} onChange={e => setExportUser(e.target.value)} style={{ width: '100%', marginBottom: 12 }}>
+              <option value="all">All Engineers (one sheet each)</option>
+              {(users || []).map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+            </select>
+          </FormGroup>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 14 }}>
             <FormGroup label="From">
               <input className="input" type="date" value={exportFrom} onChange={e => setExportFrom(e.target.value)} />
@@ -1977,7 +2290,8 @@ export default function TimeKeeping({
             <button className="btn btn-secondary" onClick={() => setShowExport(false)}>Cancel</button>
             <button className="btn btn-primary" disabled={exporting} onClick={async () => {
               setExporting(true);
-              await exportAttendanceExcel(users || [], timekeeping || {}, bankHolidays || [], holidays || [], exportFrom, exportTo);
+              const scopedUsers = exportUser === 'all' ? (users || []) : (users || []).filter(u => u.id === exportUser);
+              await exportAttendanceExcel(scopedUsers, timekeeping || {}, bankHolidays || [], holidays || [], exportFrom, exportTo);
               setExporting(false);
               setShowExport(false);
             }}>
