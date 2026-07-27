@@ -9,8 +9,6 @@ import { driveWrite, driveRead } from './hooks/useGoogleDrive';
 // ── Constants ─────────────────────────────────────────────────────────────────
 const RTO_DAYS_REQUIRED = 3;
 const START_TIME        = '09:00';
-const GRACE_LATE_WARN   = 15; // mins → amber
-const GRACE_LATE_LATE   = 20; // mins → red
 const STREAK_THRESHOLD  = 3;  // consecutive lates = pattern
 
 function DriveStatus({ token, saving }) {
@@ -106,10 +104,9 @@ function computeLateStatus(checkIn) {
   const start = parseTime(START_TIME);
   if (arr == null) return null;
   const diff = arr - start;
-  if (diff <= 0)               return { status: 'ontime', label: 'On Time',   color: '#22c55e', diff };
-  if (diff <= GRACE_LATE_WARN) return { status: 'early',  label: `+${diff}m`, color: '#22c55e', diff };
-  if (diff <= GRACE_LATE_LATE) return { status: 'warn',   label: `+${diff}m`, color: '#f59e0b', diff };
-  return                              { status: 'late',   label: `+${diff}m`, color: '#ef4444', diff };
+  if (diff <= 0) return { status: 'ontime', label: 'On Time', color: '#22c55e', diff };
+  // No grace period — any check-in after START_TIME counts as late immediately.
+  return { status: 'late', label: `+${diff}m`, color: '#ef4444', diff };
 }
 function isWeekday(dateStr) {
   const d = new Date(dateStr + 'T12:00:00').getDay();
@@ -382,9 +379,8 @@ function HeatCell({ entry, bankHol, holiday, isToday, isFuture }) {
   else if (entry) {
     if (entry.status === 'office' || entry.status === 'wfh') {
       const ls = computeLateStatus(entry.checkIn);
-      if (!ls || ls.status === 'ontime' || ls.status === 'early') { bg = 'rgba(34,197,94,0.28)'; title = `In: ${entry.checkIn || '?'}`; }
-      else if (ls.status === 'warn') { bg = 'rgba(245,158,11,0.35)'; title = `Grace: ${entry.checkIn}`; }
-      else                           { bg = 'rgba(239,68,68,0.3)';   title = `Late: ${entry.checkIn}`; }
+      if (!ls || ls.status === 'ontime') { bg = 'rgba(34,197,94,0.28)'; title = `In: ${entry.checkIn || '?'}`; }
+      else                               { bg = 'rgba(239,68,68,0.3)';  title = `Late: ${entry.checkIn}`; }
     } else if (entry.status === 'late')   { bg = 'rgba(239,68,68,0.3)';   title = `Late: ${entry.checkIn || '?'}`; }
     else if (entry.status === 'wfh')    { bg = 'rgba(59,130,246,0.22)'; title = 'WFH'; }
     else if (entry.status === 'absent') { bg = 'rgba(239,68,68,0.15)'; title = 'Absent'; }
@@ -610,6 +606,9 @@ export default function TimeKeeping({
   const [monthOffset,  setMonthOffset]  = useState(0);
   const [filterUser,   setFilterUser]   = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
+  // Location filter (Office / WFH) — usable alongside the engineer filter,
+  // on any manager view listing multiple people's attendance.
+  const [locationFilter, setLocationFilter] = useState('all'); // 'all' | 'office' | 'wfh'
   const [alertFilter,  setAlertFilter]  = useState('all');
 
   // ── Quick check-in status selector ──────────────────────────────────────────
@@ -873,9 +872,21 @@ export default function TimeKeeping({
   }, 0);
 
   // ── Displayed users (manager week/month filter) ─────────────────────────────
-  const displayedUsers = isManager
+  const displayedUsersByPerson = isManager
     ? (filterUser === 'all' ? (users || []) : (users || []).filter(u => u.id === filterUser))
     : (users || []).filter(u => u.id === currentUser);
+  // Location filter narrows further: only engineers with at least one entry
+  // matching Office/WFH within the range currently on screen (this week for
+  // the Weekly tab, this month for the Monthly tab).
+  const displayedUsers = (isManager && locationFilter !== 'all')
+    ? displayedUsersByPerson.filter(u => {
+        const uEntries = userEntries(u.id);
+        const rangeDates = tab === 'month'
+          ? uEntries.filter(e => e.date && e.date.startsWith(`${viewYear}-${String(viewMonth + 1).padStart(2, '0')}`)).map(e => e.date)
+          : weekDates;
+        return rangeDates.some(d => normStatus(uEntries.find(e => e.date === d)?.status) === locationFilter);
+      })
+    : displayedUsersByPerson;
 
   // ── Today view data ─────────────────────────────────────────────────────────
   const allTodayEntries = (users || []).map(u => ({ user: u, entry: todayEntry(u.id) }));
@@ -1323,11 +1334,19 @@ export default function TimeKeeping({
             onClick={() => setTab(t.id)}>{t.label}</button>
         ))}
         {(tab === 'week' || tab === 'month') && (
-          <select className="select" value={filterUser} onChange={e => setFilterUser(e.target.value)}
-            style={{ width: 180, marginLeft: 'auto' }}>
-            <option value="all">All Engineers</option>
-            {(users || []).map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
-          </select>
+          <>
+            <select className="select" value={filterUser} onChange={e => setFilterUser(e.target.value)}
+              style={{ width: 180, marginLeft: 'auto' }}>
+              <option value="all">All Engineers</option>
+              {(users || []).map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+            </select>
+            <select className="select" value={locationFilter} onChange={e => setLocationFilter(e.target.value)}
+              style={{ width: 150 }}>
+              <option value="all">All Locations</option>
+              <option value="office">🏢 Office</option>
+              <option value="wfh">🏠 WFH</option>
+            </select>
+          </>
         )}
         {tab === 'today' && (
           <select className="select" value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
@@ -1464,11 +1483,20 @@ export default function TimeKeeping({
           </div>
 
           {/* Today at a glance */}
-          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 12 }}>
-            Today at a Glance
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 1 }}>
+              Today at a Glance
+            </div>
+            <select className="select" value={locationFilter} onChange={e => setLocationFilter(e.target.value)} style={{ width: 150 }}>
+              <option value="all">All Locations</option>
+              <option value="office">🏢 Office</option>
+              <option value="wfh">🏠 WFH</option>
+            </select>
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 24 }}>
-            {allTodayEntries.map(({ user: u, entry }) => {
+            {allTodayEntries
+              .filter(({ entry }) => locationFilter === 'all' || normStatus(entry?.status) === locationFilter)
+              .map(({ user: u, entry }) => {
               const s = entry ? statusCfg(entry.status) : null;
               return (
                 <div key={u.id} style={{
@@ -1806,12 +1834,17 @@ export default function TimeKeeping({
         <div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, flexWrap: 'wrap', gap: 8 }}>
             <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 1 }}>
-              Full Attendance Log ({allEntriesLog.filter(e => filterUser === 'all' || e.user.id === filterUser).length} entries)
+              Full Attendance Log ({allEntriesLog.filter(e => (filterUser === 'all' || e.user.id === filterUser) && (locationFilter === 'all' || normStatus(e.status) === locationFilter)).length} entries)
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
               <select className="select" value={filterUser} onChange={e => setFilterUser(e.target.value)} style={{ width: 160 }}>
                 <option value="all">All Engineers</option>
                 {(users || []).map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+              </select>
+              <select className="select" value={locationFilter} onChange={e => setLocationFilter(e.target.value)} style={{ width: 150 }}>
+                <option value="all">All Locations</option>
+                <option value="office">🏢 Office</option>
+                <option value="wfh">🏠 WFH</option>
               </select>
               <button className="btn btn-secondary btn-sm" onClick={() => setShowExport(true)}>📥 Excel</button>
             </div>
@@ -1827,7 +1860,7 @@ export default function TimeKeeping({
               </thead>
               <tbody>
                 {allEntriesLog
-                  .filter(e => filterUser === 'all' || e.user.id === filterUser)
+                  .filter(e => (filterUser === 'all' || e.user.id === filterUser) && (locationFilter === 'all' || normStatus(e.status) === locationFilter))
                   .map(e => {
                     const ls = e.checkIn ? computeLateStatus(e.checkIn) : null;
                     return (
@@ -1844,7 +1877,7 @@ export default function TimeKeeping({
                         <td style={{ fontFamily: 'DM Mono', color: '#fcd34d', fontSize: 12 }}>{e.checkOut || '—'}</td>
                         <td style={{ fontFamily: 'DM Mono', color: '#a78bfa', fontSize: 12 }}>{fmtHours(e.checkIn, e.checkOut) || '—'}</td>
                         <td>
-                          {ls && (ls.status === 'warn' || ls.status === 'late')
+                          {ls && ls.status === 'late'
                             ? <span style={{ fontSize: 11, color: ls.color, fontFamily: 'DM Mono', fontWeight: 600 }}>{ls.label}</span>
                             : ls ? <span style={{ fontSize: 11, color: '#22c55e' }}>✓</span>
                             : <span style={{ color: 'var(--text-muted)' }}>—</span>}
