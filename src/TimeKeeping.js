@@ -1856,18 +1856,20 @@ export default function TimeKeeping({
               ))}
             </div>
 
-            <div className="card" style={{ overflowX: 'auto' }}>
+            <div className="card table-clickable" style={{ overflowX: 'auto' }}>
               <table>
                 <thead>
                   <tr>
                     <th>Engineer</th><th>Office Days</th><th>WFH Days</th><th>Absent</th>
-                    <th>RTO Compliance</th><th>Late Arrivals</th><th>Longest Late Streak</th>
+                    <th>RTO Compliance</th><th>Late Arrivals</th><th>Longest Late Streak</th><th></th>
                   </tr>
                 </thead>
                 <tbody>
                   {anaRows.map(r => (
-                    <tr key={r.id}>
-                      <td>{r.name}</td>
+                    <tr key={r.id}
+                      title={`View ${r.name}'s full attendance log`}
+                      onClick={() => { setFilterUser(r.id); setLocationFilter('all'); setTab('log'); }}>
+                      <td style={{ fontWeight: 600 }}>{r.name}</td>
                       <td>{r.officeDays}</td>
                       <td>{r.wfhDays}</td>
                       <td style={{ color: r.absentDays > 0 ? '#ef4444' : undefined }}>{r.absentDays}</td>
@@ -1880,10 +1882,11 @@ export default function TimeKeeping({
                       </td>
                       <td style={{ color: r.lateCount > 3 ? '#ef4444' : undefined }}>{r.lateCount}</td>
                       <td style={{ color: r.maxLateStreak >= 3 ? '#ef4444' : undefined }}>{r.maxLateStreak}</td>
+                      <td style={{ color: 'var(--text-muted)', fontSize: 12 }}>View log →</td>
                     </tr>
                   ))}
                   {anaRows.length === 0 && (
-                    <tr><td colSpan={7} style={{ textAlign: 'center', padding: 24, color: 'var(--text-muted)' }}>No engineers match this filter.</td></tr>
+                    <tr><td colSpan={8} style={{ textAlign: 'center', padding: 24, color: 'var(--text-muted)' }}>No engineers match this filter.</td></tr>
                   )}
                 </tbody>
               </table>
