@@ -537,9 +537,39 @@ function MonthView({ entries, year, month, bankHolidays = [], onLogDay }) {
 }
 
 // ── Excel export (manager only) ───────────────────────────────────────────────
+// The SheetJS (XLSX) library isn't loaded anywhere by default — it's fetched
+// lazily, only when someone actually exports, so people who never use this
+// feature don't pay for loading it. Cached as a promise so clicking export
+// twice in a row (e.g. before the first load finishes) doesn't inject the
+// CDN script a second time.
+let _xlsxLoadPromise = null;
+function loadXLSX() {
+  if (window.XLSX) return Promise.resolve(window.XLSX);
+  if (_xlsxLoadPromise) return _xlsxLoadPromise;
+  _xlsxLoadPromise = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+    s.onload = () => {
+      if (window.XLSX) resolve(window.XLSX);
+      else reject(new Error('SheetJS script loaded but window.XLSX is still missing.'));
+    };
+    s.onerror = () => {
+      _xlsxLoadPromise = null; // allow a retry on the next export attempt
+      reject(new Error('Could not load the SheetJS library from the CDN — check your network connection.'));
+    };
+    document.head.appendChild(s);
+  });
+  return _xlsxLoadPromise;
+}
+
 async function exportAttendanceExcel(users, timekeeping, bankHolidays, holidays, from, to) {
-  const XLSX = window.XLSX;
-  if (!XLSX) { alert('XLSX library not loaded — make sure the SheetJS CDN script is included.'); return; }
+  let XLSX;
+  try {
+    XLSX = await loadXLSX();
+  } catch (e) {
+    alert(`Couldn't load the Excel export library: ${e.message}`);
+    return;
+  }
   const bh  = (bankHolidays || []).map(b => b.date || b);
   const fmt = ds => new Date(ds + 'T12:00:00').toLocaleDateString('en-GB');
   const hdrs = ['ID', 'Name', 'Date', 'Day', 'Status', 'Check In', 'Check Out', 'Hours', 'Late Status', 'Check-In Device', 'Check-Out Device', 'Confirmed', 'Notes'];
