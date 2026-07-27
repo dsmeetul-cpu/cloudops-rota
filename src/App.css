@@ -1164,9 +1164,57 @@ kbd {
 }
 .badge { animation: badgePop 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) both; }
 
+/* ── Tables ──────────────────────────────────────────────────────────────── */
+/* Previously there was NO base table styling at all beyond a hover tint —
+   every <table> fell back to bare browser defaults (no padding, no borders,
+   cramped headers). This gives every table in the app the same card-like
+   treatment as everything else, without needing per-table inline styles. */
+table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 13px;
+}
+
+thead th {
+  background: var(--bg-card2);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  text-align: left;
+  padding: 10px 14px;
+  border-bottom: 2px solid var(--border);
+  white-space: nowrap;
+}
+thead th:first-child { border-top-left-radius: var(--radius-sm); }
+thead th:last-child  { border-top-right-radius: var(--radius-sm); }
+
+tbody td {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-primary);
+  vertical-align: middle;
+}
+tbody tr:last-child td { border-bottom: none; }
+
+/* Subtle zebra striping so wide tables stay readable without needing a
+   background on every cell individually. */
+tbody tr:nth-child(even) { background: color-mix(in srgb, var(--text-primary) 2%, transparent); }
+
 /* ── Table rows ──────────────────────────────────────────────────────────── */
 table tr { transition: background 0.12s ease; }
-table tbody tr:hover { background: color-mix(in srgb, var(--accent) 4%, transparent); }
+table tbody tr:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+
+/* Applied to a <tbody> or wrapping element when rows navigate somewhere on
+   click (e.g. drilling from a summary row into that person's detail log). */
+.table-clickable tbody tr { cursor: pointer; }
+.table-clickable tbody tr:hover {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.table-clickable tbody tr:active { background: color-mix(in srgb, var(--accent) 16%, transparent); }
 
 /* ── iCal button ─────────────────────────────────────────────────────────── */
 .ical-btn {
