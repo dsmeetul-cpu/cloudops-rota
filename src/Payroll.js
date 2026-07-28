@@ -662,13 +662,13 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
             s2Rows.push([u.employment_id||'—', u.id, u.name, fmtUK(o.date), dayName, 'Overtime', o.hours, 'Overtime', o.reason||'']);
           });
         // Incidents with hours logged
-        const incRows = (incidents||[]).filter(inc => inc.assigned_to===u.id && inc.hours_worked > 0
+        const incRows = (incidents||[]).filter(inc => inc.assigned_to===u.id && inc.hours > 0
           && (!exportStart||(inc.date||'')>=exportStart) && (!exportEnd||(inc.date||'')<=exportEnd));
         incRows.forEach(inc => {
           const d = inc.date||inc.created_at||'';
           if (!d) return;
           const dayName = new Date(d.slice(0,10)+'T12:00:00').toLocaleDateString('en-GB',{weekday:'long'});
-          s2Rows.push([u.employment_id||'—', u.id, u.name, fmtUK(d.slice(0,10)), dayName, 'Incident', inc.hours_worked||0, 'Incident', inc.title||'']);
+          s2Rows.push([u.employment_id||'—', u.id, u.name, fmtUK(d.slice(0,10)), dayName, 'Incident', inc.hours||0, 'Incident', inc.title||'']);
         });
       });
 
@@ -2054,7 +2054,7 @@ function PayrollReports({ users, timesheets, incidents, upgrades, overtime, toil
     const sorted  = [...fi].sort((a,b)=>(sevOrd[a.severity]??9)-(sevOrd[b.severity]??9));
     const bySev   = {};
     fi.forEach(i=>{ bySev[i.severity||'Unknown']=(bySev[i.severity||'Unknown']||0)+1; });
-    const totIncHrs = fi.reduce((a,i)=>a+(i.hours_worked||0),0);
+    const totIncHrs = fi.reduce((a,i)=>a+(i.hours||0),0);
     return (
       <>
         <div style={kpiG}>
@@ -2089,7 +2089,7 @@ function PayrollReports({ users, timesheets, incidents, upgrades, overtime, toil
                       <td style={tdS}><span style={pill(bg,fg)}>{inc.severity||'Unknown'}</span></td>
                       <td style={{ ...tdS, maxWidth:200, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{inc.title||'—'}</td>
                       <td style={{ ...tdS, fontSize:11 }}>{eng?.name?.split(' ')[0]||inc.assigned_to||'—'}</td>
-                      <td style={{ ...tdNum, color:(inc.hours_worked||0)>0?'#fcd34d':'var(--text-muted)' }}>{(inc.hours_worked||0)>0?`${inc.hours_worked}h`:'—'}</td>
+                      <td style={{ ...tdNum, color:(inc.hours||0)>0?'#fcd34d':'var(--text-muted)' }}>{(inc.hours||0)>0?`${inc.hours}h`:'—'}</td>
                       <td style={tdS}><span style={{ fontSize:11, color:inc.status==='resolved'||inc.status==='Resolved'?'#6ee7b7':'#fcd34d' }}>{inc.status||'—'}</span></td>
                     </tr>
                   );
