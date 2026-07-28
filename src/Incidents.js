@@ -1,8 +1,8 @@
 // src/Incidents.js
 // CloudOps Rota — Incidents
-// Meetul Bhundia (MBA47) · Cloud Run Operations · July 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · 29th July 2026
 
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 
 // ── Constants ──────────────────────────────────────────────────────────────
 const SEVERITIES    = ['Disaster', 'Critical', 'High', 'Medium', 'Low'];
@@ -742,6 +742,7 @@ export default function Incidents({
   incidents, setIncidents,
   users, currentUser, isManager,
   driveToken, addLog,
+  timesheets, setTimesheets,
 }){
   const [view,setView]=useState('all');
   const [showModal,setShowModal]=useState(false);
@@ -755,6 +756,57 @@ export default function Incidents({
   // Drive save is handled by App.js useEffect: save('incidents', incidents)
   // We only need to call setIncidents — App.js handles the Drive write automatically.
   const safe=Array.isArray(incidents)?incidents:[];
+
+  // ── Sync incident hours → timesheets (what Payroll actually reads) ──────────
+  // Payroll's hours calculation was already written to look for a timesheet
+  // entry per incident (week: "INC <id>", worked_wd/worked_we) — see the
+  // "set by Incidents.js fix" comment in Payroll.js. That entry was never
+  // actually being created anywhere; this effect is the missing half. It
+  // runs whenever `incidents` changes (create, edit hours, resolve, delete,
+  // reassign) and keeps each engineer's INC-* timesheet rows in sync with
+  // the live incident data — genuinely reactive, not a one-time snapshot.
+  useEffect(() => {
+    if (typeof setTimesheets !== 'function') return;
+    setTimesheets(prev => {
+      const ts = prev && typeof prev === 'object' ? prev : {};
+
+      // What SHOULD exist right now, one row per non-daily incident with
+      // hours > 0, grouped by assignee.
+      const wanted = {};
+      safe.forEach(inc => {
+        if (inc.isDaily) return;
+        const hrs = Number(inc.hours) || 0;
+        if (hrs <= 0 || !inc.assigned_to || !inc.date) return;
+        const dow = new Date(inc.date + 'T12:00:00').getDay();
+        const isWeekend = dow === 0 || dow === 6;
+        (wanted[inc.assigned_to] ||= []).push({
+          week: `INC ${inc.id}`,
+          date: inc.date,
+          worked_wd: isWeekend ? 0 : hrs,
+          worked_we: isWeekend ? hrs : 0,
+        });
+      });
+
+      // Replace each touched user's INC-* rows with the current wanted set,
+      // leaving every other (non-incident) timesheet row untouched. Also
+      // covers deletion (incident removed → its row disappears) and
+      // reassignment (old assignee loses the row, new one gains it), since
+      // `wanted` is rebuilt from scratch each time rather than patched.
+      let changed = false;
+      const next = { ...ts };
+      const touchedUsers = new Set([...Object.keys(wanted), ...Object.keys(ts)]);
+      touchedUsers.forEach(uid => {
+        const existing   = Array.isArray(ts[uid]) ? ts[uid] : [];
+        const nonIncRows = existing.filter(e => !(e.week || '').startsWith('INC '));
+        const merged      = [...nonIncRows, ...(wanted[uid] || [])];
+        if (JSON.stringify(existing) !== JSON.stringify(merged)) {
+          next[uid] = merged;
+          changed = true;
+        }
+      });
+      return changed ? next : prev; // same reference when nothing changed — no-op, no extra Drive write
+    });
+  }, [safe, setTimesheets]);
 
   const toast=(msg)=>{
     setNotify(msg);
