@@ -9,7 +9,6 @@ import { UK_BANK_HOLIDAYS } from './utils/defaults';
 const ONCALL_STANDBY_RATE      = 5;    // £/hr flat
 const ONCALL_WORKED_MULTIPLIER = 1.5;  // 1.5× hourly for active on-call hours
 const TOIL_ACCRUAL_RATE        = 1.0;  // 1:1 per UK WTR
-const TOIL_MAX_CARRYOVER       = 40;   // max 40h (5 days) carryover per UK WTR
 
 // ── Drive helpers (self-contained copies — no App.js dependency) ──────────────
 const APP_FOLDER_NAME = 'CloudOps-Rota';
@@ -234,7 +233,8 @@ export function calcTOILBalance(timesheetEntries, toilEntries, userId) {
   const manualAccrued = safe.filter(t => t.userId===userId && t.type==='Accrued' && t.status==='approved').reduce((a,t)=>a+(+t.hours||0),0);
   const used          = safe.filter(t => t.userId===userId && t.type==='Used'    && t.status==='approved').reduce((a,t)=>a+(+t.hours||0),0);
   const totalAccrued  = autoToil + manualAccrued;
-  const balance       = Math.min(Math.max(totalAccrued - used, 0), TOIL_MAX_CARRYOVER);
+  // No carryover cap — only floor at zero (balance can't go negative).
+  const balance       = Math.max(totalAccrued - used, 0);
   return {
     workedOC:      Math.round(workedOC      * 10) / 10,
     autoToil:      Math.round(autoToil      * 10) / 10,
@@ -244,7 +244,6 @@ export function calcTOILBalance(timesheetEntries, toilEntries, userId) {
     accrued:       Math.round(totalAccrued  * 10) / 10,
     total:         Math.round(totalAccrued  * 10) / 10,
     balance:       Math.round(balance       * 10) / 10,
-    cappedAt:      TOIL_MAX_CARRYOVER,
   };
 }
 
