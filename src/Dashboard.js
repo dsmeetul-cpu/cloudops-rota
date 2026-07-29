@@ -15,7 +15,6 @@ const SHIFT_COLORS = {
 };
 
 // ── TOIL constants (mirrors App.js) ───────────────────────────────────────
-const TOIL_MAX_CARRYOVER_HOURS = 40; // 5 days per UK WTR
 const TOIL_ACCRUAL_RATE        = 1.0; // 1:1 per UK WTR
 
 // ── Shared UI primitives ───────────────────────────────────────────────────
@@ -70,8 +69,9 @@ function calcTOILBalance(timesheetEntries, toilEntries, userId) {
   const manualAccrued = safeEntries.filter(t => t.userId === userId && t.type === 'Accrued').reduce((a, t) => a + t.hours, 0);
   const used        = safeEntries.filter(t => t.userId === userId && t.type === 'Used').reduce((a, t) => a + t.hours, 0);
   const total       = autoToil + manualAccrued;
-  const balance     = Math.min(total - used, TOIL_MAX_CARRYOVER_HOURS);
-  return { autoToil, manualAccrued, total, used, balance, workedOC, cappedAt: TOIL_MAX_CARRYOVER_HOURS };
+  // No carryover cap — balance is simply accrued minus used.
+  const balance     = total - used;
+  return { autoToil, manualAccrued, total, used, balance, workedOC };
 }
 
 // ── Dashboard ─────────────────────────────────────────────────────────────
@@ -178,13 +178,7 @@ export default function Dashboard({ users, rota, holidays, incidents, timesheets
     .map(u => ({ user: u, streak: currentStreak(u.id) }))
     .filter(x => x.streak >= BURNOUT_STREAK_THRESHOLD);
 
-  // ── TOIL at risk of being lost ───────────────────────────────────────────
-  const TOIL_AT_RISK_THRESHOLD = TOIL_MAX_CARRYOVER_HOURS * 0.8; // 32h of the 40h cap
-  const toilAtRisk = users
-    .map(u => ({ user: u, bal: calcTOILBalance(timesheets[u.id] || [], toil || [], u.id) }))
-    .filter(x => x.bal.balance >= TOIL_AT_RISK_THRESHOLD);
-
-  const attentionCount = pendingSwaps.length + coverageRisk.length + overloaded.length + burnoutRisk.length + toilAtRisk.length;
+  const attentionCount = pendingSwaps.length + coverageRisk.length + overloaded.length + burnoutRisk.length;
 
   return (
     <div>
@@ -215,11 +209,6 @@ export default function Dashboard({ users, rota, holidays, incidents, timesheets
             {burnoutRisk.length > 0 && (
               <div className="row-item" style={{ fontSize: 12 }}>
                 🔥 <strong>{burnoutRisk.map(x => x.user.name).join(', ')}</strong> on an on-call stretch of {BURNOUT_STREAK_THRESHOLD}+ consecutive days
-              </div>
-            )}
-            {toilAtRisk.length > 0 && (
-              <div className="row-item" style={{ fontSize: 12 }}>
-                ⏳ <strong>{toilAtRisk.map(x => x.user.name).join(', ')}</strong> near the {TOIL_MAX_CARRYOVER_HOURS}h TOIL cap — at risk of losing accrued time
               </div>
             )}
           </div>
@@ -529,8 +518,8 @@ export default function Dashboard({ users, rota, holidays, incidents, timesheets
                     <td style={{ fontFamily: 'DM Mono', fontSize: 12, color: '#10b981' }}>{resolvedUserInc}</td>
                     <td style={{ fontFamily: 'DM Mono', fontSize: 12, color: incHrs > 0 ? '#f59e0b' : 'var(--text-muted)' }}>{incHrs > 0 ? `${incHrs}h` : '—'}</td>
                     <td style={{ fontFamily: 'DM Mono', fontSize: 12 }}>{holDays}/25d</td>
-                    <td style={{ fontFamily: 'DM Mono', fontSize: 12, color: toilBal.balance >= TOIL_AT_RISK_THRESHOLD ? '#fcd34d' : toilBal.balance > 0 ? '#38bdf8' : '#fca5a5' }}>
-                      {toilBal.balance}h{toilBal.balance >= TOIL_AT_RISK_THRESHOLD ? ' ⚠️' : ''}
+                    <td style={{ fontFamily: 'DM Mono', fontSize: 12, color: toilBal.balance > 0 ? '#38bdf8' : '#fca5a5' }}>
+                      {toilBal.balance}h
                     </td>
                   </tr>
                 );
