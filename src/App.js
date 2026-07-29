@@ -1612,7 +1612,6 @@ function calcUKTax(annualGross, { studentLoan = false, pensionPct = 0, taxCode =
 // accrues 1:1 TOIL. Bank holidays count as rest. Max carryover = 5 days (40h).
 const ONCALL_STANDBY_RATE = 5;    // £/hr flat
 const ONCALL_WORKED_MULTIPLIER = 1.5;
-const TOIL_MAX_CARRYOVER_HOURS = 40; // 5 days per UK WTR
 const TOIL_ACCRUAL_RATE = 1.0;       // 1:1 per UK WTR
 
 // ── calcOncallPay ──────────────────────────────────────────────────────────
@@ -1728,8 +1727,9 @@ function calcTOILBalance(timesheetEntries, toilEntries, userId) {
   const manualAccrued = safeEntries.filter(t => t.userId === userId && t.type === 'Accrued').reduce((a,t) => a + t.hours, 0);
   const used  = safeEntries.filter(t => t.userId === userId && t.type === 'Used').reduce((a,t) => a + t.hours, 0);
   const total = autoToil + manualAccrued;
-  const balance = Math.min(total - used, TOIL_MAX_CARRYOVER_HOURS); // cap at WTR max carryover
-  return { autoToil, manualAccrued, total, used, balance, workedOC, cappedAt: TOIL_MAX_CARRYOVER_HOURS };
+  // No carryover cap — balance is simply what's been accrued minus what's been used.
+  const balance = total - used;
+  return { autoToil, manualAccrued, total, used, balance, workedOC };
 }
 
 // ── TOIL ──────────────────────────────────────────────────────────────────
@@ -3984,7 +3984,7 @@ function PayConfig({ users, payconfig, setPayconfig, isManager, timesheets, over
             <div className="card-title" style={{ marginBottom: 8 }}>🌙 On-Call Rates</div>
             <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>Standby flat rate: <strong style={{ color: 'var(--text-primary)' }}>£{standbyRate}/hr</strong> (Mon–Thu &amp; Fri–Mon 19:00–07:00)</div>
             <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>Worked on-call: <strong style={{ color: 'var(--text-primary)' }}>{ONCALL_WORKED_MULTIPLIER}x hourly = {fmt(workedRate)}/hr</strong></div>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>TOIL accrual: <strong style={{ color: 'var(--text-primary)' }}>1:1 worked hours</strong> (UK WTR 1998) · max {TOIL_MAX_CARRYOVER_HOURS}h</div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>TOIL accrual: <strong style={{ color: 'var(--text-primary)' }}>1:1 worked hours</strong> (UK WTR 1998) · no carryover cap</div>
           </div>
 
           {/* Right: take-home breakdown */}
@@ -4198,6 +4198,14 @@ export default function App() {
   const [loggedIn, setLoggedIn]       = useState(false);
   const [currentUser, setCurrentUser] = useState('');
   const [page, setPage]               = useState('oncall');
+  // Set by Payroll when someone clicks an incident-hours figure; consumed by
+  // Incidents on mount to pre-filter to that engineer/date range, then
+  // cleared so it doesn't silently reapply on a later, unrelated visit.
+  const [incidentsPrefilter, setIncidentsPrefilter] = useState(null);
+  const goToIncidents = useCallback((filterPatch) => {
+    setIncidentsPrefilter(filterPatch || null);
+    setPage('incidents');
+  }, []);
   const [driveToken, setDriveToken]   = useState(null);
   const [syncing, setSyncing]         = useState(false);
   const [lastSync, setLastSync]       = useState(null);
@@ -4979,7 +4987,7 @@ export default function App() {
       case 'myshift':    return <MyShift {...props} />;
       case 'calendar':   return <CalendarPage users={users} rota={rota} holidays={holidays} upgrades={upgrades} absences={absences} incidents={incidents} UK_BANK_HOLIDAYS={UK_BANK_HOLIDAYS} currentUser={currentUser} isManager={isManager} calendarEvents={calendarEvents} setCalendarEvents={setCalendarEvents} userCalendars={userCalendars} setUserCalendars={setUserCalendars} />;
       case 'rota':       return <RotaPage users={users} rota={rota} setRota={setRota} holidays={holidays} upgrades={upgrades} swapRequests={swapRequests} setSwapRequests={setSwapRequests} isManager={isManager} UK_BANK_HOLIDAYS={UK_BANK_HOLIDAYS} generateRota={generateRota} generateICalFeed={generateICalFeed} downloadIcal={downloadIcal} />;
-      case 'incidents':  return <Incidents {...props} timesheets={timesheets} setTimesheets={setTimesheets} addLog={addLog} />;
+      case 'incidents':  return <Incidents {...props} timesheets={timesheets} setTimesheets={setTimesheets} addLog={addLog} initialFilter={incidentsPrefilter} onConsumeInitialFilter={() => setIncidentsPrefilter(null)} />;
       case 'timesheets': return <Timesheets {...props} />;
       case 'timekeeping': return <TimeKeeping users={users} holidays={holidays} currentUser={currentUser} isManager={isManager} bankHolidays={UK_BANK_HOLIDAYS} timekeeping={timekeeping} setTimekeeping={setTimekeeping} driveToken={driveToken} />;
       case 'holidays':   return <Holidays {...props} />;
@@ -5002,7 +5010,7 @@ export default function App() {
       case 'insights':   return <Insights {...props} />;
       case 'capacity':   return <Capacity {...props} incidents={incidents} />;
       case 'reports':    return <WeeklyReports {...props} />;
-      case 'payroll':    return <Payroll {...props} incidents={incidents} upgrades={upgrades} rota={rota} overtime={overtime} driveToken={driveToken} payrollAdjustments={payrollAdjustments} setPayrollAdjustments={setPayrollAdjustments} />;
+      case 'payroll':    return <Payroll {...props} incidents={incidents} upgrades={upgrades} rota={rota} overtime={overtime} driveToken={driveToken} payrollAdjustments={payrollAdjustments} setPayrollAdjustments={setPayrollAdjustments} goToIncidents={goToIncidents} />;
       case 'payconfig':  return <PayConfig {...props} timesheets={timesheets} overtime={overtime} rota={rota} holidays={holidays} />;
       case 'settings':   return <SettingsPage
         users={users} setUsers={setUsers}
