@@ -861,6 +861,7 @@ export default function TimeKeeping({
   const [exportFrom, setExportFrom] = useState('');
   const [exportTo,   setExportTo]   = useState('');
   const [anaFrom, setAnaFrom] = useState(() => addDays(today, -29));
+  const [myStatsPeriod, setMyStatsPeriod] = useState(30); // days lookback for the engineer's own "My Stats" tab
   const [anaTo,   setAnaTo]   = useState(today);
   const [anaUser, setAnaUser] = useState('all');
   const [anaExporting, setAnaExporting] = useState(false);
@@ -1416,9 +1417,9 @@ export default function TimeKeeping({
           </div>
         </div>
 
-        {/* Tab bar — week / month only (no 'today' tab; today card is always shown above) */}
+        {/* Tab bar — week / month / my stats (today card is always shown above) */}
         <div style={{ display: 'flex', gap: 4, marginBottom: 16 }}>
-          {[{ id: 'week', label: '📅 Weekly View' }, { id: 'month', label: '📆 Monthly View' }].map(t => (
+          {[{ id: 'week', label: '📅 Weekly View' }, { id: 'month', label: '📆 Monthly View' }, { id: 'stats', label: '📊 My Stats' }].map(t => (
             <button key={t.id} className={`btn btn-sm ${tab === t.id ? 'btn-primary' : 'btn-secondary'}`}
               onClick={() => setTab(t.id)}>{t.label}</button>
           ))}
@@ -1519,6 +1520,86 @@ export default function TimeKeeping({
             )}
           </div>
         )}
+
+        {/* My Stats */}
+        {tab === 'stats' && (() => {
+          const PERIODS = [
+            [7, '7d'], [14, '14d'], [21, '21d'], [30, '1mo'],
+            [60, '2mo'], [90, '3mo'], [180, '6mo'], [365, '1yr'],
+          ];
+          const fromDate = addDays(today, -(myStatsPeriod - 1));
+          const s = getUserStats(currentUser, fromDate, today);
+          const officePct = s.totalWorkdays > 0 ? Math.round((s.officeDays / s.totalWorkdays) * 100) : 0;
+          const wfhPct    = s.totalWorkdays > 0 ? Math.round((s.wfhDays    / s.totalWorkdays) * 100) : 0;
+          const lateCount = s.lateArrivals.length;
+
+          return (
+            <div>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 18 }}>
+                {PERIODS.map(([days, label]) => (
+                  <button key={days} className={`btn btn-sm ${myStatsPeriod === days ? 'btn-primary' : 'btn-secondary'}`}
+                    onClick={() => setMyStatsPeriod(days)}>{label}</button>
+                ))}
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 14 }}>
+                {fromDate} → {today} · {s.totalWorkdays} working day{s.totalWorkdays !== 1 ? 's' : ''} in this period
+              </div>
+
+              <div className="grid-4 mb-16">
+                <StatCard label="Time in Office" value={`${officePct}%`} sub={`${s.officeDays} day${s.officeDays !== 1 ? 's' : ''}`} accent="#38bdf8" icon="🏢" />
+                <StatCard label="Time WFH"       value={`${wfhPct}%`}    sub={`${s.wfhDays} day${s.wfhDays !== 1 ? 's' : ''}`}     accent="#818cf8" icon="🏠" />
+                <StatCard label="Late Arrivals"  value={lateCount}       sub={lateCount > 0 ? 'check-ins after 09:00' : 'none — nice work'} accent={lateCount > 0 ? '#ef4444' : '#10b981'} icon="⏰" />
+                <StatCard label="RTO Compliance" value={`${s.rtoCompliance}%`} sub={`${RTO_DAYS_REQUIRED} office days/week target`} accent={s.rtoCompliance >= 80 ? '#10b981' : s.rtoCompliance < 60 ? '#ef4444' : '#f59e0b'} icon="🎯" />
+              </div>
+
+              <div className="grid-2 mb-16">
+                <div className="card">
+                  <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 12 }}>
+                    Breakdown
+                  </div>
+                  {[
+                    ['🏢 Office days',      s.officeDays],
+                    ['🏠 WFH days',         s.wfhDays],
+                    ['❌ Absent days',      s.absentDays],
+                    ['🎉 Bank holidays',    s.bankHolCount],
+                    ['🏖 Holiday days',     s.holidayCount],
+                    ['✅ On-time arrivals', s.onTimeDays],
+                    ['⏰ Late arrivals',    lateCount],
+                    ['🔥 Longest late streak', `${s.maxLateStreak} day${s.maxLateStreak !== 1 ? 's' : ''}`],
+                  ].map(([label, val]) => (
+                    <div key={label} style={{ display: 'flex', justifyContent: 'space-between', padding: '7px 0', borderBottom: '1px solid var(--border)', fontSize: 13 }}>
+                      <span style={{ color: 'var(--text-secondary)' }}>{label}</span>
+                      <span style={{ fontWeight: 700, fontFamily: 'DM Mono' }}>{val}</span>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="card">
+                  <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 12 }}>
+                    Late Arrival Dates
+                  </div>
+                  {lateCount === 0 ? (
+                    <div style={{ fontSize: 13, color: 'var(--text-muted)', padding: '20px 0', textAlign: 'center' }}>
+                      No late arrivals in this period. 🎉
+                    </div>
+                  ) : (
+                    <div style={{ maxHeight: 260, overflowY: 'auto' }}>
+                      {s.lateArrivals
+                        .slice()
+                        .sort((a, b) => (b.date || '').localeCompare(a.date || ''))
+                        .map(l => (
+                          <div key={l.date} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid var(--border)', fontSize: 12 }}>
+                            <span style={{ color: 'var(--text-secondary)' }}>{fmtDate(l.date)}</span>
+                            <span style={{ color: '#ef4444', fontFamily: 'DM Mono', fontWeight: 700 }}>{l.label || 'Late'}</span>
+                          </div>
+                        ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })()}
 
         {logModal && renderLogModal()}
       </div>
