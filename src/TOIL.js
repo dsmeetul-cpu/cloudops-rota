@@ -1,10 +1,8 @@
 // src/TOIL.js
 // CloudOps Rota — TOIL (Time Off In Lieu) Manager — Enhanced v2
-// UK WTR 1998: 1:1 accrual on worked on-call hours. Max 40h carryover.
+// UK WTR 1998: 1:1 accrual on worked on-call hours. No carryover cap.
 
 import React, { useState, useMemo, useCallback } from 'react';
-
-const TOIL_MAX_CARRYOVER = 40;
 
 // ── Theme tokens ──────────────────────────────────────────────────────────────
 const T = {
@@ -146,7 +144,8 @@ function calcTOILBalance(timesheetEntries, toilEntries, userId) {
     .reduce((a, t) => a + (+t.hours || 0), 0);
 
   const totalAccrued = autoToil + manualAccrued;
-  const balance = Math.min(Math.max(totalAccrued - used, 0), TOIL_MAX_CARRYOVER);
+  // No carryover cap — only floor at zero.
+  const balance = Math.max(totalAccrued - used, 0);
 
   return {
     workedOC:      Math.round(workedOC      * 10) / 10,
@@ -155,13 +154,11 @@ function calcTOILBalance(timesheetEntries, toilEntries, userId) {
     used:          Math.round(used          * 10) / 10,
     totalAccrued:  Math.round(totalAccrued  * 10) / 10,
     balance:       Math.round(balance       * 10) / 10,
-    cappedAt:      TOIL_MAX_CARRYOVER,
   };
 }
 
 // ── Colour helpers ─────────────────────────────────────────────────────────────
 function balanceColor(balance) {
-  if (balance >= TOIL_MAX_CARRYOVER) return T.amber;
   if (balance > 20) return T.green;
   if (balance > 0)  return T.accent;
   return '#fca5a5';
@@ -171,7 +168,7 @@ function balanceColor(balance) {
 function HBarChart({ data, height = 220 }) {
   // data: [{ label, accrued, used, balance }]
   if (!data || data.length === 0) return <EmptyState icon="📊" msg="No data to chart" />;
-  const maxVal = Math.max(...data.flatMap(d => [d.accrued, d.used, TOIL_MAX_CARRYOVER]), 1);
+  const maxVal = Math.max(...data.flatMap(d => [d.accrued, d.used]), 1);
   const rowH = 40, padL = 90, padR = 20, barH = 12, gap = 4;
   const svgH = data.length * rowH + 20;
   const chartW = 420;
@@ -194,16 +191,6 @@ function HBarChart({ data, height = 220 }) {
           </g>
         );
       })}
-      {/* cap line */}
-      {(() => {
-        const cx = padL + (TOIL_MAX_CARRYOVER / maxVal) * chartW;
-        return (
-          <g>
-            <line x1={cx} y1={0} x2={cx} y2={svgH - 10} stroke={T.red} strokeWidth={1} strokeDasharray="4 3" opacity={0.5} />
-            <text x={cx + 3} y={10} fontSize={9} fill={T.red} opacity={0.7} fontFamily="DM Sans,sans-serif">40h cap</text>
-          </g>
-        );
-      })()}
     </svg>
   );
 }
@@ -320,9 +307,8 @@ export default function TOIL({ users, timesheets, toil, setToil, currentUser, is
     const totalBalance  = allBalances.reduce((s, { b }) => s + b.balance, 0);
     const totalAccrued  = allBalances.reduce((s, { b }) => s + b.totalAccrued, 0);
     const totalUsed     = allBalances.reduce((s, { b }) => s + b.used, 0);
-    const atCap         = allBalances.filter(({ b }) => b.balance >= TOIL_MAX_CARRYOVER).length;
     const zeroBalance   = allBalances.filter(({ b }) => b.balance === 0).length;
-    return { totalBalance, totalAccrued, totalUsed, atCap, zeroBalance };
+    return { totalBalance, totalAccrued, totalUsed, zeroBalance };
   }, [allBalances, isManager]);
 
   // ── Month-by-month usage for analytics (last 6 months) ─────────────────────
@@ -447,7 +433,7 @@ export default function TOIL({ users, timesheets, toil, setToil, currentUser, is
             <div style={{ width: 36, height: 36, borderRadius: 9, background: T.accentDim, border: `1px solid ${T.accentBrd}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}>⏳</div>
             <div>
               <h1 style={{ margin: 0, fontSize: 20, fontWeight: 800, letterSpacing: '-0.5px' }}>TOIL Manager</h1>
-              <div style={{ fontSize: 11, color: T.textMuted, marginTop: 2 }}>UK WTR 1998 · 1:1 accrual · {TOIL_MAX_CARRYOVER}h cap</div>
+              <div style={{ fontSize: 11, color: T.textMuted, marginTop: 2 }}>UK WTR 1998 · 1:1 accrual · no carryover cap</div>
             </div>
           </div>
         </div>
@@ -471,7 +457,7 @@ export default function TOIL({ users, timesheets, toil, setToil, currentUser, is
           <StatChip label="Team Balance"  value={`${summaryStats.totalBalance}h`}  color={T.accent} sub={`${allBalances.length} engineers`} />
           <StatChip label="Total Accrued" value={`${summaryStats.totalAccrued}h`}  color={T.green} />
           <StatChip label="Total Used"    value={`${summaryStats.totalUsed}h`}     color={T.amber} />
-          <StatChip label="At Cap"        value={summaryStats.atCap}               color={summaryStats.atCap > 0 ? T.amber : T.textMuted} sub="need to use TOIL" />
+          <StatChip label="Zero Balance"  value={summaryStats.zeroBalance}         color={summaryStats.zeroBalance > 0 ? T.textMuted : T.green} sub="no TOIL banked" />
           <StatChip label="Pending"       value={pendingRequests.length}           color={pendingRequests.length > 0 ? T.purple : T.textMuted} sub="awaiting approval" />
         </div>
       )}
@@ -481,7 +467,7 @@ export default function TOIL({ users, timesheets, toil, setToil, currentUser, is
         <span>🇬🇧</span>
         <span>
           <strong>UK WTR 1998:</strong> TOIL accrues at <strong>1:1</strong> for hours <em>actively worked</em> during on-call.
-          Standby-only hours do not accrue TOIL. Maximum carryover is <strong>{TOIL_MAX_CARRYOVER}h (5 days)</strong>.
+          Standby-only hours do not accrue TOIL. No carryover cap — balance carries forward indefinitely.
         </span>
       </div>
 
@@ -509,7 +495,9 @@ export default function TOIL({ users, timesheets, toil, setToil, currentUser, is
       {activeTab === 'overview' && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 14 }}>
           {allBalances.map(({ u, b }) => {
-            const pct    = TOIL_MAX_CARRYOVER > 0 ? (b.balance / TOIL_MAX_CARRYOVER) * 100 : 0;
+            // No cap to measure against — instead show what share of accrued
+            // TOIL has already been used, which stays meaningful regardless.
+            const pctUsed = b.totalAccrued > 0 ? (b.used / b.totalAccrued) * 100 : 0;
             const color  = balanceColor(b.balance);
             const myPend = safeToil.filter(t => t.userId === u.id && t.status === 'pending').length;
             const isExpanded = expandCard === u.id;
@@ -525,7 +513,6 @@ export default function TOIL({ users, timesheets, toil, setToil, currentUser, is
                   </div>
                   <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                     {myPend > 0 && <Tag label={`${myPend} pending`} type="amber" />}
-                    {b.balance >= TOIL_MAX_CARRYOVER && <Tag label="At cap" type="amber" />}
                   </div>
                 </div>
 
@@ -533,11 +520,11 @@ export default function TOIL({ users, timesheets, toil, setToil, currentUser, is
                 <div style={{ padding: '14px 18px', display: 'flex', alignItems: 'center', gap: 14 }}>
                   <Donut used={b.used} balance={b.balance} size={80} />
                   <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 6 }}>Balance vs cap</div>
-                    <ProgressBar pct={pct} color={color} height={7} />
+                    <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 6 }}>Used vs accrued</div>
+                    <ProgressBar pct={pctUsed} color={color} height={7} />
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4, fontSize: 10, fontFamily: T.mono }}>
-                      <span style={{ color }}>{b.balance}h</span>
-                      <span style={{ color: T.textMuted }}>{TOIL_MAX_CARRYOVER}h cap</span>
+                      <span style={{ color }}>{b.balance}h balance</span>
+                      <span style={{ color: T.textMuted }}>{Math.round(pctUsed)}% used</span>
                     </div>
                   </div>
                 </div>
@@ -572,11 +559,6 @@ export default function TOIL({ users, timesheets, toil, setToil, currentUser, is
                     <div style={{ fontSize: 12, color: T.textSec, marginBottom: 10, fontFamily: T.mono }}>
                       {b.manualAccrued}h manually added by manager
                     </div>
-                    {b.balance >= TOIL_MAX_CARRYOVER && (
-                      <div style={{ background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.2)', borderRadius: 6, padding: '6px 10px', fontSize: 11, color: T.amber, marginBottom: 8 }}>
-                        ⚠ At WTR carryover cap — TOIL should be used before year end
-                      </div>
-                    )}
                     {isManager && (
                       <button onClick={() => openManual({ userId: u.id })}
                         style={{ width: '100%', padding: '6px 0', background: T.bgCard2, border: `1px solid ${T.border}`, borderRadius: 7, color: T.textSec, fontSize: 11, cursor: 'pointer', fontWeight: 700 }}>
@@ -829,14 +811,16 @@ export default function TOIL({ users, timesheets, toil, setToil, currentUser, is
             {/* Per-engineer balance progress bars */}
             <div style={{ background: T.bgCard2, border: `1px solid ${T.border}`, borderRadius: 12, padding: '18px 20px' }}>
               <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>Balance Distribution</div>
-              <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 16 }}>Each engineer vs 40h cap</div>
+              <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 16 }}>Each engineer relative to the team's highest balance</div>
               {allBalances.length === 0
                 ? <EmptyState icon="📊" msg="No data" />
-                : allBalances
+                : (() => {
+                    const maxBal = Math.max(...allBalances.map(({ b }) => b.balance), 1);
+                    return allBalances
                     .slice().sort((a, b) => b.b.balance - a.b.balance)
                     .map(({ u, b }) => {
                       const color = balanceColor(b.balance);
-                      const pct   = (b.balance / TOIL_MAX_CARRYOVER) * 100;
+                      const pct   = (b.balance / maxBal) * 100;
                       return (
                         <div key={u.id} style={{ marginBottom: 12 }}>
                           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, alignItems: 'center' }}>
@@ -849,14 +833,15 @@ export default function TOIL({ users, timesheets, toil, setToil, currentUser, is
                           <ProgressBar pct={pct} color={color} height={6} />
                         </div>
                       );
-                    })
+                    });
+                  })()
               }
             </div>
 
-            {/* WTR compliance + cap warnings */}
+            {/* WTR compliance */}
             <div style={{ background: T.bgCard2, border: `1px solid ${T.border}`, borderRadius: 12, padding: '18px 20px' }}>
               <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>WTR Compliance</div>
-              <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 16 }}>Warnings & status per engineer</div>
+              <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 16 }}>Status per engineer</div>
 
               {/* Big gauge */}
               {wtrCompliance != null && (
@@ -871,9 +856,8 @@ export default function TOIL({ users, timesheets, toil, setToil, currentUser, is
 
               {/* Compliance table */}
               {allBalances.map(({ u, b }) => {
-                const atCap    = b.balance >= TOIL_MAX_CARRYOVER;
                 const noneEver = b.totalAccrued === 0;
-                const status   = atCap ? { label: 'At Cap', color: T.amber } : noneEver ? { label: 'No Accrual', color: T.textMuted } : { label: 'OK', color: T.green };
+                const status   = noneEver ? { label: 'No Accrual', color: T.textMuted } : { label: 'OK', color: T.green };
                 return (
                   <div key={u.id} style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '6px 0', borderBottom: `1px solid ${T.border}` }}>
                     <Avatar user={u} size={20} />
@@ -893,16 +877,15 @@ export default function TOIL({ users, timesheets, toil, setToil, currentUser, is
               <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                 <thead>
                   <tr style={{ background: 'rgba(255,255,255,0.04)' }}>
-                    {['Engineer', 'Worked OC', 'Auto TOIL', 'Manual', 'Total Accrued', 'Used', 'Balance', 'Cap %', 'Status'].map(h => (
+                    {['Engineer', 'Worked OC', 'Auto TOIL', 'Manual', 'Total Accrued', 'Used', 'Balance', 'Status'].map(h => (
                       <th key={h} style={{ padding: '8px 12px', borderBottom: `1px solid ${T.border}`, fontSize: 10, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.5px', textAlign: h === 'Engineer' ? 'left' : 'right', whiteSpace: 'nowrap' }}>{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
                   {allBalances.map(({ u, b }) => {
-                    const pct    = Math.round((b.balance / TOIL_MAX_CARRYOVER) * 100);
                     const color  = balanceColor(b.balance);
-                    const status = b.balance >= TOIL_MAX_CARRYOVER ? { l: 'At Cap', c: T.amber } : b.balance === 0 ? { l: 'Empty', c: T.textMuted } : { l: 'Active', c: T.green };
+                    const status = b.balance === 0 ? { l: 'Empty', c: T.textMuted } : { l: 'Active', c: T.green };
                     return (
                       <tr key={u.id} style={{ borderBottom: `1px solid rgba(255,255,255,0.04)` }}>
                         <td style={{ padding: '9px 12px' }}>
@@ -918,14 +901,6 @@ export default function TOIL({ users, timesheets, toil, setToil, currentUser, is
                           <td key={i} style={{ padding: '9px 12px', textAlign: 'right', fontFamily: T.mono, fontSize: 12, color: T.textSec }}>{v}h</td>
                         ))}
                         <td style={{ padding: '9px 12px', textAlign: 'right', fontFamily: T.mono, fontSize: 13, color, fontWeight: 800 }}>{b.balance}h</td>
-                        <td style={{ padding: '9px 12px', textAlign: 'right' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'flex-end' }}>
-                            <div style={{ width: 40, height: 4, background: 'rgba(255,255,255,0.07)', borderRadius: 2, overflow: 'hidden' }}>
-                              <div style={{ height: '100%', width: `${Math.min(pct, 100)}%`, background: color, borderRadius: 2 }} />
-                            </div>
-                            <span style={{ fontSize: 10, fontFamily: T.mono, color: T.textMuted }}>{pct}%</span>
-                          </div>
-                        </td>
                         <td style={{ padding: '9px 12px', textAlign: 'right' }}>
                           <span style={{ fontSize: 10, color: status.c, fontWeight: 700, background: `${status.c}18`, padding: '2px 8px', borderRadius: 4 }}>{status.l}</span>
                         </td>
