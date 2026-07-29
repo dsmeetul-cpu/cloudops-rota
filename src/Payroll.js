@@ -131,9 +131,11 @@ function PageHeader({ title, sub, actions }) {
     </div>
   );
 }
-function StatCard({ label, value, sub, accent, icon }) {
+function StatCard({ label, value, sub, accent, icon, onClick }) {
   return (
-    <div className="stat-card">
+    <div className="stat-card" onClick={onClick}
+      style={onClick ? { cursor: 'pointer' } : undefined}
+      title={onClick ? `View ${label.toLowerCase()}` : undefined}>
       {accent && <div className="stat-accent" style={{ background: accent }} />}
       <div className="stat-label">{label}</div>
       <div className="stat-value">{icon ? <span style={{ marginRight: 6 }}>{icon}</span> : null}{value}</div>
@@ -352,7 +354,7 @@ function calcUKTax(grossAnnual, { pensionPct = 0, studentLoan = false } = {}) {
 }
 
 // ── Payroll (Manager only) ─────────────────────────────────────────────────
-function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents, upgrades, rota, holidays, isManager, overtime: overtimeArr, driveToken, payrollAdjustments, setPayrollAdjustments }) {
+function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents, upgrades, rota, holidays, isManager, overtime: overtimeArr, driveToken, payrollAdjustments, setPayrollAdjustments, goToIncidents }) {
   const [tab,         setTab]         = useState('overview');  // 'overview' | 'takehome' | 'log' | 'reports' | 'adjustments'
   const [showExport, setShowExport]   = useState(false);
   const [exporting,   setExporting]   = useState(false);
@@ -1199,7 +1201,8 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
 
       {/* KPI bar — always visible */}
       <div className="grid-4 mb-16">
-        <StatCard label="Incident Hours"   value={`${totalIncidentHrs}h`} sub="Auto-logged from incidents"  accent="#f59e0b" icon="🚨" />
+        <StatCard label="Incident Hours"   value={`${totalIncidentHrs}h`} sub="Auto-logged from incidents"  accent="#f59e0b" icon="🚨"
+          onClick={goToIncidents ? () => goToIncidents({ uid: 'all', dateFrom: viewCycleStart, dateTo: viewCycleEnd, status: 'all' }) : undefined} />
         <StatCard label="Upgrade Hours"    value={`${totalUpgradeHrs}h`}  sub="Approved upgrade days"       accent="#818cf8" icon="⬆" />
         <StatCard label="Overtime Hours"   value={`${totalOvertimeHrs}h`} sub="Approved overtime"           accent="#10b981" icon="🕐" />
         <StatCard label="Pending OT"       value={pendingOTCount}          sub="Awaiting approval"           accent="#f59e0b" icon="⏳" />
@@ -1288,7 +1291,19 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
                     <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#93c5fd', textAlign:'right' }}>{oc.workedWD}h</td>
                     <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#a78bfa', textAlign:'right' }}>{oc.standbyWE}h</td>
                     <td style={{ fontFamily:'DM Mono', fontSize:12, color:'#a78bfa', textAlign:'right' }}>{oc.workedWE}h</td>
-                    <td style={{ fontFamily:'DM Mono', fontSize:12, color:incHrs>0?'#f59e0b':'var(--text-muted)', textAlign:'right' }}>{incHrs>0?`${incHrs}h`:'—'}</td>
+                    <td
+                      style={{
+                        fontFamily:'DM Mono', fontSize:12, color:incHrs>0?'#f59e0b':'var(--text-muted)', textAlign:'right',
+                        cursor: incHrs>0 && goToIncidents ? 'pointer' : 'default',
+                        textDecoration: incHrs>0 && goToIncidents ? 'underline' : 'none',
+                        textDecorationStyle: 'dotted', textUnderlineOffset: 3,
+                      }}
+                      title={incHrs>0 && goToIncidents ? `View ${u.name}'s incidents for this cycle` : undefined}
+                      onClick={() => {
+                        if (incHrs<=0 || !goToIncidents) return;
+                        goToIncidents({ uid: u.id, dateFrom: viewCycleStart, dateTo: viewCycleEnd, status: 'all' });
+                      }}
+                    >{incHrs>0?`${incHrs}h`:'—'}</td>
                     <td style={{ fontFamily:'DM Mono', fontSize:12, color:upgradeHrs>0?'#818cf8':'var(--text-muted)', textAlign:'right' }}>{upgradeHrs>0?`${upgradeHrs}h`:'—'}</td>
                     <td style={{ fontFamily:'DM Mono', fontSize:12, color:bankHolHrs>0?'#fca5a5':'var(--text-muted)', textAlign:'right' }}>{bankHolHrs>0?`${bankHolHrs}h`:'—'}</td>
                     <td style={{ fontFamily:'DM Mono', fontSize:12, color:overtimeHrs>0?'#e879f9':'var(--text-muted)', fontWeight:overtimeHrs>0?700:400, textAlign:'right' }}>{overtimeHrs>0?`${overtimeHrs}h`:'—'}</td>
