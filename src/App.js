@@ -4391,7 +4391,13 @@ export default function App() {
               try {
                 window.google.accounts.oauth2.initTokenClient({
                   client_id: GOOGLE_CLIENT_ID,
-                  scope: 'https://www.googleapis.com/auth/drive.readonly',
+                  // Must match the scope actually used for real Drive reads/writes
+                  // (see SCOPES in useGoogleDrive.js). This used to request
+                  // drive.readonly here — a DIFFERENT scope from what the app
+                  // really uses (full drive access) — so this silent check could
+                  // never succeed even for someone who'd already granted the real
+                  // scope, forcing a manual "Connect" click every single session.
+                  scope: 'https://www.googleapis.com/auth/drive',
                   prompt: '',
                   callback: (resp) => {
                     if (resp?.access_token) {
