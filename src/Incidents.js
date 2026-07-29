@@ -1,6 +1,6 @@
 // src/Incidents.js
 // CloudOps Rota — Incidents
-// Meetul Bhundia (MBA47) · Cloud Run Operations · 29th July 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · July 2026
 
 import React, { useState, useRef, useEffect } from 'react';
 
@@ -743,15 +743,28 @@ export default function Incidents({
   users, currentUser, isManager,
   driveToken, addLog,
   timesheets, setTimesheets,
+  initialFilter, onConsumeInitialFilter,
 }){
   const [view,setView]=useState('all');
   const [showModal,setShowModal]=useState(false);
   const [editId,setEditId]=useState(null);
   const [detailInc,setDetailInc]=useState(null);
   const [form,setForm]=useState({...BLANK});
-  const [filter,setFilter]=useState({status:'all',severity:'all',uid:'all'});
+  const [filter,setFilter]=useState({
+    status:'all', severity:'all', uid:'all',
+    dateFrom:'', dateTo:'', hoursMin:'', hoursMax:'',
+  });
   const [notify,setNotify]=useState('');
   const notifyTimer=useRef(null);
+
+  // ── Apply an incoming pre-filter from another page (e.g. clicking an
+  // engineer's incident hours in Payroll jumps here already filtered to
+  // that person and date range) ────────────────────────────────────────────
+  useEffect(() => {
+    if (!initialFilter) return;
+    setFilter(f => ({ ...f, ...initialFilter }));
+    onConsumeInitialFilter?.(); // let the parent clear it so it doesn't re-apply on next visit
+  }, [initialFilter]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Drive save is handled by App.js useEffect: save('incidents', incidents)
   // We only need to call setIncidents — App.js handles the Drive write automatically.
@@ -867,6 +880,10 @@ export default function Incidents({
     if(filter.status!=='all'&&i.status!==filter.status) return false;
     if(filter.severity!=='all'&&i.severity!==filter.severity) return false;
     if(filter.uid!=='all'&&i.assigned_to!==filter.uid) return false;
+    if(filter.dateFrom&&(i.date||'')<filter.dateFrom) return false;
+    if(filter.dateTo&&(i.date||'')>filter.dateTo) return false;
+    if(filter.hoursMin!==''&&filter.hoursMin!=null&&(Number(i.hours)||0)<Number(filter.hoursMin)) return false;
+    if(filter.hoursMax!==''&&filter.hoursMax!=null&&(Number(i.hours)||0)>Number(filter.hoursMax)) return false;
     return true;
   });
   const sorted=[...df].sort((a,b)=>{
@@ -955,8 +972,26 @@ export default function Incidents({
           <option value="all">All Engineers</option>
           {users.map(u=><option key={u.id} value={u.id}>{u.name}</option>)}
         </select>
-        {(filter.status!=='all'||filter.severity!=='all'||filter.uid!=='all')&&(
-          <button className="btn btn-secondary btn-sm" onClick={()=>setFilter({status:'all',severity:'all',uid:'all'})}>✕ Clear</button>
+        <div style={{display:'flex',alignItems:'center',gap:4}}>
+          <input type="date" className="form-input" style={{width:130,fontSize:12}}
+            value={filter.dateFrom} onChange={e=>setFilter(f=>({...f,dateFrom:e.target.value}))} title="From date" />
+          <span style={{color:'rgba(255,255,255,0.25)',fontSize:11}}>→</span>
+          <input type="date" className="form-input" style={{width:130,fontSize:12}}
+            value={filter.dateTo} onChange={e=>setFilter(f=>({...f,dateTo:e.target.value}))} title="To date" />
+        </div>
+        <div style={{display:'flex',alignItems:'center',gap:4}}>
+          <input type="number" min="0" step="0.5" placeholder="Min h" className="form-input" style={{width:70,fontSize:12}}
+            value={filter.hoursMin} onChange={e=>setFilter(f=>({...f,hoursMin:e.target.value}))} title="Minimum hours" />
+          <span style={{color:'rgba(255,255,255,0.25)',fontSize:11}}>–</span>
+          <input type="number" min="0" step="0.5" placeholder="Max h" className="form-input" style={{width:70,fontSize:12}}
+            value={filter.hoursMax} onChange={e=>setFilter(f=>({...f,hoursMax:e.target.value}))} title="Maximum hours" />
+        </div>
+        <button className="btn btn-secondary btn-sm" onClick={()=>setFilter(f=>({...f,status:f.status==='Resolved'?'all':'Resolved'}))}
+          style={filter.status==='Resolved'?{background:'rgba(34,197,94,0.15)',border:'1px solid rgba(34,197,94,0.4)',color:'#6ee7b7'}:{}}>
+          ✓ Resolved only
+        </button>
+        {(filter.status!=='all'||filter.severity!=='all'||filter.uid!=='all'||filter.dateFrom||filter.dateTo||filter.hoursMin!==''||filter.hoursMax!=='')&&(
+          <button className="btn btn-secondary btn-sm" onClick={()=>setFilter({status:'all',severity:'all',uid:'all',dateFrom:'',dateTo:'',hoursMin:'',hoursMax:''})}>✕ Clear</button>
         )}
         <span style={{marginLeft:'auto',fontSize:11,color:'rgba(255,255,255,0.25)'}}>{sorted.length} incident{sorted.length!==1?'s':''}</span>
       </div>
