@@ -686,6 +686,88 @@ function useBulkSelect(items) {
 }
 
 // ── Login Screen ───────────────────────────────────────────────────────────
+// ── Sync error banner ─────────────────────────────────────────────────────────
+// Renders across the FULL width of the app, above the sidebar and every page,
+// so it's visible no matter what a manager or engineer is looking at —
+// previously this only lived in a collapsible sidebar footer, easy to miss
+// entirely, especially for engineers who keep the sidebar collapsed.
+//
+// Two genuinely different situations were previously shown identically:
+//  1. "Only the manager account can save changes here" — NOT a failure, just
+//     the permission gate working correctly. Doesn't need a scary red alert.
+//  2. "Couldn't save X to Drive... has not granted the app access" — a real
+//     problem, almost always meaning this person's Google Drive access has
+//     expired or was never fully granted. This DOES need urgent, actionable
+//     visibility, with the actual fix front and center (reconnect), not just
+//     a "retry" that will fail again for the same reason.
+function SyncErrorBanner({ syncErrors, onRetry, onReconnect }) {
+  const [expanded, setExpanded] = useState(false);
+  const [dismissedNotice, setDismissedNotice] = useState(false);
+
+  const entries = Object.entries(syncErrors || {});
+  if (entries.length === 0) return null;
+
+  const isPermissionGate = (msg) => (msg || '').startsWith('Only the manager account can save');
+  const realErrors  = entries.filter(([, msg]) => !isPermissionGate(msg));
+  const gateNotices = entries.filter(([, msg]) =>  isPermissionGate(msg));
+
+  return (
+    <div style={{ flexShrink: 0 }}>
+      {realErrors.length > 0 && (
+        <div style={{ background: 'linear-gradient(90deg, #7f1d1d, #991b1b)', borderBottom: '1px solid #ef4444', color: '#fff' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 18px', flexWrap: 'wrap' }}>
+            <div style={{ fontSize: 18, flexShrink: 0 }}>⚠️</div>
+            <div style={{ flex: 1, minWidth: 240 }}>
+              <div style={{ fontSize: 13, fontWeight: 800 }}>
+                {realErrors.length} change{realErrors.length !== 1 ? 's' : ''} {realErrors.length !== 1 ? "aren't" : "isn't"} syncing to Google Drive
+              </div>
+              <div style={{ fontSize: 11.5, opacity: 0.9, marginTop: 2 }}>
+                This almost always means your Google Drive access has expired or wasn't fully granted — signing out and back in (through the Google permission screen) usually fixes it.
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+              <button onClick={() => setExpanded(v => !v)}
+                style={{ padding: '6px 12px', background: 'rgba(255,255,255,0.12)', border: '1px solid rgba(255,255,255,0.3)', borderRadius: 7, color: '#fff', fontSize: 11.5, fontWeight: 700, cursor: 'pointer' }}>
+                {expanded ? 'Hide details' : `Show details`}
+              </button>
+              <button onClick={onRetry}
+                style={{ padding: '6px 12px', background: 'rgba(255,255,255,0.12)', border: '1px solid rgba(255,255,255,0.3)', borderRadius: 7, color: '#fff', fontSize: 11.5, fontWeight: 700, cursor: 'pointer' }}>
+                🔄 Retry
+              </button>
+              <button onClick={onReconnect}
+                style={{ padding: '6px 14px', background: '#fff', border: 'none', borderRadius: 7, color: '#991b1b', fontSize: 11.5, fontWeight: 800, cursor: 'pointer' }}>
+                🔓 Reconnect Drive access
+              </button>
+            </div>
+          </div>
+          {expanded && (
+            <div style={{ padding: '0 18px 12px', display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {realErrors.map(([key, msg]) => (
+                <div key={key} style={{ fontSize: 11, background: 'rgba(0,0,0,0.18)', borderRadius: 6, padding: '6px 10px' }}>
+                  <strong>{key}:</strong> {msg}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {gateNotices.length > 0 && !dismissedNotice && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 18px', background: 'rgba(148,163,184,0.1)', borderBottom: '1px solid var(--border)' }}>
+          <span style={{ fontSize: 12 }}>ℹ️</span>
+          <span style={{ fontSize: 11.5, color: 'var(--text-secondary)', flex: 1 }}>
+            {gateNotices.length} edit{gateNotices.length !== 1 ? 's' : ''} to {gateNotices.map(([key]) => key).join(', ')} {gateNotices.length !== 1 ? "weren't" : "wasn't"} saved — only the manager account can change {gateNotices.length !== 1 ? 'these' : 'this'}.
+          </span>
+          <button onClick={() => setDismissedNotice(true)}
+            style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 13, padding: '2px 6px' }}>
+            ✕
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDrive, driveReady }) {
   const [uid, setUid]               = useState('');
   const [pw, setPw]                 = useState('');
@@ -5074,10 +5156,16 @@ export default function App() {
       {isV2 && <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet" />}
       {/* Root shell — explicit inline flex, no dependency on App.css */}
       <div data-theme={theme} className={isV2 ? 'theme-v2' : ''} style={{
-        display: 'flex', flexDirection: 'row', width: '100vw', height: '100vh',
+        display: 'flex', flexDirection: 'column', width: '100vw', height: '100vh',
         overflow: 'hidden', background: 'var(--bg)', color: 'var(--text-primary)',
         fontFamily: isV2 ? 'var(--font-body)' : "'DM Sans', system-ui, sans-serif", fontSize: 13,
       }}>
+        <SyncErrorBanner
+          syncErrors={syncErrors}
+          onRetry={() => flushPendingSaves().catch(() => {})}
+          onReconnect={connectDrive}
+        />
+        <div style={{ display: 'flex', flexDirection: 'row', flex: 1, minHeight: 0, overflow: 'hidden' }}>
 
         {/* ── SIDEBAR ───────────────────────────────────────────────── */}
         <div style={{
@@ -5086,7 +5174,7 @@ export default function App() {
           maxWidth: sidebarOpen ? 200 : 48,
           flexShrink: 0, flexGrow: 0,
           display: 'flex', flexDirection: 'column',
-          height: '100vh', overflow: 'hidden',
+          height: '100%', overflow: 'hidden',
           background: 'var(--sidebar-bg)',
           borderRight: '1px solid var(--sidebar-border)',
           transition: 'width 0.2s ease, min-width 0.2s ease, max-width 0.2s ease',
@@ -5171,35 +5259,10 @@ export default function App() {
 
           {/* Footer */}
           <div style={{ padding:'8px', borderTop:'1px solid var(--sidebar-border)', flexShrink:0 }}>
-            {/* ── Sync error banner ────────────────────────────────────────────
-                Any key that failed to save to Drive (after retries, and after
-                an automatic conflict-merge retry) shows up HERE, visibly, with
-                a Retry button — instead of silently vanishing into the console.
-                This is the single most important fix: you now always know
-                whether your edit actually made it to Drive. */}
-            {Object.keys(syncErrors).length > 0 && (
-              <div style={{ marginBottom:6, padding:'6px 8px', background:'rgba(239,68,68,0.1)', border:'1px solid rgba(239,68,68,0.35)', borderRadius:6 }}>
-                {sidebarOpen ? (
-                  <>
-                    <div style={{ fontSize:9, fontWeight:700, color:'#fca5a5', marginBottom:4 }}>
-                      ⚠ {Object.keys(syncErrors).length} item{Object.keys(syncErrors).length>1?'s':''} failed to save to Drive
-                    </div>
-                    {Object.entries(syncErrors).map(([key, msg]) => (
-                      <div key={key} style={{ fontSize:9, color:'#fca5a5', marginBottom:2, lineHeight:1.3 }}>
-                        <strong>{key}:</strong> {msg}
-                      </div>
-                    ))}
-                    <button
-                      style={{ width:'100%', marginTop:4, fontSize:9, padding:'3px 0', background:'rgba(239,68,68,0.15)', border:'1px solid rgba(239,68,68,0.4)', borderRadius:5, color:'#fca5a5', cursor:'pointer' }}
-                      onClick={() => flushPendingSaves().catch(() => {})}>
-                      🔄 Retry failed saves
-                    </button>
-                  </>
-                ) : (
-                  <div title={`${Object.keys(syncErrors).length} save(s) failed — click to expand sidebar`} style={{ fontSize:12, textAlign:'center', color:'#fca5a5' }}>⚠</div>
-                )}
-              </div>
-            )}
+            {/* Sync failures now surface in the full-width banner at the very
+                top of the app (visible on every page, every role) instead of
+                being buried here — this footer just shows the quiet status
+                dot so the sidebar isn't duplicating the same information. */}
             {sidebarOpen && (
               <div style={{ display:'flex', alignItems:'center', gap:6, padding:'4px 4px 6px', fontSize:9, color: driveToken ? '#6ee7b7' : '#fcd34d' }}>
                 <div style={{ width:6, height:6, borderRadius:'50%', background: driveToken ? '#22c55e' : '#f59e0b', flexShrink:0 }} />
@@ -5249,7 +5312,7 @@ export default function App() {
         {/* ── MAIN ──────────────────────────────────────────────────── */}
         <div style={{
           flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column',
-          height: '100vh', overflow: 'hidden',
+          height: '100%', overflow: 'hidden',
         }}>
           {/* Topbar */}
           <div style={{
@@ -5366,6 +5429,7 @@ export default function App() {
           </div>
         </div>
 
+        </div>
       </div>
     </>
   );
