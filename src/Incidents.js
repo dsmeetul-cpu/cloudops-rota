@@ -764,7 +764,7 @@ export default function Incidents({
     if (!initialFilter) return;
     setFilter(f => ({ ...f, ...initialFilter }));
     onConsumeInitialFilter?.(); // let the parent clear it so it doesn't re-apply on next visit
-  }, [initialFilter]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [initialFilter]); // eslint-disable-line
 
   // Drive save is handled by App.js useEffect: save('incidents', incidents)
   // We only need to call setIncidents — App.js handles the Drive write automatically.
