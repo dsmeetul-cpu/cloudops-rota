@@ -25,7 +25,7 @@ import CalendarPage from './Calendar';
 import Dashboard from './Dashboard';
 import OnCall from './OnCall';
 import Incidents from './Incidents';
-import Logs, { createLogWriter } from './Logs';
+import Logs, { createLogWriter, readLogs, LoginIssuesBreakdown } from './Logs';
 import UpgradeDays from './UpgradeDays';
 import Holidays from './Holidays';
 import Payroll from './Payroll';
@@ -59,12 +59,22 @@ let _profilePics = {};
 
 function getRegistry() { return _registry || { passwords: {}, sheets_id: '' }; }
 function setRegistry(r) { _registry = r; }
+function isRegistryLoaded() { return _registry !== null; }
 function getProfilePics() { return _profilePics; }
 function setProfilePics(p) { _profilePics = p || {}; }
 
 function checkPassword(uid, pw) {
   const reg = getRegistry();
-  if (!reg.passwords || !reg.passwords[uid]) return hashPw(uid.toLowerCase()) === hashPw(pw);
+  // No fallback: if the registry hasn't loaded yet, or this user has no
+  // stored password hash, deny the login rather than silently accepting
+  // "username in lowercase" as a valid password. That fallback used to
+  // exist here — it meant a login attempt that happened to race ahead of
+  // the registry finishing its Drive load would reject the user's REAL
+  // password while quietly accepting a guessable default instead. The
+  // legitimate "default password" case (a manager resetting someone's
+  // password) already writes a real entry via updatePasswordInRegistry —
+  // this fallback was never needed for that, only a silent security hole.
+  if (!reg.passwords || !reg.passwords[uid]) return false;
   return reg.passwords[uid] === hashPw(pw);
 }
 
@@ -337,11 +347,26 @@ async function syncUsersFromSheet(driveToken, registry, users, setUsers) {
   } catch (e) { console.error('Sync from sheet error:', e); }
 }
 
-async function loadRegistryFromDrive(driveToken) {
+async function loadRegistryFromDrive(driveToken, attempt = 1) {
+  const MAX_ATTEMPTS = 3;
   try {
     const f = await driveFindFile(driveToken, 'auth_registry.json');
-    if (f) { const reg = await driveReadJson(driveToken, f.id); setRegistry(reg); return reg; }
-  } catch (e) { console.error('Registry load error:', e); }
+    if (f) {
+      const reg = await driveReadJson(driveToken, f.id);
+      setRegistry(reg);
+      return reg;
+    }
+    // File genuinely doesn't exist (first-ever run) vs a transient lookup
+    // miss look identical here — retry a couple of times before giving up,
+    // same as the network-error branch below.
+  } catch (e) {
+    console.error(`Registry load error (attempt ${attempt}/${MAX_ATTEMPTS}):`, e);
+  }
+  if (attempt < MAX_ATTEMPTS) {
+    await new Promise(r => setTimeout(r, 500 * attempt));
+    return loadRegistryFromDrive(driveToken, attempt + 1);
+  }
+  console.error('Registry load failed after all retries — leaving _registry unset.');
   return null;
 }
 
@@ -768,7 +793,7 @@ function SyncErrorBanner({ syncErrors, onRetry, onReconnect }) {
   );
 }
 
-function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDrive, driveReady }) {
+function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDrive, driveReady, registryLoadFailed }) {
   const [uid, setUid]               = useState('');
   const [pw, setPw]                 = useState('');
   const [err, setErr]               = useState('');
@@ -778,24 +803,61 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDri
   const [showForgot, setShowForgot] = useState(false);
   const [forgotUid, setForgotUid]   = useState('');
   const [forgotMsg, setForgotMsg]   = useState('');
+  const [showDiag, setShowDiag]     = useState(false);
+  const [diagLogs, setDiagLogs]     = useState(null);
+  const [diagLoading, setDiagLoading] = useState(false);
   const uidRef = useRef(null);
 
   useEffect(() => {
     if (driveReady && uidRef.current) uidRef.current.focus();
   }, [driveReady]);
 
+  const openDiagnostics = async () => {
+    setShowDiag(true);
+    setDiagLoading(true);
+    const logs = await readLogs(driveToken);
+    setDiagLogs(logs);
+    setDiagLoading(false);
+  };
+
   const handle = () => {
     const id = uid.trim().toUpperCase();
+    // Best-effort — logging a failed login should never itself block login.
+    const logFailure = (action, detail) => {
+      if (!driveToken) return;
+      createLogWriter(driveToken, id, users)({ section: 'auth', level: 'warn', action, detail }).catch(() => {});
+    };
+
     if (!id) { setErr('Enter your username.'); return; }
-    if (!driveReady) { setErr('Still loading team data — please wait or click Connect.'); return; }
+    // Checks driveReady AND the password registry specifically — driveReady
+    // covers general data load, but this login flow depends on the registry
+    // in particular. Logging in before it's loaded used to silently fall
+    // back to accepting "username in lowercase" as anyone's password; that
+    // fallback is gone now, so this case correctly shows as a real failure
+    // — this message is what tells you WHY, instead of just "incorrect".
+    if (!driveReady || !isRegistryLoaded()) {
+      setErr(registryLoadFailed
+        ? 'Team data failed to load. Click "Reconnect" below, or refresh the page.'
+        : 'Still loading team data — please wait a moment, then try again.');
+      logFailure(
+        registryLoadFailed ? 'Login failed — team data load failed' : 'Login failed — team data not ready',
+        'Attempted login before Drive/registry finished loading'
+      );
+      return;
+    }
     const userExists = users.find(u => u.id === id);
-    if (!userExists) { setErr('Username not found. Contact your manager.'); return; }
+    if (!userExists) {
+      setErr('Username not found. Contact your manager.');
+      logFailure('Login failed — user not found', `Attempted username: ${id}`);
+      return;
+    }
     if (checkPassword(id, pw)) {
       setErr('');
       if (id === 'MBA47') { setPending2FA(id); setShow2FA(true); }
       else onLogin(id);
     } else {
       setErr('Incorrect password. Please try again or use Forgot Password to reset.');
+      logFailure('Login failed — incorrect password', '');
     }
   };
 
@@ -886,7 +948,7 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDri
             <FormGroup label="Username">
               <input ref={uidRef} className="input" placeholder="Your username (e.g. MVA28)"
                 value={uid} onChange={e => setUid(e.target.value.toUpperCase())}
-                onKeyDown={e => e.key === 'Enter' && handle()} />
+                onKeyDown={e => e.key === 'Enter' && driveReady && handle()} />
             </FormGroup>
             <FormGroup label="Password">
               <input className="input" type="password"
@@ -903,7 +965,23 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDri
             </button>
             <button className="btn btn-secondary btn-sm" style={{ width: '100%' }}
               onClick={() => setShowForgot(true)}>🔑 Forgot Password?</button>
-            {driveReady && (
+            <button className="btn btn-secondary btn-sm" style={{ width: '100%', marginTop: 8 }}
+              onClick={openDiagnostics} disabled={!driveToken}
+              title={driveToken ? 'See recorded login attempts and failure reasons' : 'Connect to Drive first'}>
+              🔍 Trouble logging in? View event logs
+            </button>
+            {registryLoadFailed ? (
+              <div style={{ marginTop: 14, padding: '10px 12px', borderRadius: 8,
+                background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.25)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                  <span style={{ fontSize: 14 }}>⚠️</span>
+                  <span style={{ fontSize: 12, color: '#fca5a5', fontWeight: 600 }}>Team data failed to load</span>
+                </div>
+                <button className="btn btn-secondary btn-sm" style={{ width: '100%' }} onClick={onConnectDrive}>
+                  🔄 Reconnect
+                </button>
+              </div>
+            ) : driveReady && (
               <div style={{ marginTop: 14, padding: '8px 12px', borderRadius: 8,
                 background: 'rgba(110,231,183,0.06)', border: '1px solid rgba(110,231,183,0.15)',
                 display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -914,6 +992,23 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDri
           </>
         )}
       </div>
+
+      {showDiag && (
+        <Modal title="🔍 Login Event Logs" onClose={() => setShowDiag(false)} wide>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 14 }}>
+            Recent login attempts across every user and device — this reads directly from Drive,
+            so it works even while you're stuck on this screen.
+          </div>
+          {diagLoading ? (
+            <div style={{ padding: 30, textAlign: 'center', color: 'var(--text-muted)' }}>⏳ Loading…</div>
+          ) : (
+            <>
+              <LoginIssuesBreakdown logs={diagLogs || []} highlightUid={uid.trim().toUpperCase()} />
+              <button className="btn btn-secondary btn-sm" style={{ marginTop: 14 }} onClick={openDiagnostics}>🔄 Refresh</button>
+            </>
+          )}
+        </Modal>
+      )}
     </div>
   );
 }
@@ -4347,6 +4442,7 @@ export default function App() {
   const [connectingDrive, setConnectingDrive] = useState(false);
   const [profilePics, setProfilePicsState] = useState({});
   const [driveReady, setDriveReady]         = useState(false); // true once initial Drive load done
+  const [registryLoadFailed, setRegistryLoadFailed] = useState(false); // genuine failure after retries — distinct from "still loading"
 
   // ── Guards against premature writes ───────────────────────────────────────
   // driveDataLoaded: flips to true only AFTER Drive data has been read into state.
@@ -4456,7 +4552,19 @@ export default function App() {
         loadRegistryFromDrive(token),
         loadProfilePictures(token),
       ]);
-      if (reg) setRegistry(reg);
+      if (reg) { setRegistry(reg); setRegistryLoadFailed(false); }
+      else {
+        // Genuine failure after retries inside loadRegistryFromDrive — do NOT
+        // proceed to setDriveReady(true) below. Without this guard, the login
+        // screen would show "ready to sign in" while every login attempt
+        // silently fails, with no way to recover except a full page refresh
+        // (which isn't guaranteed to work either if the cause is persistent).
+        console.warn('Drive: auth_registry.json failed to load — keeping driveReady false');
+        setRegistryLoadFailed(true);
+        setConnectingDrive(false);
+        setSyncing(false);
+        return;
+      }
       if (pics) { setProfilePics(pics); setProfilePicsState(pics); }
 
       const defaults = { users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, overtime, logbook, documents, obsidianNotes, whatsappChats, payrollAdjustments };
@@ -4882,7 +4990,8 @@ export default function App() {
           loadRegistryFromDrive(token),
           loadProfilePictures(token)
         ]);
-        if (reg) setRegistry(reg);
+        if (reg) { setRegistry(reg); setRegistryLoadFailed(false); }
+        else { console.warn('Drive: auth_registry.json failed to load on reconnect'); setRegistryLoadFailed(true); }
         if (pics) { setProfilePics(pics); setProfilePicsState(pics); }
 
         setLoadProgress(40); setLoadStatus('Loading rota & schedules…');
@@ -5151,7 +5260,7 @@ export default function App() {
           <div style={{ fontSize: 12, color: '#475569' }}>{loadProgress}% complete</div>
         </div>
       )}
-      <LoginScreen onLogin={login} driveToken={driveToken} onConnectDrive={connectDrive} users={users} connectingDrive={connectingDrive} driveReady={driveReady} />
+      <LoginScreen onLogin={login} driveToken={driveToken} onConnectDrive={connectDrive} users={users} connectingDrive={connectingDrive} driveReady={driveReady} registryLoadFailed={registryLoadFailed} />
     </>
   );
 
