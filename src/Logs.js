@@ -1,407 +1,349 @@
 // src/Logs.js
-// CloudOps Rota — Activity Log Viewer (Manager Only)
-// Meetul Bhundia (MBA47) · Cloud Run Operations · June 2026
+// CloudOps Rota — Activity Logs & Login Diagnostics
 //
-// Logs are written to the CRO_LOGS folder in Google Drive.
-// Each log entry: { id, timestamp, user, uid, action, section, detail, level }
-// Levels: 'info' | 'warning' | 'error' | 'success'
-// Only the Manager (isManager === true) can view this page.
+// Extracted out of App.js into its own file. Two jobs:
+//   1. A structured, append-only event log (auth attempts, and anything else
+//      that calls addLog()), written to Drive as events_log.json, viewable
+//      across every device/user on the manager's "Activity Logs" page.
+//   2. A login-issue breakdown that's reusable from BOTH that manager page
+//      AND a button right on the login screen — so someone who can't get in
+//      (or the manager helping them remotely) can see exactly why, without
+//      needing to already be logged in.
+//
+// Self-contained Drive helpers (same pattern as Payroll.js/Dashboard.js) —
+// deliberately no dependency on App.js, to avoid a circular import.
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 
-// ── Drive helpers (mirror App.js pattern) ─────────────────────────────────
-const LOG_FOLDER_NAME = 'CRO_LOGS';
-const LOG_FILE_NAME   = 'activity_log.json';
-let _logFolderIdCache = null;
-let _logFileIdCache   = null;
+const APP_FOLDER_NAME = 'CloudOps-Rota';
+let _appFolderIdCache = null;
+const _fileIdCache = {};
 
-async function getLogFolderId(token) {
-  if (_logFolderIdCache) return _logFolderIdCache;
-  const q = encodeURIComponent(
-    `name='${LOG_FOLDER_NAME}' and mimeType='application/vnd.google-apps.folder' and trashed=false`
-  );
+async function getAppFolderId(token) {
+  if (_appFolderIdCache) return _appFolderIdCache;
+  const q = encodeURIComponent(`name='${APP_FOLDER_NAME}' and mimeType='application/vnd.google-apps.folder' and trashed=false`);
   const resp = await fetch(
     `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`,
     { headers: { Authorization: `Bearer ${token}` } }
   ).then(r => r.json());
-
-  if (resp.files && resp.files.length > 0) {
-    _logFolderIdCache = resp.files[0].id;
-    return _logFolderIdCache;
-  }
-
-  // Create CRO_LOGS folder
-  const created = await fetch('https://www.googleapis.com/drive/v3/files', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: LOG_FOLDER_NAME, mimeType: 'application/vnd.google-apps.folder' }),
-  }).then(r => r.json());
-
-  _logFolderIdCache = created.id;
-  return _logFolderIdCache;
-}
-
-async function findLogFile(token, folderId) {
-  if (_logFileIdCache) return _logFileIdCache;
-  const q = encodeURIComponent(
-    `name='${LOG_FILE_NAME}' and '${folderId}' in parents and trashed=false`
-  );
-  const resp = await fetch(
-    `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`,
-    { headers: { Authorization: `Bearer ${token}` } }
-  ).then(r => r.json());
-  if (resp.files && resp.files.length > 0) {
-    _logFileIdCache = resp.files[0].id;
-    return _logFileIdCache;
-  }
+  if (resp.files && resp.files.length > 0) { _appFolderIdCache = resp.files[0].id; return _appFolderIdCache; }
   return null;
 }
-
-export async function readLogsFromDrive(token) {
-  try {
-    const folderId = await getLogFolderId(token);
-    const fileId   = await findLogFile(token, folderId);
-    if (!fileId) return [];
-    const data = await fetch(
-      `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&_t=${Date.now()}`,
-      { headers: { Authorization: `Bearer ${token}`, 'Cache-Control': 'no-cache' } }
-    ).then(r => r.json());
-    return Array.isArray(data) ? data : [];
-  } catch (e) {
-    console.warn('CRO_LOGS read failed:', e?.message);
-    return [];
+async function driveFindFile(token, name, parentId) {
+  const pid = parentId || await getAppFolderId(token);
+  const cacheKey = `${pid}/${name}`;
+  if (_fileIdCache[cacheKey]) return { id: _fileIdCache[cacheKey], name };
+  const q = pid
+    ? encodeURIComponent(`name='${name}' and '${pid}' in parents and trashed=false`)
+    : encodeURIComponent(`name='${name}' and trashed=false`);
+  const resp = await fetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`,
+    { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json());
+  const file = resp.files && resp.files.length > 0 ? resp.files[0] : null;
+  if (file) _fileIdCache[cacheKey] = file.id;
+  return file;
+}
+async function driveReadJson(token, fileId) {
+  return fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&_t=${Date.now()}`,
+    { headers: { Authorization: `Bearer ${token}`, 'Cache-Control': 'no-cache' } }).then(r => r.json());
+}
+async function driveWriteJson(token, name, data, parentId) {
+  const body = JSON.stringify(data);
+  const pid  = parentId || await getAppFolderId(token);
+  const cacheKey = `${pid}/${name}`;
+  let fileId = _fileIdCache[cacheKey] || null;
+  if (!fileId) { const existing = await driveFindFile(token, name, pid); fileId = existing?.id || null; }
+  if (fileId) {
+    const result = await fetch(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`,
+      { method: 'PATCH', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body }).then(r => r.json());
+    if (result.error) { delete _fileIdCache[cacheKey]; fileId = null; }
+    else { _fileIdCache[cacheKey] = result.id || fileId; return result; }
   }
+  const meta = { name, mimeType: 'application/json', ...(pid ? { parents: [pid] } : {}) };
+  const created = await fetch('https://www.googleapis.com/drive/v3/files',
+    { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(meta) }).then(r => r.json());
+  if (created.id) _fileIdCache[cacheKey] = created.id;
+  const uploadResult = await fetch(`https://www.googleapis.com/upload/drive/v3/files/${created.id}?uploadType=media`,
+    { method: 'PATCH', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body }).then(r => r.json());
+  if (uploadResult.error) throw new Error(uploadResult.error.message || 'Drive write failed');
+  return uploadResult;
 }
 
-export async function writeLogsToDrive(token, logs) {
+const LOG_FILE = 'events_log.json';
+const MAX_LOG_ENTRIES = 1500; // oldest entries drop off past this so the file doesn't grow forever
+
+// ── Lightweight device fingerprint ───────────────────────────────────────────
+// Just enough to tell "which computer" apart in a breakdown — no tracking,
+// no IP, nothing beyond what the browser already exposes to the page anyway.
+export function deviceLabel() {
   try {
-    const folderId = await getLogFolderId(token);
-    const body     = JSON.stringify(logs);
-    let fileId     = await findLogFile(token, folderId);
-
-    if (fileId) {
-      const result = await fetch(
-        `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`,
-        { method: 'PATCH', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body }
-      ).then(r => r.json());
-      if (result.error) {
-        _logFileIdCache = null;
-        fileId = null;
-      }
-    }
-
-    if (!fileId) {
-      const meta = { name: LOG_FILE_NAME, mimeType: 'application/json', parents: [folderId] };
-      const created = await fetch('https://www.googleapis.com/drive/v3/files', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(meta),
-      }).then(r => r.json());
-      _logFileIdCache = created.id;
-      await fetch(
-        `https://www.googleapis.com/upload/drive/v3/files/${created.id}?uploadType=media`,
-        { method: 'PATCH', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body }
-      );
-    }
-  } catch (e) {
-    console.warn('CRO_LOGS write failed:', e?.message);
-  }
+    const ua = navigator.userAgent || '';
+    const isMobile = /Mobile|Android|iPhone/i.test(ua);
+    let browser = 'Unknown browser';
+    if (ua.includes('Edg/'))          browser = 'Edge';
+    else if (ua.includes('OPR/'))     browser = 'Opera';
+    else if (ua.includes('Chrome/'))  browser = 'Chrome';
+    else if (ua.includes('Firefox/')) browser = 'Firefox';
+    else if (ua.includes('Safari/'))  browser = 'Safari';
+    let os = 'Unknown OS';
+    if (ua.includes('Windows'))                        os = 'Windows';
+    else if (ua.includes('Mac OS'))                     os = 'macOS';
+    else if (ua.includes('Android'))                    os = 'Android';
+    else if (ua.includes('iPhone') || ua.includes('iPad')) os = 'iOS';
+    else if (ua.includes('Linux'))                      os = 'Linux';
+    return `${browser} · ${os}${isMobile ? ' · mobile' : ''}`;
+  } catch (_) { return 'Unknown device'; }
 }
 
-// ── Public API: write a single log entry ──────────────────────────────────
-// Call this from App.js / other components via the addLog prop.
-// addLog({ action, section, detail, level?, uid?, user? })
-export function createLogWriter(token, currentUser, users) {
-  return async function addLog({ action, section, detail, level = 'info', uid, user: userName }) {
-    if (!token) return;
-    try {
-      const existingLogs = await readLogsFromDrive(token);
-      const u = users?.find(x => x.id === (uid || currentUser));
-      const entry = {
-        id:        `log_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-        timestamp: new Date().toISOString(),
-        uid:       uid || currentUser,
-        user:      userName || u?.name || uid || currentUser,
-        section,
-        action,
-        detail,
-        level,
-      };
-      const updated = [entry, ...existingLogs].slice(0, 2000); // keep last 2000
-      await writeLogsToDrive(token, updated);
-    } catch (e) {
-      console.warn('addLog failed:', e?.message);
-    }
-  };
-}
-
-// ── Colours ───────────────────────────────────────────────────────────────
-const LEVEL_STYLE = {
-  info:    { bg: '#1e40af22', border: '#3b82f6', text: '#93c5fd', icon: 'ℹ️' },
-  success: { bg: '#16653422', border: '#22c55e', text: '#86efac', icon: '✅' },
-  warning: { bg: '#92400e22', border: '#f59e0b', text: '#fcd34d', icon: '⚠️' },
-  error:   { bg: '#7f1d1d22', border: '#ef4444', text: '#fca5a5', icon: '🚨' },
-};
-
-const SECTION_ICONS = {
-  incidents: '🚨', holidays: '🌴', rota: '🔄', payroll: '💷', settings: '🔧',
-  users: '👤', login: '🔐', logout: '🚪', wiki: '📖', toil: '⏳',
-  upgrades: '⬆', timesheets: '⏱', overtime: '🕐', absence: '🏥',
-  announcements: '📢', calendar: '📅', logs: '📋', auth: '🔑', drive: '☁️',
-};
-
-function LevelBadge({ level }) {
-  const s = LEVEL_STYLE[level] || LEVEL_STYLE.info;
-  return (
-    <span style={{
-      background: s.bg, border: `1px solid ${s.border}`, color: s.text,
-      borderRadius: 6, padding: '2px 8px', fontSize: 10, fontWeight: 600,
-    }}>
-      {s.icon} {level.toUpperCase()}
-    </span>
-  );
-}
-
-// ── Logs Component ─────────────────────────────────────────────────────────
-export default function Logs({ isManager, driveToken, users, currentUser }) {
-  const [logs,      setLogs]      = useState([]);
-  const [loading,   setLoading]   = useState(false);
-  const [filter,    setFilter]    = useState({ level: 'all', section: 'all', uid: 'all', search: '' });
-  const [page,      setPage]      = useState(0);
-  const PAGE_SIZE = 50;
-  const pollRef = useRef(null);
-
-  const loadLogs = useCallback(async () => {
+// ── Write a log entry ─────────────────────────────────────────────────────────
+// Signature: createLogWriter(driveToken, uid, users)({ action, section, detail, level?, uid?, user? })
+// Fire-and-forget by convention at every call site (.catch(()=>{})) — a log
+// write failing should never block or break the action being logged.
+// NOTE: this is a best-effort append (read-modify-write, not queued/retried
+// like the main app data in useGoogleDrive.js) — acceptable here because
+// losing an occasional log line under heavy concurrent write pressure is a
+// much lower-stakes failure than losing real rota/incident data would be.
+export function createLogWriter(driveToken, uid, users) {
+  return async (entry) => {
     if (!driveToken) return;
-    setLoading(true);
+    const effectiveUid = entry.uid || uid || null;
+    const user = (users || []).find(u => u.id === effectiveUid);
+    const record = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      timestamp: new Date().toISOString(),
+      uid: effectiveUid,
+      userName: entry.user || user?.name || effectiveUid || 'Unknown',
+      section: entry.section || 'general',
+      level: entry.level || 'info', // 'info' | 'warn' | 'error'
+      action: entry.action || '',
+      detail: entry.detail || '',
+      device: deviceLabel(),
+    };
+    let list = [];
     try {
-      const data = await readLogsFromDrive(driveToken);
-      setLogs(data);
-    } catch (_) {}
-    setLoading(false);
-  }, [driveToken]);
-
-  useEffect(() => {
-    loadLogs();
-    // Poll every 30s
-    pollRef.current = setInterval(loadLogs, 30000);
-    return () => clearInterval(pollRef.current);
-  }, [loadLogs]);
-
-  if (!isManager) {
-    return (
-      <div className="alert alert-warning">
-        ⚠ Activity Logs are restricted to the Manager.
-      </div>
-    );
-  }
-
-  // ── Filter ──────────────────────────────────────────────────────────────
-  const allSections = [...new Set(logs.map(l => l.section).filter(Boolean))].sort();
-  const allLevels   = ['info', 'success', 'warning', 'error'];
-
-  const filtered = logs.filter(l => {
-    if (filter.level   !== 'all' && l.level   !== filter.level)   return false;
-    if (filter.section !== 'all' && l.section !== filter.section) return false;
-    if (filter.uid     !== 'all' && l.uid     !== filter.uid)     return false;
-    if (filter.search) {
-      const q = filter.search.toLowerCase();
-      if (!(
-        l.action?.toLowerCase().includes(q) ||
-        l.detail?.toLowerCase().includes(q) ||
-        l.user?.toLowerCase().includes(q)   ||
-        l.section?.toLowerCase().includes(q)
-      )) return false;
-    }
-    return true;
-  });
-
-  const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
-  const paged = filtered.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
-
-  const setF = (k, v) => { setFilter(f => ({ ...f, [k]: v })); setPage(0); };
-
-  const exportCsv = () => {
-    const rows = [
-      ['Timestamp', 'User', 'UID', 'Section', 'Action', 'Detail', 'Level'],
-      ...filtered.map(l => [
-        l.timestamp, l.user, l.uid, l.section, l.action,
-        (l.detail || '').replace(/,/g, ';'), l.level,
-      ]),
-    ];
-    const csv  = rows.map(r => r.join(',')).join('\n');
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const url  = URL.createObjectURL(blob);
-    const a    = document.createElement('a'); a.href = url;
-    a.download = `CRO_LOGS_${new Date().toISOString().slice(0,10)}.csv`; a.click();
-    URL.revokeObjectURL(url);
+      const file = await driveFindFile(driveToken, LOG_FILE);
+      if (file?.id) {
+        const data = await driveReadJson(driveToken, file.id);
+        if (Array.isArray(data)) list = data;
+      }
+    } catch (_) { /* start fresh if the read fails — better to log than to throw */ }
+    const next = [...list, record].slice(-MAX_LOG_ENTRIES);
+    await driveWriteJson(driveToken, LOG_FILE, next);
   };
+}
+
+// ── Read all logs ─────────────────────────────────────────────────────────────
+// Usable with ONLY a Drive token — deliberately does not require the person
+// to already be logged into the app, since the whole point of the login-page
+// button is to work when logging in is exactly the thing that's broken.
+export async function readLogs(driveToken) {
+  if (!driveToken) return [];
+  try {
+    const file = await driveFindFile(driveToken, LOG_FILE);
+    if (!file?.id) return [];
+    const data = await driveReadJson(driveToken, file.id);
+    return Array.isArray(data) ? data : [];
+  } catch (_) { return []; }
+}
+
+// ── Login issue breakdown ─────────────────────────────────────────────────────
+// Reusable component: the manager's full Activity Logs page AND the login
+// screen's diagnostics button both render this against the same log data.
+export function LoginIssuesBreakdown({ logs, highlightUid }) {
+  const authLogs = (logs || []).filter(l => l.section === 'auth');
+  const successes = authLogs.filter(l => l.level === 'info');
+  const failures  = authLogs.filter(l => l.level !== 'info');
+
+  const byReason = {};
+  failures.forEach(l => { byReason[l.action] = (byReason[l.action] || 0) + 1; });
+  const reasonRows = Object.entries(byReason).sort((a, b) => b[1] - a[1]);
+
+  const byUser = {};
+  failures.forEach(l => { const k = l.userName || l.uid || 'Unknown'; byUser[k] = (byUser[k] || 0) + 1; });
+  const userRows = Object.entries(byUser).sort((a, b) => b[1] - a[1]);
+
+  const byDevice = {};
+  failures.forEach(l => { const k = l.device || 'Unknown device'; byDevice[k] = (byDevice[k] || 0) + 1; });
+  const deviceRows = Object.entries(byDevice).sort((a, b) => b[1] - a[1]);
+
+  const recentFailures = failures
+    .slice().sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''))
+    .slice(0, 25);
 
   return (
     <div>
-      {/* Header */}
-      <div className="page-header">
-        <div className="flex-between">
-          <div>
-            <div className="page-title">📋 Activity Logs</div>
-            <div className="page-sub">
-              Audit trail stored in <code style={{ fontSize: 11, color: 'var(--accent)' }}>CRO_LOGS/activity_log.json</code> on Google Drive · Manager only
-            </div>
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 16 }}>
+        {[
+          ['Login attempts', authLogs.length, '#38bdf8'],
+          ['Successful',     successes.length, '#22c55e'],
+          ['Failed',         failures.length,  failures.length > 0 ? '#ef4444' : '#22c55e'],
+        ].map(([label, val, color]) => (
+          <div key={label} style={{ flex: '1 1 140px', padding: '12px 14px', borderRadius: 10, background: 'var(--bg-card, #161b22)', border: '1px solid var(--border, #30363d)' }}>
+            <div style={{ fontSize: 22, fontWeight: 800, color, fontFamily: 'DM Mono, monospace' }}>{val}</div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted, #8b949e)', marginTop: 2 }}>{label}</div>
           </div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button className="btn btn-secondary btn-sm" onClick={loadLogs} disabled={loading}>
-              {loading ? '⏳ Loading…' : '🔄 Refresh'}
-            </button>
-            <button className="btn btn-secondary btn-sm" onClick={exportCsv} disabled={!filtered.length}>
-              ⬇ Export CSV
-            </button>
+        ))}
+      </div>
+
+      {failures.length === 0 ? (
+        <div style={{ padding: '18px 16px', textAlign: 'center', color: '#22c55e', fontSize: 13, border: '1px dashed var(--border, #30363d)', borderRadius: 10 }}>
+          ✅ No failed login attempts recorded.
+        </div>
+      ) : (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, marginBottom: 16 }}>
+          <div style={{ padding: '12px 14px', borderRadius: 10, background: 'var(--bg-card, #161b22)', border: '1px solid var(--border, #30363d)' }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted, #8b949e)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8 }}>By reason</div>
+            {reasonRows.map(([reason, count]) => (
+              <div key={reason} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '4px 0' }}>
+                <span style={{ color: '#f87171' }}>{reason}</span>
+                <span style={{ fontFamily: 'DM Mono, monospace', fontWeight: 700 }}>{count}</span>
+              </div>
+            ))}
           </div>
-        </div>
-      </div>
-
-      {/* Stats bar */}
-      <div style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
-        {allLevels.map(lv => {
-          const s = LEVEL_STYLE[lv];
-          const count = logs.filter(l => l.level === lv).length;
-          return (
-            <div key={lv} onClick={() => setF('level', filter.level === lv ? 'all' : lv)}
-              className="card" style={{
-                padding: '10px 16px', cursor: 'pointer', minWidth: 90, textAlign: 'center',
-                border: `1px solid ${filter.level === lv ? s.border : 'var(--border)'}`,
-                opacity: count === 0 ? 0.4 : 1,
-              }}>
-              <div style={{ fontSize: 18 }}>{s.icon}</div>
-              <div style={{ fontSize: 20, fontWeight: 700, color: s.text }}>{count}</div>
-              <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase' }}>{lv}</div>
-            </div>
-          );
-        })}
-        <div className="card" style={{ padding: '10px 16px', minWidth: 90, textAlign: 'center' }}>
-          <div style={{ fontSize: 18 }}>📋</div>
-          <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--text-primary)' }}>{logs.length}</div>
-          <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Total</div>
-        </div>
-      </div>
-
-      {/* Filters */}
-      <div className="card" style={{ padding: '12px 16px', marginBottom: 16 }}>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-          <input
-            className="form-input"
-            style={{ width: 200 }}
-            placeholder="🔍 Search action / detail / user…"
-            value={filter.search}
-            onChange={e => setF('search', e.target.value)}
-          />
-          <select className="form-input" style={{ width: 130 }} value={filter.level} onChange={e => setF('level', e.target.value)}>
-            <option value="all">All Levels</option>
-            {allLevels.map(lv => <option key={lv} value={lv}>{lv.toUpperCase()}</option>)}
-          </select>
-          <select className="form-input" style={{ width: 150 }} value={filter.section} onChange={e => setF('section', e.target.value)}>
-            <option value="all">All Sections</option>
-            {allSections.map(s => <option key={s} value={s}>{(SECTION_ICONS[s] || '📌')} {s}</option>)}
-          </select>
-          <select className="form-input" style={{ width: 160 }} value={filter.uid} onChange={e => setF('uid', e.target.value)}>
-            <option value="all">All Engineers</option>
-            {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
-          </select>
-          {(filter.level !== 'all' || filter.section !== 'all' || filter.uid !== 'all' || filter.search) && (
-            <button className="btn btn-secondary btn-sm" onClick={() => { setFilter({ level:'all', section:'all', uid:'all', search:'' }); setPage(0); }}>
-              ✕ Clear
-            </button>
-          )}
-          <span style={{ fontSize: 12, color: 'var(--text-muted)', marginLeft: 'auto' }}>
-            {filtered.length} entries
-          </span>
-        </div>
-      </div>
-
-      {/* Log table */}
-      {!driveToken && (
-        <div className="alert alert-warning">⚠ Drive not connected — logs require Google Drive.</div>
-      )}
-      {driveToken && loading && logs.length === 0 && (
-        <div style={{ textAlign: 'center', padding: 40, color: 'var(--text-muted)' }}>⏳ Loading logs from Drive…</div>
-      )}
-      {driveToken && !loading && logs.length === 0 && (
-        <div className="card" style={{ textAlign: 'center', padding: 48 }}>
-          <div style={{ fontSize: 40, marginBottom: 12 }}>📋</div>
-          <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 6 }}>No logs yet</div>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-            Activity logs will appear here as the team uses the app.
+          <div style={{ padding: '12px 14px', borderRadius: 10, background: 'var(--bg-card, #161b22)', border: '1px solid var(--border, #30363d)' }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted, #8b949e)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8 }}>By engineer</div>
+            {userRows.map(([u, count]) => (
+              <div key={u} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '4px 0' }}>
+                <span style={{ color: u === highlightUid ? '#fbbf24' : 'var(--text-secondary, #c9d1d9)', fontWeight: u === highlightUid ? 700 : 400 }}>{u}</span>
+                <span style={{ fontFamily: 'DM Mono, monospace', fontWeight: 700 }}>{count}</span>
+              </div>
+            ))}
+          </div>
+          <div style={{ padding: '12px 14px', borderRadius: 10, background: 'var(--bg-card, #161b22)', border: '1px solid var(--border, #30363d)' }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted, #8b949e)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8 }}>By device</div>
+            {deviceRows.map(([d, count]) => (
+              <div key={d} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '4px 0' }}>
+                <span style={{ color: 'var(--text-secondary, #c9d1d9)' }}>{d}</span>
+                <span style={{ fontFamily: 'DM Mono, monospace', fontWeight: 700 }}>{count}</span>
+              </div>
+            ))}
           </div>
         </div>
       )}
 
-      {paged.length > 0 && (
-        <div className="card" style={{ overflowX: 'auto' }}>
-          <table style={{ minWidth: 700, fontSize: 12 }}>
+      {recentFailures.length > 0 && (
+        <div style={{ borderRadius: 10, border: '1px solid var(--border, #30363d)', overflow: 'hidden' }}>
+          <div style={{ padding: '10px 14px', fontSize: 11, fontWeight: 700, color: 'var(--text-muted, #8b949e)', textTransform: 'uppercase', letterSpacing: 1, background: 'rgba(255,255,255,0.03)' }}>
+            Recent failed attempts
+          </div>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               <tr>
-                <th style={{ width: 140 }}>Timestamp</th>
-                <th style={{ width: 90  }}>User</th>
-                <th style={{ width: 80  }}>Section</th>
-                <th style={{ width: 80  }}>Level</th>
-                <th>Action</th>
-                <th>Detail</th>
+                <th style={{ textAlign: 'left', padding: '6px 14px', fontSize: 10, color: 'var(--text-muted, #8b949e)' }}>Time</th>
+                <th style={{ textAlign: 'left', padding: '6px 14px', fontSize: 10, color: 'var(--text-muted, #8b949e)' }}>User</th>
+                <th style={{ textAlign: 'left', padding: '6px 14px', fontSize: 10, color: 'var(--text-muted, #8b949e)' }}>Reason</th>
+                <th style={{ textAlign: 'left', padding: '6px 14px', fontSize: 10, color: 'var(--text-muted, #8b949e)' }}>Device</th>
               </tr>
             </thead>
             <tbody>
-              {paged.map(log => {
-                const s = LEVEL_STYLE[log.level] || LEVEL_STYLE.info;
-                const dt = log.timestamp ? new Date(log.timestamp) : null;
-                const dtStr = dt
-                  ? dt.toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'2-digit' }) +
-                    ' ' + dt.toLocaleTimeString('en-GB', { hour:'2-digit', minute:'2-digit', second:'2-digit' })
-                  : '—';
-                const u = users.find(x => x.id === log.uid);
-                return (
-                  <tr key={log.id} style={{ borderLeft: `3px solid ${s.border}` }}>
-                    <td style={{ fontFamily: 'DM Mono', fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
-                      {dtStr}
-                    </td>
-                    <td>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                        {u && (
-                          <div style={{
-                            width: 22, height: 22, borderRadius: 6,
-                            background: u.color || '#1d4ed8',
-                            display: 'flex', alignItems: 'center', justifyContent: 'center',
-                            fontSize: 9, fontWeight: 700, color: '#fff', flexShrink: 0,
-                          }}>{u.avatar || u.id?.slice(0,2)}</div>
-                        )}
-                        <div>
-                          <div style={{ fontSize: 11, fontWeight: 600 }}>{log.user || log.uid}</div>
-                          <div style={{ fontSize: 9, color: 'var(--text-muted)', fontFamily: 'DM Mono' }}>{log.uid}</div>
-                        </div>
-                      </div>
-                    </td>
-                    <td>
-                      <span style={{ fontSize: 10, color: 'var(--text-secondary)' }}>
-                        {SECTION_ICONS[log.section] || '📌'} {log.section || '—'}
-                      </span>
-                    </td>
-                    <td><LevelBadge level={log.level || 'info'} /></td>
-                    <td style={{ fontWeight: 500 }}>{log.action || '—'}</td>
-                    <td style={{ color: 'var(--text-muted)', maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {log.detail || '—'}
-                    </td>
-                  </tr>
-                );
-              })}
+              {recentFailures.map(l => (
+                <tr key={l.id}>
+                  <td style={{ padding: '6px 14px', fontSize: 11, fontFamily: 'DM Mono, monospace', whiteSpace: 'nowrap' }}>
+                    {l.timestamp ? new Date(l.timestamp).toLocaleString('en-GB') : '—'}
+                  </td>
+                  <td style={{ padding: '6px 14px', fontSize: 12 }}>{l.userName || l.uid || '—'}</td>
+                  <td style={{ padding: '6px 14px', fontSize: 12, color: '#f87171' }}>{l.action}{l.detail ? ` — ${l.detail}` : ''}</td>
+                  <td style={{ padding: '6px 14px', fontSize: 11, color: 'var(--text-muted, #8b949e)' }}>{l.device || '—'}</td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>
       )}
+    </div>
+  );
+}
 
-      {/* Pagination */}
-      {totalPages > 1 && (
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'center', marginTop: 12 }}>
-          <button className="btn btn-secondary btn-sm" onClick={() => setPage(p => Math.max(0, p-1))} disabled={page === 0}>← Prev</button>
-          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Page {page+1} of {totalPages}</span>
-          <button className="btn btn-secondary btn-sm" onClick={() => setPage(p => Math.min(totalPages-1, p+1))} disabled={page === totalPages-1}>Next →</button>
+// ── Full Activity Logs page (manager-only) ────────────────────────────────────
+export default function Logs({ isManager, driveToken, users, currentUser }) {
+  const [logs, setLogs]         = useState([]);
+  const [loading, setLoading]   = useState(true);
+  const [section, setSection]   = useState('all'); // 'all' | 'auth' | 'general' | ...
+  const [level, setLevel]       = useState('all');  // 'all' | 'info' | 'warn' | 'error'
+  const [view, setView]         = useState('issues'); // 'issues' | 'all'
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const data = await readLogs(driveToken);
+    setLogs(data);
+    setLoading(false);
+  }, [driveToken]);
+
+  useEffect(() => { load(); }, [load]);
+
+  if (!isManager) {
+    return (
+      <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
+        Activity Logs are only available to managers.
+      </div>
+    );
+  }
+
+  const sections = ['all', ...new Set(logs.map(l => l.section).filter(Boolean))];
+  const filtered = logs
+    .filter(l => section === 'all' || l.section === section)
+    .filter(l => level === 'all' || l.level === level)
+    .slice().sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
+
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 10, marginBottom: 16 }}>
+        <div>
+          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>📋 Activity Logs</h1>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 3 }}>
+            Every recorded event across all users and devices — {logs.length} total entries.
+          </div>
         </div>
+        <button className="btn btn-secondary btn-sm" onClick={load} disabled={loading}>
+          {loading ? '⏳ Loading…' : '🔄 Refresh'}
+        </button>
+      </div>
+
+      <div style={{ display: 'flex', gap: 6, marginBottom: 16 }}>
+        <button className={`btn btn-sm ${view === 'issues' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setView('issues')}>🔑 Login Issues</button>
+        <button className={`btn btn-sm ${view === 'all' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setView('all')}>📄 All Events</button>
+      </div>
+
+      {view === 'issues' ? (
+        <LoginIssuesBreakdown logs={logs} />
+      ) : (
+        <>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
+            <select className="select" value={section} onChange={e => setSection(e.target.value)} style={{ width: 160 }}>
+              {sections.map(s => <option key={s} value={s}>{s === 'all' ? 'All sections' : s}</option>)}
+            </select>
+            <select className="select" value={level} onChange={e => setLevel(e.target.value)} style={{ width: 140 }}>
+              <option value="all">All levels</option>
+              <option value="info">Info</option>
+              <option value="warn">Warning</option>
+              <option value="error">Error</option>
+            </select>
+          </div>
+          <div className="card" style={{ overflowX: 'auto' }}>
+            <table>
+              <thead>
+                <tr>
+                  <th>Time</th><th>User</th><th>Section</th><th>Level</th><th>Action</th><th>Detail</th><th>Device</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map(l => (
+                  <tr key={l.id}>
+                    <td style={{ fontFamily: 'DM Mono', fontSize: 12, whiteSpace: 'nowrap' }}>{l.timestamp ? new Date(l.timestamp).toLocaleString('en-GB') : '—'}</td>
+                    <td>{l.userName || l.uid || '—'}</td>
+                    <td>{l.section}</td>
+                    <td style={{ color: l.level === 'error' ? '#ef4444' : l.level === 'warn' ? '#f59e0b' : '#22c55e', fontWeight: 700 }}>{l.level}</td>
+                    <td>{l.action}</td>
+                    <td style={{ color: 'var(--text-muted)' }}>{l.detail}</td>
+                    <td style={{ fontSize: 11, color: 'var(--text-muted)' }}>{l.device}</td>
+                  </tr>
+                ))}
+                {filtered.length === 0 && (
+                  <tr><td colSpan={7} style={{ textAlign: 'center', padding: 24, color: 'var(--text-muted)' }}>No events match this filter.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </>
       )}
     </div>
   );
