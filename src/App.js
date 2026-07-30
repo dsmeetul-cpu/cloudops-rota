@@ -25,7 +25,7 @@ import CalendarPage from './Calendar';
 import Dashboard from './Dashboard';
 import OnCall from './OnCall';
 import Incidents from './Incidents';
-import Logs, { createLogWriter, readLogs, LoginIssuesBreakdown } from './Logs';
+import Logs, { createLogWriter } from './Logs';
 import UpgradeDays from './UpgradeDays';
 import Holidays from './Holidays';
 import Payroll from './Payroll';
@@ -59,22 +59,12 @@ let _profilePics = {};
 
 function getRegistry() { return _registry || { passwords: {}, sheets_id: '' }; }
 function setRegistry(r) { _registry = r; }
-function isRegistryLoaded() { return _registry !== null; }
 function getProfilePics() { return _profilePics; }
 function setProfilePics(p) { _profilePics = p || {}; }
 
 function checkPassword(uid, pw) {
   const reg = getRegistry();
-  // No fallback: if the registry hasn't loaded yet, or this user has no
-  // stored password hash, deny the login rather than silently accepting
-  // "username in lowercase" as a valid password. That fallback used to
-  // exist here — it meant a login attempt that happened to race ahead of
-  // the registry finishing its Drive load would reject the user's REAL
-  // password while quietly accepting a guessable default instead. The
-  // legitimate "default password" case (a manager resetting someone's
-  // password) already writes a real entry via updatePasswordInRegistry —
-  // this fallback was never needed for that, only a silent security hole.
-  if (!reg.passwords || !reg.passwords[uid]) return false;
+  if (!reg.passwords || !reg.passwords[uid]) return hashPw(uid.toLowerCase()) === hashPw(pw);
   return reg.passwords[uid] === hashPw(pw);
 }
 
@@ -788,56 +778,24 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDri
   const [showForgot, setShowForgot] = useState(false);
   const [forgotUid, setForgotUid]   = useState('');
   const [forgotMsg, setForgotMsg]   = useState('');
-  const [showDiag, setShowDiag]     = useState(false);
-  const [diagLogs, setDiagLogs]     = useState(null);
-  const [diagLoading, setDiagLoading] = useState(false);
   const uidRef = useRef(null);
 
   useEffect(() => {
     if (driveReady && uidRef.current) uidRef.current.focus();
   }, [driveReady]);
 
-  const openDiagnostics = async () => {
-    setShowDiag(true);
-    setDiagLoading(true);
-    const logs = await readLogs(driveToken);
-    setDiagLogs(logs);
-    setDiagLoading(false);
-  };
-
   const handle = () => {
     const id = uid.trim().toUpperCase();
-    // Best-effort — logging a failed login should never itself block login.
-    const logFailure = (action, detail) => {
-      if (!driveToken) return;
-      createLogWriter(driveToken, id, users)({ section: 'auth', level: 'warn', action, detail }).catch(() => {});
-    };
-
     if (!id) { setErr('Enter your username.'); return; }
-    // Checks driveReady AND the password registry specifically — driveReady
-    // covers general data load, but this login flow depends on the registry
-    // in particular. Logging in before it's loaded used to silently fall
-    // back to accepting "username in lowercase" as anyone's password; that
-    // fallback is gone now, so this case correctly shows as a real failure
-    // — this message is what tells you WHY, instead of just "incorrect".
-    if (!driveReady || !isRegistryLoaded()) {
-      setErr('Still loading team data — please wait a moment, then try again.');
-      logFailure('Login failed — team data not ready', 'Attempted login before Drive/registry finished loading');
-      return;
-    }
+    if (!driveReady) { setErr('Still loading team data — please wait or click Connect.'); return; }
     const userExists = users.find(u => u.id === id);
-    if (!userExists) {
-      setErr('Username not found. Contact your manager.');
-      logFailure('Login failed — user not found', `Attempted username: ${id}`);
-      return;
-    }
+    if (!userExists) { setErr('Username not found. Contact your manager.'); return; }
     if (checkPassword(id, pw)) {
       setErr('');
       if (id === 'MBA47') { setPending2FA(id); setShow2FA(true); }
       else onLogin(id);
     } else {
       setErr('Incorrect password. Please try again or use Forgot Password to reset.');
-      logFailure('Login failed — incorrect password', '');
     }
   };
 
@@ -945,11 +903,6 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDri
             </button>
             <button className="btn btn-secondary btn-sm" style={{ width: '100%' }}
               onClick={() => setShowForgot(true)}>🔑 Forgot Password?</button>
-            <button className="btn btn-secondary btn-sm" style={{ width: '100%', marginTop: 8 }}
-              onClick={openDiagnostics} disabled={!driveToken}
-              title={driveToken ? 'See recorded login attempts and failure reasons' : 'Connect to Drive first'}>
-              🔍 Trouble logging in? View event logs
-            </button>
             {driveReady && (
               <div style={{ marginTop: 14, padding: '8px 12px', borderRadius: 8,
                 background: 'rgba(110,231,183,0.06)', border: '1px solid rgba(110,231,183,0.15)',
@@ -961,23 +914,6 @@ function LoginScreen({ onLogin, driveToken, onConnectDrive, users, connectingDri
           </>
         )}
       </div>
-
-      {showDiag && (
-        <Modal title="🔍 Login Event Logs" onClose={() => setShowDiag(false)} wide>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 14 }}>
-            Recent login attempts across every user and device — this reads directly from Drive,
-            so it works even while you're stuck on this screen.
-          </div>
-          {diagLoading ? (
-            <div style={{ padding: 30, textAlign: 'center', color: 'var(--text-muted)' }}>⏳ Loading…</div>
-          ) : (
-            <>
-              <LoginIssuesBreakdown logs={diagLogs || []} highlightUid={uid.trim().toUpperCase()} />
-              <button className="btn btn-secondary btn-sm" style={{ marginTop: 14 }} onClick={openDiagnostics}>🔄 Refresh</button>
-            </>
-          )}
-        </Modal>
-      )}
     </div>
   );
 }
