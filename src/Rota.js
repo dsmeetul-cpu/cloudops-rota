@@ -1,6 +1,7 @@
 // src/Rota.js
 // CloudOps Rota — improved editing: floating cell editor, sticky toolbar, floating bulk bar 30th May 2026
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import InstallAppButton from './InstallAppButton';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 const SHIFT_COLORS = {
@@ -133,6 +134,91 @@ function ReadinessBanner({ users, startDate, weeks }) {
           <span>👋</span><span><strong style={{ color:'#fca5a5' }}>{u.name}</strong> leaves on <strong style={{ color:'#fca5a5', fontFamily:'DM Mono' }}>{u.termination_date}</strong></span>
         </div>
       ))}
+    </div>
+  );
+}
+
+// ── On-call gap detection ───────────────────────────────────────────────────
+// Weekend on-call runs Fri 19:00 → Mon 07:00 and is stored as one 'weekend'
+// rota entry per calendar day (Fri/Sat/Sun/Mon). Payroll (calcOncallPay in
+// Payroll.js) splits those into Fri=5h/Sat=24h/Sun=24h/Mon=7h = 60h total.
+// If the Monday entry is never added, payroll silently only pays 53h. This
+// scans every engineer's rota for 'weekend' blocks that have Sat+Sun but no
+// following Monday entry (and aren't legitimately excluded by a bank holiday
+// or approved leave on that Monday), so the gap can be caught before export.
+function findOnCallGaps(rota, users, bhList, holidays) {
+  const bhSet = new Set((bhList || []).map(b => b.date));
+  const gaps = [];
+  (users || []).forEach(u => {
+    const userRota = rota?.[u.id] || {};
+    const userHols = (holidays || []).filter(h => h.userId === u.id);
+    const weDates = Object.entries(userRota)
+      .filter(([, s]) => s === 'weekend')
+      .map(([d]) => d)
+      .sort();
+
+    // Group into runs of consecutive calendar days
+    const runs = [];
+    weDates.forEach(date => {
+      const last = runs[runs.length - 1];
+      if (last) {
+        const exp = new Date(last[last.length - 1] + 'T12:00:00');
+        exp.setDate(exp.getDate() + 1);
+        if (date === exp.toISOString().slice(0, 10)) { last.push(date); return; }
+      }
+      runs.push([date]);
+    });
+
+    runs.forEach(run => {
+      const dows = run.map(d => new Date(d + 'T12:00:00').getDay());
+      const hasSat = dows.includes(6), hasSun = dows.includes(0), hasMon = dows.includes(1);
+      if (!(hasSat && hasSun && !hasMon)) return; // only flag genuine Sat+Sun-but-no-Mon blocks
+      const sun = run.find(d => new Date(d + 'T12:00:00').getDay() === 0);
+      const mon = new Date(sun + 'T12:00:00'); mon.setDate(mon.getDate() + 1);
+      const monDs = mon.toISOString().slice(0, 10);
+      const monIsBH  = bhSet.has(monDs);
+      const monIsHol = userHols.some(h => monDs >= h.start && monDs <= h.end);
+      if (monIsBH || monIsHol) return; // legitimately excluded — not a data gap
+      gaps.push({ userId: u.id, userName: u.name, blockStart: run[0], blockEnd: run[run.length - 1], missingDate: monDs, shortfallHrs: 7 });
+    });
+  });
+  return gaps.sort((a, b) => a.missingDate.localeCompare(b.missingDate));
+}
+
+function OnCallGapBanner({ users, rota, holidays, UK_BANK_HOLIDAYS }) {
+  const [dismissed, setDismissed] = useState(false);
+  const gaps = React.useMemo(
+    () => findOnCallGaps(rota, users, UK_BANK_HOLIDAYS, holidays),
+    [rota, users, UK_BANK_HOLIDAYS, holidays]
+  );
+  if (dismissed || gaps.length === 0) return null;
+  const totalShortfall = gaps.reduce((s, g) => s + g.shortfallHrs, 0);
+  const fmtD = ds => ds ? new Date(ds + 'T12:00:00').toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
+  return (
+    <div style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.25)', borderRadius: 10, padding: '12px 16px', marginBottom: 14 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 8, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontSize: 18 }}>⚠️</span>
+          <strong style={{ color: '#fca5a5', fontSize: 13 }}>
+            {gaps.length} weekend on-call block{gaps.length !== 1 ? 's' : ''} missing the Monday 07:00 handover — {totalShortfall}h not being paid
+          </strong>
+        </div>
+        <button className="btn btn-secondary btn-sm" onClick={() => setDismissed(true)}>Dismiss</button>
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
+        Weekend on-call runs Fri 19:00 → Mon 07:00. Each block below has Sat+Sun logged but no Monday 00:00–07:00 entry, so payroll only pays 53h instead of 60h for it. Add the "Weekend On-Call" shift on the Monday to fix — or check the On-Call Breakdown tab in Payroll for the full picture.
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+        {gaps.map((g, i) => (
+          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontFamily: 'DM Mono', background: 'rgba(0,0,0,0.15)', borderRadius: 6, padding: '6px 10px', flexWrap: 'wrap' }}>
+            <span style={{ color: '#fca5a5' }}>●</span>
+            <strong style={{ color: 'var(--text-primary)', fontFamily: 'inherit' }}>{g.userName}</strong>
+            <span style={{ color: 'var(--text-muted)' }}>· {fmtD(g.blockStart)} – {fmtD(g.blockEnd)}</span>
+            <span style={{ color: 'var(--text-muted)' }}>· missing Mon {fmtD(g.missingDate)}</span>
+            <span style={{ marginLeft: 'auto', color: '#fcd34d' }}>-{g.shortfallHrs}h</span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -620,9 +706,13 @@ function RotaContent({
             {inactiveUsers.length>0 && <span style={{ color:'#f59e0b', marginLeft:8 }}>· {inactiveUsers.length} not on-call yet</span>}
           </div>
         </div>
+        <InstallAppButton />
       </div>
 
       <ReadinessBanner users={users} startDate={startDate} weeks={weeks} />
+      {isManager && (
+        <OnCallGapBanner users={users} rota={rota} holidays={holidays} UK_BANK_HOLIDAYS={UK_BANK_HOLIDAYS} />
+      )}
 
       {/* ── Sticky Manager Toolbar ─────────────────────────────────────────── */}
       {isManager && (
