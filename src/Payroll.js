@@ -224,6 +224,71 @@ export function calcOncallPay(timesheetEntries, hourlyRate, upgradeHrs = 0, bank
   };
 }
 
+// ── analyzeOncallBlocks ─────────────────────────────────────────────────────────
+// Human-readable breakdown of a user's on-call rota for the "On-Call Breakdown"
+// tab: individual WD (weekday) nights, and WE (weekend) blocks grouped by
+// consecutive calendar days, mirroring exactly how calcOncallPay derives its
+// numbers (Fri=5h/Sat=24h/Sun=24h/Mon=7h, with Bank Holiday / approved-leave
+// exclusions) — plus gap detection for blocks missing their Monday handover.
+export function analyzeOncallBlocks(rotaForUser = {}, bankHolidays = [], userHolidays = []) {
+  const bhSet = new Set((bankHolidays || []).map(b => b.date));
+  const inHol = (date) => (userHolidays || []).some(h => date >= h.start && date <= h.end);
+  const dowLabel = { 0: 'Sun', 1: 'Mon', 2: 'Tue', 3: 'Wed', 4: 'Thu', 5: 'Fri', 6: 'Sat' };
+  const weHours  = { 5: 5, 6: 24, 0: 24, 1: 7 }; // Fri/Sat/Sun/Mon expected split
+
+  const allDates = Object.entries(rotaForUser || {}).sort(([a], [b]) => a.localeCompare(b));
+
+  // ── WD nights ──
+  const wdNights = allDates
+    .filter(([, shift]) => shift === 'evening')
+    .map(([date]) => {
+      const dow = new Date(date + 'T12:00:00').getDay();
+      return { date, dow, dowLabel: dowLabel[dow], hours: 12, anomaly: !(dow >= 1 && dow <= 4) };
+    });
+
+  // ── WE blocks: group consecutive calendar days tagged 'weekend' ──
+  const weDates = allDates.filter(([, shift]) => shift === 'weekend').map(([date]) => date);
+  const runs = [];
+  weDates.forEach(date => {
+    const last = runs[runs.length - 1];
+    if (last) {
+      const exp = new Date(last[last.length - 1] + 'T12:00:00');
+      exp.setDate(exp.getDate() + 1);
+      if (date === exp.toISOString().slice(0, 10)) { last.push(date); return; }
+    }
+    runs.push([date]);
+  });
+
+  const weBlocks = runs.map(run => {
+    const days = run.map(date => {
+      const dow = new Date(date + 'T12:00:00').getDay();
+      const isBH  = bhSet.has(date);
+      const isHol = inHol(date);
+      const excluded = isBH || isHol;
+      return {
+        date, dow, dowLabel: dowLabel[dow],
+        hours: excluded ? 0 : (weHours[dow] ?? 12),
+        excludedReason: isBH ? 'Bank Holiday (paid separately)' : (isHol ? 'On approved leave' : null),
+        anomaly: !(dow === 5 || dow === 6 || dow === 0 || dow === 1),
+      };
+    });
+    const hasFri = days.some(d => d.dow === 5);
+    const hasSat = days.some(d => d.dow === 6);
+    const hasSun = days.some(d => d.dow === 0);
+    const hasMon = days.some(d => d.dow === 1);
+    const total = days.reduce((s, d) => s + d.hours, 0);
+    return {
+      startDate: run[0], endDate: run[run.length - 1], days, total,
+      hasFri, hasSat, hasSun, hasMon,
+      complete: hasFri && hasSat && hasSun && hasMon,
+      missingMonday: hasSat && hasSun && !hasMon,
+      shortfallHrs: (hasSat && hasSun && !hasMon) ? 7 : 0,
+    };
+  });
+
+  return { wdNights, weBlocks };
+}
+
 // ── calcTOILBalance ───────────────────────────────────────────────────────────
 export function calcTOILBalance(timesheetEntries, toilEntries, userId) {
   const ts   = Array.isArray(timesheetEntries) ? timesheetEntries : [];
@@ -1164,7 +1229,7 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
   const [viewCycleEnd,   setViewCycleEnd]   = useState(cycleEnd);
   const viewCycleLabel = `${fmtD(viewCycleStart)} – ${fmtD(viewCycleEnd)}`;
 
-  const tabIcons = { overview: '📋', takehome: '💷', adjustments: '✏️', log: '📁', reports: '📊' };
+  const tabIcons = { overview: '📋', oncall: '🌙', takehome: '💷', adjustments: '✏️', log: '📁', reports: '📊' };
 
   return (
     <div>
@@ -1211,6 +1276,7 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
       <div className="payroll-tab-bar">
         {[
           { id:'overview',     label:'Hours Summary' },
+          { id:'oncall',       label:'On-Call Breakdown' },
           { id:'takehome',     label:'Take-Home' },
           { id:'adjustments',  label:'Adjustments', badge: safeAdj.length || null },
           { id:'log',          label:'Export Log', badge: exportLogs.length || null },
@@ -1316,6 +1382,16 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
             Daily: 10am–7pm · Weekday OC: 7pm–7am · Weekend OC: Fri 7pm–Mon 7am · Bank Hol OC: 9am–7am · Overtime: manager-approved only
           </div>
         </div>
+      )}
+
+      {/* ── TAB: On-Call Breakdown ────────────────────────────────────────── */}
+      {tab === 'oncall' && (
+        <OnCallBreakdownTab
+          users={safeUsers} rota={safeRota} holidays={safeHolidays} bhList={bhList}
+          viewCycleStart={viewCycleStart} viewCycleEnd={viewCycleEnd}
+          setViewCycleStart={setViewCycleStart} setViewCycleEnd={setViewCycleEnd}
+          allCycles={allCycles} fmtD={fmtD} standbyRate={ONCALL_STANDBY_RATE}
+        />
       )}
 
       {/* ── TAB: Take-Home ────────────────────────────────────────────────── */}
@@ -1794,6 +1870,156 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
   );
 }
 
+
+// ── OnCallBreakdownTab ───────────────────────────────────────────────────────
+// Full visual breakdown of every engineer's on-call hours for the selected
+// cycle: WD nights, WE blocks (with the Fri/Sat/Sun/Mon split shown day by
+// day), Bank Holiday exclusions, and any block missing its Monday handover.
+function OnCallBreakdownTab({ users, rota, holidays, bhList, viewCycleStart, viewCycleEnd,
+                              setViewCycleStart, setViewCycleEnd, allCycles, fmtD, standbyRate }) {
+  const [engFilter, setEngFilter] = useState('all');
+
+  const perUser = useMemo(() => {
+    return (users || []).map(u => {
+      const userHols = (holidays || []).filter(h => h.userId === u.id);
+      const { wdNights, weBlocks } = analyzeOncallBlocks(rota?.[u.id] || {}, bhList, userHols);
+
+      const inRange = (d) => (!viewCycleStart || d >= viewCycleStart) && (!viewCycleEnd || d <= viewCycleEnd);
+
+      const wdInRange = wdNights.filter(n => inRange(n.date));
+      const weBlocksInRange = weBlocks
+        .filter(b => b.days.some(d => inRange(d.date)))
+        .map(b => ({ ...b, days: b.days, cycleHours: b.days.filter(d => inRange(d.date)).reduce((s, d) => s + d.hours, 0) }));
+
+      const wdHours = wdInRange.reduce((s, n) => s + n.hours, 0);
+      const weHours = weBlocksInRange.reduce((s, b) => s + b.cycleHours, 0);
+      const gaps = weBlocksInRange.filter(b => b.missingMonday);
+      const shortfallHrs = gaps.reduce((s, b) => s + b.shortfallHrs, 0);
+
+      return { u, wdNights: wdInRange, weBlocks: weBlocksInRange, wdHours, weHours, gaps, shortfallHrs };
+    });
+  }, [users, rota, holidays, bhList, viewCycleStart, viewCycleEnd]);
+
+  const visible = engFilter === 'all' ? perUser : perUser.filter(p => p.u.id === engFilter);
+  const totalWD = perUser.reduce((s, p) => s + p.wdHours, 0);
+  const totalWE = perUser.reduce((s, p) => s + p.weHours, 0);
+  const totalGapBlocks = perUser.reduce((s, p) => s + p.gaps.length, 0);
+  const totalShortfall = perUser.reduce((s, p) => s + p.shortfallHrs, 0);
+
+  const dayChip = (d) => {
+    const bg = d.excludedReason ? 'rgba(148,163,184,0.15)' : (d.hours > 0 ? 'rgba(167,139,250,0.15)' : 'rgba(239,68,68,0.12)');
+    const fg = d.excludedReason ? '#94a3b8' : (d.hours > 0 ? '#a78bfa' : '#fca5a5');
+    return (
+      <div key={d.date} title={d.excludedReason || ''} style={{
+        display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2,
+        background: bg, color: fg, borderRadius: 8, padding: '6px 10px', minWidth: 64,
+      }}>
+        <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.5 }}>{d.dowLabel.toUpperCase()}</span>
+        <span style={{ fontFamily: 'DM Mono', fontSize: 13, fontWeight: 700 }}>{d.excludedReason ? '0h' : `${d.hours}h`}</span>
+        <span style={{ fontSize: 9, color: 'var(--text-muted)' }}>{d.date.slice(5)}</span>
+      </div>
+    );
+  };
+
+  return (
+    <div>
+      {/* Cycle + engineer filters */}
+      <div className="card mb-16" style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+        <div>
+          <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>Cycle</label>
+          <select className="input" value={viewCycleStart} onChange={e => {
+            const c = allCycles.find(c => c.start === e.target.value);
+            if (c) { setViewCycleStart(c.start); setViewCycleEnd(c.end); }
+          }}>
+            {allCycles.map(c => <option key={c.start} value={c.start}>{c.label}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>Engineer</label>
+          <select className="input" value={engFilter} onChange={e => setEngFilter(e.target.value)}>
+            <option value="all">All engineers</option>
+            {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+          </select>
+        </div>
+      </div>
+
+      {/* Summary stat cards */}
+      <div className="grid-4 mb-16">
+        <StatCard label="WD Standby" value={`${Math.round(totalWD * 10) / 10}h`} sub="12h/night, Mon–Thu" accent="#6ee7b7" icon="🌙" />
+        <StatCard label="WE Standby" value={`${Math.round(totalWE * 10) / 10}h`} sub="Fri 19:00 – Mon 07:00" accent="#a78bfa" icon="🏠" />
+        <StatCard label="Flagged Gaps" value={totalGapBlocks} sub="Blocks missing Mon handover" accent={totalGapBlocks ? '#fca5a5' : '#6ee7b7'} icon="⚠️" />
+        <StatCard label="Est. Shortfall" value={`£${Math.round(totalShortfall * standbyRate)}`} sub={`${totalShortfall}h not yet paid`} accent="#fcd34d" icon="💸" />
+      </div>
+
+      {totalGapBlocks > 0 && (
+        <Alert type="warning" style={{ marginBottom: 16 }}>
+          {totalGapBlocks} weekend on-call block{totalGapBlocks !== 1 ? 's' : ''} in this cycle {totalGapBlocks !== 1 ? 'are' : 'is'} missing the Monday 00:00–07:00 handover entry — add the "Weekend On-Call" shift on that Monday in the Rota to capture the full 60h.
+        </Alert>
+      )}
+
+      {/* Per-engineer breakdown */}
+      {visible.map(({ u, wdNights, weBlocks, wdHours, weHours, shortfallHrs }) => (
+        <div key={u.id} className="card mb-16">
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
+            <strong style={{ fontSize: 14 }}>{u.name}</strong>
+            <div style={{ display: 'flex', gap: 8, fontSize: 11 }}>
+              <span style={{ background: 'rgba(110,231,183,0.15)', color: '#6ee7b7', borderRadius: 6, padding: '3px 8px' }}>WD {wdHours}h</span>
+              <span style={{ background: 'rgba(167,139,250,0.15)', color: '#a78bfa', borderRadius: 6, padding: '3px 8px' }}>WE {weHours}h</span>
+              {shortfallHrs > 0 && <span style={{ background: 'rgba(239,68,68,0.15)', color: '#fca5a5', borderRadius: 6, padding: '3px 8px' }}>-{shortfallHrs}h gap</span>}
+            </div>
+          </div>
+
+          {wdNights.length === 0 && weBlocks.length === 0 && (
+            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>No on-call shifts this cycle.</div>
+          )}
+
+          {wdNights.length > 0 && (
+            <div style={{ marginBottom: weBlocks.length ? 14 : 0 }}>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>Weekday On-Call nights (19:00–07:00, 12h each)</div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {wdNights.map(n => (
+                  <div key={n.date} style={{ background: 'rgba(110,231,183,0.12)', color: '#6ee7b7', borderRadius: 8, padding: '5px 10px', fontSize: 11, fontFamily: 'DM Mono' }}>
+                    {n.dowLabel} {n.date.slice(5)} · 12h{n.anomaly ? ' ⚠' : ''}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {weBlocks.map((b, i) => (
+            <div key={i} style={{
+              marginTop: 10, padding: 10, borderRadius: 10,
+              background: b.missingMonday ? 'rgba(239,68,68,0.06)' : 'rgba(167,139,250,0.06)',
+              border: `1px solid ${b.missingMonday ? 'rgba(239,68,68,0.25)' : 'rgba(167,139,250,0.18)'}`,
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, flexWrap: 'wrap', gap: 6 }}>
+                <span style={{ fontSize: 12, fontWeight: 600 }}>Weekend block · {fmtD(b.startDate)} – {fmtD(b.endDate)}</span>
+                <span style={{ fontSize: 12, fontFamily: 'DM Mono', color: b.missingMonday ? '#fca5a5' : '#a78bfa' }}>
+                  {b.cycleHours}h {b.missingMonday ? '(expected 60h)' : b.complete ? '✅' : ''}
+                </span>
+              </div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {b.days.map(dayChip)}
+                {b.missingMonday && (
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 2,
+                    background: 'rgba(239,68,68,0.12)', color: '#fca5a5', borderRadius: 8, padding: '6px 10px', minWidth: 64, border: '1px dashed rgba(239,68,68,0.4)' }}>
+                    <span style={{ fontSize: 10, fontWeight: 700 }}>MON</span>
+                    <span style={{ fontFamily: 'DM Mono', fontSize: 13, fontWeight: 700 }}>?</span>
+                    <span style={{ fontSize: 9 }}>missing</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      ))}
+
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+        WD = Mon–Thu 19:00–07:00, 12h/night. WE = Fri 19:00 → Mon 07:00, split 5h (Fri) + 24h (Sat) + 24h (Sun) + 7h (Mon), £{standbyRate}/hr standby rate. Days shaded grey were excluded because they fall on a Bank Holiday or approved leave (paid separately, not a gap).
+      </div>
+    </div>
+  );
+}
 
 // ── PayrollReports ─────────────────────────────────────────────────────────
 function PayrollReports({ users, timesheets, incidents, upgrades, overtime, toil, rota, holidays,
