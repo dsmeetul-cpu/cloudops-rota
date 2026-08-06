@@ -1,5 +1,5 @@
 // src/Rota.js
-// CloudOps Rota — improved editing: floating cell editor, sticky toolbar, floating bulk bar 30th May 2026
+// CloudOps Rota — improved editing: floating cell editor, sticky toolbar, floating bulk bar 06th Aug 2026
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import InstallAppButton from './InstallAppButton';
 
@@ -136,6 +136,58 @@ function ReadinessBanner({ users, startDate, weeks }) {
       ))}
     </div>
   );
+}
+
+// ── autoCompleteWeekendBlock ──────────────────────────────────────────────────
+// When a 'weekend' shift is written to any day of the Fri–Mon block, this
+// function ensures the ENTIRE block is filled in — Fri, Sat, Sun AND Mon.
+// This prevents the most common payroll error: Sunday is saved but Monday
+// 00:00–07:00 is never added, costing 7h/block.
+//
+// Rules:
+//   • Only adds 'weekend' to missing days — never overwrites an existing entry.
+//   • Skips Bank Holidays and days with approved leave (those are legitimate
+//     exclusions, not gaps).
+//   • Works backwards and forwards from any day in the block (e.g. dragging
+//     Sat also fills Fri/Sun/Mon if they're blank).
+//   • Applied atomically — the caller gets a new rota object ready for setRota.
+//
+// dow map: Sun=0, Mon=1, Tue=2, Wed=3, Thu=4, Fri=5, Sat=6
+function autoCompleteWeekendBlock(rota, userId, triggerDate, bhList, holidays) {
+  const bhSet  = new Set((bhList  || []).map(b => b.date));
+  const userHols = (holidays || []).filter(h => h.userId === userId);
+  const inHol  = ds => userHols.some(h => ds >= h.start && ds <= h.end);
+
+  const d    = new Date(triggerDate + 'T12:00:00');
+  const dow  = d.getDay(); // 0=Sun 1=Mon 5=Fri 6=Sat
+
+  // Offsets from Friday to each day in the block
+  // Find the Friday of this block
+  let fridayDate;
+  if      (dow === 5) fridayDate = new Date(d);
+  else if (dow === 6) { fridayDate = new Date(d); fridayDate.setDate(d.getDate() - 1); }
+  else if (dow === 0) { fridayDate = new Date(d); fridayDate.setDate(d.getDate() - 2); }
+  else if (dow === 1) { fridayDate = new Date(d); fridayDate.setDate(d.getDate() - 3); }
+  else return rota; // Tue–Thu: not a weekend block day, no-op
+
+  const blockDates = [0, 1, 2, 3].map(offset => {
+    const bd = new Date(fridayDate);
+    bd.setDate(fridayDate.getDate() + offset);
+    return bd.toISOString().slice(0, 10);
+  }); // [Fri, Sat, Sun, Mon]
+
+  const userRota = { ...(rota[userId] || {}) };
+  let changed = false;
+
+  blockDates.forEach(ds => {
+    if (userRota[ds] === 'weekend') return;  // already set — leave it
+    if (bhSet.has(ds) || inHol(ds))   return;  // bank holiday or leave — skip
+    userRota[ds] = 'weekend';
+    changed = true;
+  });
+
+  if (!changed) return rota;
+  return { ...rota, [userId]: userRota };
 }
 
 // ── On-call gap detection ───────────────────────────────────────────────────
@@ -456,9 +508,13 @@ function RotaContent({
     const value = (paintBrush === 'daily' && isWeekend) ? 'weekend' : paintBrush;
     setRota(prev => {
       if (prev[userId]?.[date] === value) return prev; // no-op — avoids churn while dragging
-      return { ...prev, [userId]: { ...(prev[userId]||{}), [date]: value } };
+      const next = { ...prev, [userId]: { ...(prev[userId]||{}), [date]: value } };
+      // Auto-fill Fri/Sat/Sun/Mon when painting any day in a weekend block
+      return value === 'weekend'
+        ? autoCompleteWeekendBlock(next, userId, date, UK_BANK_HOLIDAYS, holidays)
+        : next;
     });
-  }, [canEdit, users, paintBrush, setRota]);
+  }, [canEdit, users, paintBrush, setRota, UK_BANK_HOLIDAYS, holidays]);
 
   const handlePaintDown = (userId, date, e) => {
     if (!paintMode || !canEdit) return;
@@ -533,8 +589,15 @@ function RotaContent({
     }
     const dow = new Date(date + 'T12:00:00').getDay();
     const isWeekend = dow === 0 || dow === 6;
-    setRota(prev => ({ ...prev, [userId]: { ...(prev[userId]||{}), [date]: (shift==='daily'&&isWeekend)?'weekend':shift } }));
-  }, [canEdit, users, setRota]);
+    const value = (shift === 'daily' && isWeekend) ? 'weekend' : shift;
+    setRota(prev => {
+      const next = { ...prev, [userId]: { ...(prev[userId]||{}), [date]: value } };
+      // Auto-fill the full Fri→Mon block whenever 'weekend' is chosen
+      return value === 'weekend'
+        ? autoCompleteWeekendBlock(next, userId, date, UK_BANK_HOLIDAYS, holidays)
+        : next;
+    });
+  }, [canEdit, users, setRota, UK_BANK_HOLIDAYS, holidays]);
 
   const deleteCell = useCallback((userId, date) => {
     if (!canEdit) return;
@@ -619,9 +682,10 @@ function RotaContent({
   };
 
   const applySwap = (conflict, coverId) => {
-    const newRota = JSON.parse(JSON.stringify(rota));
+    let newRota = JSON.parse(JSON.stringify(rota));
     newRota[coverId] = { ...(newRota[coverId]||{}), [conflict.date]: conflict.shift };
     if (newRota[conflict.userId]) delete newRota[conflict.userId][conflict.date];
+    if (conflict.shift === 'weekend') newRota = autoCompleteWeekendBlock(newRota, coverId, conflict.date, UK_BANK_HOLIDAYS, holidays);
     setRota(newRota);
     setSwapSuggestion(prev => prev.filter(c => !(c.userId===conflict.userId && c.date===conflict.date)));
   };
@@ -630,11 +694,19 @@ function RotaContent({
     if (!isManager) return;
     const swap = (swapRequests||[]).find(s => s.id===swapId);
     if (!swap) return;
-    const newRota = JSON.parse(JSON.stringify(rota));
+    let newRota = JSON.parse(JSON.stringify(rota));
     const reqShift = newRota[swap.requesterId]?.[swap.reqDate];
     const tgtShift = newRota[swap.targetId]?.[swap.tgtDate];
-    if (reqShift) { newRota[swap.targetId]={...(newRota[swap.targetId]||{}),[swap.reqDate]:reqShift}; delete newRota[swap.requesterId][swap.reqDate]; }
-    if (tgtShift) { newRota[swap.requesterId]={...(newRota[swap.requesterId]||{}),[swap.tgtDate]:tgtShift}; delete newRota[swap.targetId][swap.tgtDate]; }
+    if (reqShift) {
+      newRota[swap.targetId]={...(newRota[swap.targetId]||{}),[swap.reqDate]:reqShift};
+      delete newRota[swap.requesterId][swap.reqDate];
+      if (reqShift === 'weekend') newRota = autoCompleteWeekendBlock(newRota, swap.targetId, swap.reqDate, UK_BANK_HOLIDAYS, holidays);
+    }
+    if (tgtShift) {
+      newRota[swap.requesterId]={...(newRota[swap.requesterId]||{}),[swap.tgtDate]:tgtShift};
+      delete newRota[swap.targetId][swap.tgtDate];
+      if (tgtShift === 'weekend') newRota = autoCompleteWeekendBlock(newRota, swap.requesterId, swap.tgtDate, UK_BANK_HOLIDAYS, holidays);
+    }
     setRota(newRota);
     setSwapRequests(swapRequests.map(s => s.id===swapId ? {...s,status:'approved'} : s));
   };
@@ -1939,6 +2011,11 @@ function RotaBulkEntry({ users, rota, setRota, holidays, isManager }) {
           if (existing !== 'off') overwrites.push({ userName, date: dateStr, from: existing, to: value });
           else newCount++;
           merged[entry.userId] = { ...(merged[entry.userId] || {}), [dateStr]: value };
+          // Auto-fill the full Fri→Mon block for any weekend entry
+          if (value === 'weekend') {
+            const completed = autoCompleteWeekendBlock(merged, entry.userId, dateStr, holidays, []);
+            merged[entry.userId] = completed[entry.userId];
+          }
         }
       });
     });
