@@ -1,17 +1,17 @@
 // src/Rota.js
-// CloudOps Rota — improved editing: floating cell editor, sticky toolbar, floating bulk bar 06th Aug 2026
+// CloudOps Rota — improved editing: floating cell editor, sticky toolbar, floating bulk bar 30th May 2026
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import InstallAppButton from './InstallAppButton';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 const SHIFT_COLORS = {
-  daily:       { bg: '#1e40af', label: 'Daily Shift',      text: '#bfdbfe' },
-  evening:     { bg: '#166534', label: 'Weekday On-Call',  text: '#bbf7d0' },
-  weekend:     { bg: '#854d0e', label: 'Weekend On-Call',  text: '#fef08a' },
-  upgrade:     { bg: '#991b1b', label: 'Upgrade Day',      text: '#fecaca' },
-  holiday:     { bg: '#92400e', label: 'Holiday',          text: '#fde68a' },
-  bankholiday: { bg: '#7f1d1d', label: 'Bank Holiday',     text: '#fca5a5' },
-  inactive:    { bg: '#1e293b', label: 'Not on-call yet',  text: '#475569' },
+  daily:       { bg: '#1565c0', label: 'Daily On-Call (09:00–18:00)', text: '#90caf9' },
+  evening:     { bg: '#166534', label: 'Weekday On-Call (paid)',       text: '#bbf7d0' },
+  weekend:     { bg: '#854d0e', label: 'Weekend On-Call (paid)',       text: '#fef08a' },
+  upgrade:     { bg: '#991b1b', label: 'Upgrade Day',                  text: '#fecaca' },
+  holiday:     { bg: '#92400e', label: 'Holiday',                      text: '#fde68a' },
+  bankholiday: { bg: '#7f1d1d', label: 'Bank Holiday',                 text: '#fca5a5' },
+  inactive:    { bg: '#1e293b', label: 'Not on-call yet',              text: '#475569' },
 };
 
 const SHIFT_ABBR = {
@@ -20,8 +20,8 @@ const SHIFT_ABBR = {
 };
 
 const SHIFT_HOURS = {
-  daily:       { start: '10:00', end: '19:00', label: '10am – 7pm',   desc: 'Daily Shift (Mon–Fri)',             standbyHrs: 0,  workedHrs: 9  },
-  evening:     { start: '19:00', end: '07:00', label: '7pm – 7am',    desc: 'Weekday On-Call (Mon–Thu)',         standbyHrs: 12, workedHrs: 0  },
+  daily:       { start: '09:00', end: '18:00', label: '9am – 6pm',    desc: 'Daily On-Call (Mon–Fri, NOT paid)',  standbyHrs: 0,  workedHrs: 9  },
+  evening:     { start: '19:00', end: '07:00', label: '7pm – 7am',    desc: 'Weekday On-Call (Mon–Thu, paid)',    standbyHrs: 12, workedHrs: 0  },
   weekend:     { start: '19:00', end: '07:00', label: '7pm – 7am',    desc: 'Weekend On-Call (Fri 7pm–Mon 7am)', standbyHrs: 60, workedHrs: 0  },
   bankholiday: { start: '09:00', end: '07:00', label: '9am – 7am',    desc: 'Bank Holiday On-Call',              standbyHrs: 22, workedHrs: 0  },
   upgrade:     { start: '00:00', end: '23:59', label: 'All day',       desc: 'Upgrade Day',                      standbyHrs: 0,  workedHrs: 8  },
@@ -136,58 +136,6 @@ function ReadinessBanner({ users, startDate, weeks }) {
       ))}
     </div>
   );
-}
-
-// ── autoCompleteWeekendBlock ──────────────────────────────────────────────────
-// When a 'weekend' shift is written to any day of the Fri–Mon block, this
-// function ensures the ENTIRE block is filled in — Fri, Sat, Sun AND Mon.
-// This prevents the most common payroll error: Sunday is saved but Monday
-// 00:00–07:00 is never added, costing 7h/block.
-//
-// Rules:
-//   • Only adds 'weekend' to missing days — never overwrites an existing entry.
-//   • Skips Bank Holidays and days with approved leave (those are legitimate
-//     exclusions, not gaps).
-//   • Works backwards and forwards from any day in the block (e.g. dragging
-//     Sat also fills Fri/Sun/Mon if they're blank).
-//   • Applied atomically — the caller gets a new rota object ready for setRota.
-//
-// dow map: Sun=0, Mon=1, Tue=2, Wed=3, Thu=4, Fri=5, Sat=6
-function autoCompleteWeekendBlock(rota, userId, triggerDate, bhList, holidays) {
-  const bhSet  = new Set((bhList  || []).map(b => b.date));
-  const userHols = (holidays || []).filter(h => h.userId === userId);
-  const inHol  = ds => userHols.some(h => ds >= h.start && ds <= h.end);
-
-  const d    = new Date(triggerDate + 'T12:00:00');
-  const dow  = d.getDay(); // 0=Sun 1=Mon 5=Fri 6=Sat
-
-  // Offsets from Friday to each day in the block
-  // Find the Friday of this block
-  let fridayDate;
-  if      (dow === 5) fridayDate = new Date(d);
-  else if (dow === 6) { fridayDate = new Date(d); fridayDate.setDate(d.getDate() - 1); }
-  else if (dow === 0) { fridayDate = new Date(d); fridayDate.setDate(d.getDate() - 2); }
-  else if (dow === 1) { fridayDate = new Date(d); fridayDate.setDate(d.getDate() - 3); }
-  else return rota; // Tue–Thu: not a weekend block day, no-op
-
-  const blockDates = [0, 1, 2, 3].map(offset => {
-    const bd = new Date(fridayDate);
-    bd.setDate(fridayDate.getDate() + offset);
-    return bd.toISOString().slice(0, 10);
-  }); // [Fri, Sat, Sun, Mon]
-
-  const userRota = { ...(rota[userId] || {}) };
-  let changed = false;
-
-  blockDates.forEach(ds => {
-    if (userRota[ds] === 'weekend') return;  // already set — leave it
-    if (bhSet.has(ds) || inHol(ds))   return;  // bank holiday or leave — skip
-    userRota[ds] = 'weekend';
-    changed = true;
-  });
-
-  if (!changed) return rota;
-  return { ...rota, [userId]: userRota };
 }
 
 // ── On-call gap detection ───────────────────────────────────────────────────
@@ -508,13 +456,9 @@ function RotaContent({
     const value = (paintBrush === 'daily' && isWeekend) ? 'weekend' : paintBrush;
     setRota(prev => {
       if (prev[userId]?.[date] === value) return prev; // no-op — avoids churn while dragging
-      const next = { ...prev, [userId]: { ...(prev[userId]||{}), [date]: value } };
-      // Auto-fill Fri/Sat/Sun/Mon when painting any day in a weekend block
-      return value === 'weekend'
-        ? autoCompleteWeekendBlock(next, userId, date, UK_BANK_HOLIDAYS, holidays)
-        : next;
+      return { ...prev, [userId]: { ...(prev[userId]||{}), [date]: value } };
     });
-  }, [canEdit, users, paintBrush, setRota, UK_BANK_HOLIDAYS, holidays]);
+  }, [canEdit, users, paintBrush, setRota]);
 
   const handlePaintDown = (userId, date, e) => {
     if (!paintMode || !canEdit) return;
@@ -589,15 +533,8 @@ function RotaContent({
     }
     const dow = new Date(date + 'T12:00:00').getDay();
     const isWeekend = dow === 0 || dow === 6;
-    const value = (shift === 'daily' && isWeekend) ? 'weekend' : shift;
-    setRota(prev => {
-      const next = { ...prev, [userId]: { ...(prev[userId]||{}), [date]: value } };
-      // Auto-fill the full Fri→Mon block whenever 'weekend' is chosen
-      return value === 'weekend'
-        ? autoCompleteWeekendBlock(next, userId, date, UK_BANK_HOLIDAYS, holidays)
-        : next;
-    });
-  }, [canEdit, users, setRota, UK_BANK_HOLIDAYS, holidays]);
+    setRota(prev => ({ ...prev, [userId]: { ...(prev[userId]||{}), [date]: (shift==='daily'&&isWeekend)?'weekend':shift } }));
+  }, [canEdit, users, setRota]);
 
   const deleteCell = useCallback((userId, date) => {
     if (!canEdit) return;
@@ -682,10 +619,9 @@ function RotaContent({
   };
 
   const applySwap = (conflict, coverId) => {
-    let newRota = JSON.parse(JSON.stringify(rota));
+    const newRota = JSON.parse(JSON.stringify(rota));
     newRota[coverId] = { ...(newRota[coverId]||{}), [conflict.date]: conflict.shift };
     if (newRota[conflict.userId]) delete newRota[conflict.userId][conflict.date];
-    if (conflict.shift === 'weekend') newRota = autoCompleteWeekendBlock(newRota, coverId, conflict.date, UK_BANK_HOLIDAYS, holidays);
     setRota(newRota);
     setSwapSuggestion(prev => prev.filter(c => !(c.userId===conflict.userId && c.date===conflict.date)));
   };
@@ -694,19 +630,11 @@ function RotaContent({
     if (!isManager) return;
     const swap = (swapRequests||[]).find(s => s.id===swapId);
     if (!swap) return;
-    let newRota = JSON.parse(JSON.stringify(rota));
+    const newRota = JSON.parse(JSON.stringify(rota));
     const reqShift = newRota[swap.requesterId]?.[swap.reqDate];
     const tgtShift = newRota[swap.targetId]?.[swap.tgtDate];
-    if (reqShift) {
-      newRota[swap.targetId]={...(newRota[swap.targetId]||{}),[swap.reqDate]:reqShift};
-      delete newRota[swap.requesterId][swap.reqDate];
-      if (reqShift === 'weekend') newRota = autoCompleteWeekendBlock(newRota, swap.targetId, swap.reqDate, UK_BANK_HOLIDAYS, holidays);
-    }
-    if (tgtShift) {
-      newRota[swap.requesterId]={...(newRota[swap.requesterId]||{}),[swap.tgtDate]:tgtShift};
-      delete newRota[swap.targetId][swap.tgtDate];
-      if (tgtShift === 'weekend') newRota = autoCompleteWeekendBlock(newRota, swap.requesterId, swap.tgtDate, UK_BANK_HOLIDAYS, holidays);
-    }
+    if (reqShift) { newRota[swap.targetId]={...(newRota[swap.targetId]||{}),[swap.reqDate]:reqShift}; delete newRota[swap.requesterId][swap.reqDate]; }
+    if (tgtShift) { newRota[swap.requesterId]={...(newRota[swap.requesterId]||{}),[swap.tgtDate]:tgtShift}; delete newRota[swap.targetId][swap.tgtDate]; }
     setRota(newRota);
     setSwapRequests(swapRequests.map(s => s.id===swapId ? {...s,status:'approved'} : s));
   };
@@ -1469,18 +1397,13 @@ function RotaAnalytics({ users, rota, holidays, UK_BANK_HOLIDAYS, upgrades }) {
 
   const activeUsers = users.filter(u => !u.termination_date || u.termination_date >= start);
 
-  // ── Build date range ───────────────────────────────────────────────────────
   const allDates = React.useMemo(() => {
     const dates = []; const d = new Date(start+'T12:00:00');
     const e = new Date(end+'T12:00:00');
-    while (d <= e) {
-      dates.push(d.toISOString().slice(0,10));
-      d.setDate(d.getDate()+1);
-    }
+    while (d <= e) { dates.push(d.toISOString().slice(0,10)); d.setDate(d.getDate()+1); }
     return dates;
   }, [start, end]);
 
-  // ── Per-user, per-date shift ───────────────────────────────────────────────
   const getShift = (uid, ds) => {
     const hol = (holidays||[]).find(h=>h.userId===uid && ds>=h.start && ds<=h.end);
     if (hol) return 'holiday';
@@ -1491,41 +1414,52 @@ function RotaAnalytics({ users, rota, holidays, UK_BANK_HOLIDAYS, upgrades }) {
     return r;
   };
 
-  // ── Aggregated stats ──────────────────────────────────────────────────────
+  // Hours for analytics display — daily counts as 9h for scheduling visibility
   const SHIFT_HRS = { daily:9, evening:12, weekend:12, upgrade:8, holiday:0, bankholiday:22, off:0 };
+  // Paid hours only — daily is EXCLUDED from pay
+  const PAID_HRS  = { daily:0, evening:12, weekend:12, upgrade:8, holiday:0, bankholiday:22, off:0 };
+
   const stats = React.useMemo(() => {
     return activeUsers.map(u => {
-      const counts = {}; const hrs = {};
-      const weeklyHrs = {};
+      const counts = {}; const hrs = {}; const paidHrs = {};
       allDates.forEach(ds => {
         const s = getShift(u.id, ds);
-        counts[s] = (counts[s]||0)+1;
-        hrs[s]    = (hrs[s]||0)+(SHIFT_HRS[s]||0);
-        const wk  = ds.slice(0,8)+'01'; // rough week bucket
-        weeklyHrs[ds.slice(0,7)] = (weeklyHrs[ds.slice(0,7)]||0)+(SHIFT_HRS[s]||0);
+        counts[s]  = (counts[s]||0)+1;
+        hrs[s]     = (hrs[s]||0)+(SHIFT_HRS[s]||0);
+        paidHrs[s] = (paidHrs[s]||0)+(PAID_HRS[s]||0);
       });
-      const totalShifts = allDates.filter(ds=>getShift(u.id,ds)!=='off').length;
-      const totalHrs    = Object.values(hrs).reduce((a,b)=>a+b,0);
-      return { user:u, counts, hrs, totalShifts, totalHrs, weeklyHrs };
+      const totalShifts  = allDates.filter(ds=>getShift(u.id,ds)!=='off').length;
+      const totalHrs     = Object.values(hrs).reduce((a,b)=>a+b,0);
+      const totalPaidHrs = Object.values(paidHrs).reduce((a,b)=>a+b,0);
+      const dailyDays    = counts['daily']||0;
+      return { user:u, counts, hrs, paidHrs, totalShifts, totalHrs, totalPaidHrs, dailyDays };
     });
   }, [activeUsers, allDates]); // eslint-disable-line
 
-  // ── Colour map ─────────────────────────────────────────────────────────────
-  const C = { daily:'#1e40af', evening:'#166534', weekend:'#854d0e', upgrade:'#991b1b', holiday:'#92400e', bankholiday:'#7f1d1d', off:'transparent' };
-  const TXT = { daily:'#bfdbfe', evening:'#bbf7d0', weekend:'#fef08a', upgrade:'#fecaca', holiday:'#fde68a', bankholiday:'#fca5a5', off:'#334155' };
+  const C   = { daily:'#1565c0', evening:'#166534', weekend:'#854d0e', upgrade:'#991b1b', holiday:'#92400e', bankholiday:'#7f1d1d', off:'transparent' };
+  const TXT = { daily:'#90caf9', evening:'#bbf7d0', weekend:'#fef08a', upgrade:'#fecaca', holiday:'#fde68a', bankholiday:'#fca5a5', off:'#334155' };
+
+  const bhSet        = new Set((UK_BANK_HOLIDAYS||[]).map(b=>b.date));
+  const weekdayDates = allDates.filter(ds => { const d=new Date(ds+'T12:00:00').getDay(); return d>=1&&d<=5; });
+
+  const fmtDs  = ds => new Date(ds+'T12:00:00').toLocaleDateString('en-GB',{day:'numeric',month:'short'});
+  const fmtDow = ds => ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][new Date(ds+'T12:00:00').getDay()];
 
   const REPORTS = [
     { id:'heatmap',      label:'🗓 Coverage Heatmap' },
+    { id:'daily',        label:'☀️ Daily OC Coverage' },
     { id:'distribution', label:'📊 Shift Distribution' },
-    { id:'workload',     label:'⚡ Engineer Workload' },
+    { id:'workload',     label:'⚡ Paid OC Workload' },
+    { id:'fairness',     label:'⚖️ Rotation Fairness' },
     { id:'trends',       label:'📈 Weekly Trends' },
     { id:'gaps',         label:'⚠️ Coverage Gaps' },
+    { id:'oncall',       label:'🌙 OC Burden' },
     { id:'summary',      label:'📋 Summary Table' },
   ];
 
   return (
     <div>
-      {/* ── Controls ──────────────────────────────────────────────────────── */}
+      {/* Controls */}
       <div style={{ display:'flex', gap:10, flexWrap:'wrap', alignItems:'flex-end', padding:'12px 16px',
         background:'var(--bg-card)', border:'1px solid var(--border)', borderRadius:10, marginBottom:16 }}>
         <div>
@@ -1536,11 +1470,10 @@ function RotaAnalytics({ users, rota, holidays, UK_BANK_HOLIDAYS, upgrades }) {
           <div style={{ fontSize:10, color:'#475569', marginBottom:4, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.06em' }}>To</div>
           <input className="input" type="date" value={end} onChange={e=>setEnd(e.target.value)} style={{ width:148 }}/>
         </div>
-        {/* Quick ranges */}
         <div style={{ display:'flex', flexDirection:'column', gap:3 }}>
           <div style={{ fontSize:10, color:'#475569', fontWeight:700, textTransform:'uppercase', letterSpacing:'0.06em' }}>Quick Range</div>
           <div style={{ display:'flex', gap:4 }}>
-            {[['Last 30d',30],['Last 90d',90],['Last 6mo',182],['Last year',365]].map(([lbl,days])=>(
+            {[['30d',30],['90d',90],['6mo',182],['1yr',365]].map(([lbl,days])=>(
               <button key={lbl} className="btn btn-secondary btn-sm" onClick={()=>{
                 const e=new Date(); const s=new Date(); s.setDate(s.getDate()-days);
                 const fmt=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
@@ -1558,26 +1491,28 @@ function RotaAnalytics({ users, rota, holidays, UK_BANK_HOLIDAYS, upgrades }) {
           </select>
         </div>
         <div style={{ marginLeft:'auto', fontSize:11, color:'#475569', fontFamily:'DM Mono' }}>
-          {allDates.length} days · {activeUsers.length} engineers
+          {allDates.length} days · {weekdayDates.length} weekdays · {activeUsers.length} engineers
         </div>
       </div>
 
-      {/* ── Report tabs ───────────────────────────────────────────────────── */}
-      <div style={{ display:'flex', gap:4, marginBottom:16, flexWrap:'wrap', borderBottom:'1px solid var(--border)', paddingBottom:8 }}>
+      {/* Report tab bar */}
+      <div style={{ display:'flex', gap:3, marginBottom:16, flexWrap:'wrap', padding:'4px 5px',
+        background:'rgba(0,0,0,0.20)', border:'1px solid var(--border)', borderRadius:10 }}>
         {REPORTS.map(r=>(
-          <button key={r.id} onClick={()=>setReport(r.id)}
-            style={{ padding:'6px 14px', borderRadius:8, border:`1px solid ${report===r.id?'var(--accent)':'var(--border)'}`,
-              background:report===r.id?'rgba(0,194,255,0.1)':'transparent',
-              color:report===r.id?'var(--accent)':'#64748b', fontSize:12, fontWeight:600, cursor:'pointer' }}>
-            {r.label}
-          </button>
+          <button key={r.id} onClick={()=>setReport(r.id)} style={{
+            padding:'6px 13px', borderRadius:7, border:'none',
+            background:report===r.id?'rgba(0,0,0,0.40)':'transparent',
+            color:report===r.id?'var(--accent)':'#64748b',
+            fontSize:12, fontWeight:report===r.id?700:500, cursor:'pointer',
+            boxShadow:report===r.id?'0 0 0 1px rgba(79,195,247,0.40)':'none',
+            transition:'all 0.14s',
+          }}>{r.label}</button>
         ))}
       </div>
 
-      {/* ── Coverage Heatmap ─────────────────────────────────────────────── */}
+      {/* ── Coverage Heatmap ───────────────────────────────────────────────── */}
       {report==='heatmap' && (() => {
         const usersToShow = selUser==='all' ? activeUsers : activeUsers.filter(u=>u.id===selUser);
-        // Show max 90 days to keep it readable
         const showDates = allDates.length > 90 ? allDates.slice(-90) : allDates;
         const cellW = Math.max(12, Math.min(28, Math.floor((window.innerWidth - 280) / showDates.length)));
         return (
@@ -1587,20 +1522,13 @@ function RotaAnalytics({ users, rota, holidays, UK_BANK_HOLIDAYS, upgrades }) {
                 {allDates.length > 90 ? `Showing last 90 of ${allDates.length} days` : `${allDates.length} days`}
               </span>
             </div>
-            {/* Month headers */}
             <div style={{ display:'flex', marginLeft:140, marginBottom:2 }}>
-              {showDates.reduce((acc,ds,i)=>{
-                const m=ds.slice(0,7);
-                if (!acc.length||acc[acc.length-1].m!==m) acc.push({m,start:i,count:1});
-                else acc[acc.length-1].count++;
-                return acc;
-              },[]).map(({m,count})=>(
-                <div key={m} style={{ width:count*cellW, fontSize:9, color:'#475569', fontFamily:'DM Mono', fontWeight:700, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', paddingLeft:2 }}>
+              {showDates.reduce((acc,ds)=>{ const m=ds.slice(0,7); if (!acc.length||acc[acc.length-1].m!==m) acc.push({m,count:1}); else acc[acc.length-1].count++; return acc; },[]).map(({m,count})=>(
+                <div key={m} style={{ width:count*cellW, fontSize:9, color:'#475569', fontFamily:'DM Mono', fontWeight:700, overflow:'hidden', whiteSpace:'nowrap', paddingLeft:2 }}>
                   {new Date(m+'-01T12:00:00').toLocaleDateString('en-GB',{month:'short',year:'2-digit'})}
                 </div>
               ))}
             </div>
-            {/* Engineer rows */}
             {usersToShow.map(u=>(
               <div key={u.id} style={{ display:'flex', alignItems:'center', marginBottom:3 }}>
                 <div style={{ width:140, display:'flex', alignItems:'center', gap:6, flexShrink:0, paddingRight:8 }}>
@@ -1609,19 +1537,19 @@ function RotaAnalytics({ users, rota, holidays, UK_BANK_HOLIDAYS, upgrades }) {
                 </div>
                 <div style={{ display:'flex', gap:1 }}>
                   {showDates.map(ds=>{
-                    const s=getShift(u.id,ds);
-                    const dow=new Date(ds+'T12:00:00').getDay();
-                    return <div key={ds} title={`${ds} — ${s}`} style={{ width:cellW-1, height:18, background:s==='off'?(dow===0||dow===6?'rgba(255,255,255,0.03)':'rgba(255,255,255,0.06)'):C[s]||'#334155', borderRadius:2, flexShrink:0, border: ds===today?'1px solid #00c2ff':'none' }}/>;
+                    const s=getShift(u.id,ds); const dow=new Date(ds+'T12:00:00').getDay();
+                    return <div key={ds} title={`${fmtDow(ds)} ${ds} — ${SHIFT_COLORS[s]?.label||s}`}
+                      style={{ width:cellW-1, height:18, background:s==='off'?(dow===0||dow===6?'rgba(255,255,255,0.03)':'rgba(255,255,255,0.06)'):C[s]||'#334155', borderRadius:2, flexShrink:0, border:ds===today?'1px solid var(--accent)':'none' }}/>;
                   })}
                 </div>
               </div>
             ))}
-            {/* Legend */}
             <div style={{ display:'flex', gap:10, marginTop:10, flexWrap:'wrap' }}>
               {Object.entries(C).filter(([k])=>k!=='off').map(([k,bg])=>(
                 <div key={k} style={{ display:'flex', alignItems:'center', gap:4, fontSize:10, color:'#64748b' }}>
                   <div style={{ width:12, height:12, background:bg, borderRadius:2 }}/>
                   {SHIFT_COLORS[k]?.label||k}
+                  {k==='daily'&&<span style={{ fontSize:9, color:'#475569' }}> (not paid)</span>}
                 </div>
               ))}
             </div>
@@ -1629,38 +1557,129 @@ function RotaAnalytics({ users, rota, holidays, UK_BANK_HOLIDAYS, upgrades }) {
         );
       })()}
 
-      {/* ── Shift Distribution ───────────────────────────────────────────── */}
+      {/* ── Daily OC Coverage ──────────────────────────────────────────────── */}
+      {report==='daily' && (() => {
+        const wdNoBH      = weekdayDates.filter(ds=>!bhSet.has(ds));
+        const covered     = wdNoBH.filter(ds=>activeUsers.some(u=>getShift(u.id,ds)==='daily'));
+        const uncovered   = wdNoBH.filter(ds=>!activeUsers.some(u=>getShift(u.id,ds)==='daily'));
+        const pct         = wdNoBH.length ? Math.round((covered.length/wdNoBH.length)*100) : 100;
+        const engDaily    = activeUsers.map(u=>({ user:u, days:weekdayDates.filter(ds=>getShift(u.id,ds)==='daily').length })).sort((a,b)=>b.days-a.days);
+        const byMonth     = {};
+        wdNoBH.forEach(ds => {
+          const m=ds.slice(0,7);
+          if (!byMonth[m]) byMonth[m]={total:0,covered:0};
+          byMonth[m].total++;
+          if (activeUsers.some(u=>getShift(u.id,ds)==='daily')) byMonth[m].covered++;
+        });
+        return (
+          <div>
+            <div className="grid-4 mb-16">
+              <StatCard label="Coverage Rate" value={`${pct}%`} sub={`${covered.length} of ${wdNoBH.length} weekdays`} accent={pct>=95?'#6ee7b7':pct>=80?'#fcd34d':'#fca5a5'} icon="☀️"/>
+              <StatCard label="Days Covered"  value={covered.length}   sub="Daily OC assigned"     accent="#6ee7b7" icon="✅"/>
+              <StatCard label="Days Missing"  value={uncovered.length} sub="No daily OC assigned"  accent={uncovered.length?'#fca5a5':'#6ee7b7'} icon={uncovered.length?'❌':'✅'}/>
+              <StatCard label="Bank Holidays" value={weekdayDates.filter(ds=>bhSet.has(ds)).length} sub="Weekdays excluded" accent="#94a3b8" icon="🏦"/>
+            </div>
+            <div style={{ background:'rgba(21,101,192,0.10)', border:'1px solid rgba(21,101,192,0.30)', borderRadius:8, padding:'10px 14px', marginBottom:16, fontSize:12, color:'#90caf9', lineHeight:1.6 }}>
+              ℹ️ <strong>Daily On-Call is not paid.</strong> It is scheduling-only (09:00–18:00 Mon–Fri) ensuring one engineer is available during business hours. It does not generate standby pay or worked hours in payroll.
+            </div>
+            <div className="grid-2 mb-16">
+              <div className="card">
+                <div style={{ fontSize:13, fontWeight:700, color:'#fca5a5', marginBottom:10 }}>❌ Uncovered Days ({uncovered.length})</div>
+                {uncovered.length===0
+                  ? <div style={{ fontSize:12, color:'#6ee7b7' }}>✅ Full daily OC coverage in this period</div>
+                  : <div style={{ display:'flex', flexWrap:'wrap', gap:4, maxHeight:200, overflowY:'auto' }}>
+                      {uncovered.map(ds=>(
+                        <div key={ds} style={{ background:'rgba(239,68,68,0.12)', border:'1px solid rgba(239,68,68,0.30)', borderRadius:5, padding:'3px 8px', fontSize:11, fontFamily:'DM Mono', color:'#fca5a5' }}>
+                          {fmtDow(ds)} {fmtDs(ds)}
+                        </div>
+                      ))}
+                    </div>
+                }
+              </div>
+              <div className="card">
+                <div style={{ fontSize:13, fontWeight:700, marginBottom:10 }}>Daily OC Rotation per Engineer</div>
+                {engDaily.map(({user:u, days})=>{
+                  const p=wdNoBH.length?Math.round((days/wdNoBH.length)*100):0;
+                  return (
+                    <div key={u.id} style={{ display:'flex', alignItems:'center', gap:8, marginBottom:8 }}>
+                      <Avatar user={u} size={20}/>
+                      <span style={{ fontSize:12, color:'#94a3b8', width:100 }}>{u.name.split(' ')[0]}</span>
+                      <div style={{ flex:1, height:12, background:'rgba(255,255,255,0.06)', borderRadius:6, overflow:'hidden' }}>
+                        <div style={{ width:`${p}%`, height:'100%', background:'#1565c0', borderRadius:6 }}/>
+                      </div>
+                      <span style={{ fontSize:11, fontFamily:'DM Mono', color:'#90caf9', width:50, textAlign:'right' }}>{days}d ({p}%)</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="card" style={{ overflowX:'auto' }}>
+              <div style={{ fontSize:13, fontWeight:700, marginBottom:12 }}>Monthly Coverage Breakdown</div>
+              <table style={{ width:'100%', borderCollapse:'collapse', fontSize:12 }}>
+                <thead><tr>{['Month','Working Days','Covered','Missing','Coverage %'].map(h=>(
+                  <th key={h} style={{ textAlign:'left', padding:'7px 10px', fontSize:10, fontWeight:700, textTransform:'uppercase', color:'#475569', borderBottom:'1px solid rgba(255,255,255,0.08)', letterSpacing:'0.06em' }}>{h}</th>
+                ))}</tr></thead>
+                <tbody>
+                  {Object.entries(byMonth).sort(([a],[b])=>a.localeCompare(b)).map(([m,d],i)=>{
+                    const p=d.total?Math.round((d.covered/d.total)*100):100; const miss=d.total-d.covered;
+                    return (
+                      <tr key={m} style={{ background:i%2?'rgba(255,255,255,0.015)':'transparent' }}>
+                        <td style={{ padding:'7px 10px', fontFamily:'DM Mono', color:'#94a3b8', borderBottom:'1px solid rgba(255,255,255,0.04)' }}>{new Date(m+'-01T12:00:00').toLocaleDateString('en-GB',{month:'long',year:'numeric'})}</td>
+                        <td style={{ padding:'7px 10px', textAlign:'center', fontFamily:'DM Mono', color:'#64748b', borderBottom:'1px solid rgba(255,255,255,0.04)' }}>{d.total}</td>
+                        <td style={{ padding:'7px 10px', textAlign:'center', fontFamily:'DM Mono', color:'#6ee7b7', fontWeight:700, borderBottom:'1px solid rgba(255,255,255,0.04)' }}>{d.covered}</td>
+                        <td style={{ padding:'7px 10px', textAlign:'center', fontFamily:'DM Mono', color:miss?'#fca5a5':'#475569', fontWeight:miss?700:400, borderBottom:'1px solid rgba(255,255,255,0.04)' }}>{miss||'—'}</td>
+                        <td style={{ padding:'7px 10px', borderBottom:'1px solid rgba(255,255,255,0.04)' }}>
+                          <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                            <div style={{ flex:1, height:8, background:'rgba(255,255,255,0.06)', borderRadius:4, overflow:'hidden' }}>
+                              <div style={{ width:`${p}%`, height:'100%', background:p>=95?'#22c55e':p>=80?'#f59e0b':'#ef4444', borderRadius:4 }}/>
+                            </div>
+                            <span style={{ fontSize:11, fontFamily:'DM Mono', color:p>=95?'#6ee7b7':p>=80?'#fcd34d':'#fca5a5', width:36, textAlign:'right', fontWeight:700 }}>{p}%</span>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ── Shift Distribution ─────────────────────────────────────────────── */}
       {report==='distribution' && (() => {
         const usersToShow = selUser==='all' ? activeUsers : activeUsers.filter(u=>u.id===selUser);
         const shiftTypes  = ['daily','evening','weekend','upgrade','holiday','bankholiday'];
-        const maxVal = Math.max(...usersToShow.map(u=>{
-          const d = stats.find(s=>s.user.id===u.id); return d ? Math.max(...shiftTypes.map(t=>d.counts[t]||0)) : 0;
-        }), 1);
+        const maxVal = Math.max(...usersToShow.map(u=>{ const d=stats.find(s=>s.user.id===u.id); return d?Math.max(...shiftTypes.map(t=>d.counts[t]||0)):0; }), 1);
         return (
           <div className="card">
-            <div style={{ marginBottom:14, fontSize:13, fontWeight:700 }}>Shift Distribution per Engineer</div>
-            {/* Legend */}
+            <div style={{ marginBottom:4, fontSize:13, fontWeight:700 }}>Shift Distribution per Engineer</div>
+            <div style={{ marginBottom:12, fontSize:11, color:'#475569' }}>Daily On-Call (blue, faded) is shown for scheduling visibility — it does not affect payroll.</div>
             <div style={{ display:'flex', gap:10, marginBottom:14, flexWrap:'wrap' }}>
-              {shiftTypes.map(t=><div key={t} style={{ display:'flex', alignItems:'center', gap:4, fontSize:10, color:'#64748b' }}>
-                <div style={{ width:10, height:10, background:C[t], borderRadius:2 }}/>{SHIFT_COLORS[t]?.label||t}
-              </div>)}
+              {shiftTypes.map(t=>(
+                <div key={t} style={{ display:'flex', alignItems:'center', gap:4, fontSize:10, color:'#64748b' }}>
+                  <div style={{ width:10, height:10, background:C[t], borderRadius:2, opacity:t==='daily'?0.5:1 }}/>
+                  {SHIFT_COLORS[t]?.label||t}
+                  {t==='daily'&&<span style={{ fontSize:9, color:'#475569' }}> (not paid)</span>}
+                </div>
+              ))}
             </div>
-            {usersToShow.map(u=>{
-              const d=stats.find(s=>s.user.id===u.id);
-              if (!d) return null;
+            {usersToShow.map(u=>{ const d=stats.find(s=>s.user.id===u.id); if (!d) return null;
               return (
                 <div key={u.id} style={{ marginBottom:12 }}>
                   <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:4 }}>
                     <Avatar user={u} size={20}/>
                     <span style={{ fontSize:12, color:'#94a3b8', width:120 }}>{u.name.split(' ')[0]}</span>
-                    <span style={{ fontSize:11, color:'#475569', fontFamily:'DM Mono' }}>{d.totalShifts} shifts · {d.totalHrs}h</span>
+                    <span style={{ fontSize:11, color:'#475569', fontFamily:'DM Mono' }}>
+                      {d.totalShifts} shifts · <span style={{ color:'var(--accent)' }}>{d.totalPaidHrs}h paid</span>
+                      {d.dailyDays>0&&<span style={{ color:'#64748b' }}> · {d.dailyDays}d daily (unpaid)</span>}
+                    </span>
                   </div>
                   <div style={{ display:'flex', gap:2, height:20 }}>
-                    {shiftTypes.map(t=>{
-                      const cnt=d.counts[t]||0; if (!cnt) return null;
+                    {shiftTypes.map(t=>{ const cnt=d.counts[t]||0; if (!cnt) return null;
                       const w=Math.round((cnt/maxVal)*400);
-                      return <div key={t} title={`${SHIFT_COLORS[t]?.label||t}: ${cnt} days`}
-                        style={{ width:w, height:'100%', background:C[t], borderRadius:3, display:'flex', alignItems:'center', justifyContent:'center', overflow:'hidden', minWidth:cnt?4:0 }}>
+                      return <div key={t} title={`${SHIFT_COLORS[t]?.label||t}: ${cnt}`}
+                        style={{ width:w, height:'100%', background:C[t], borderRadius:3, display:'flex', alignItems:'center', justifyContent:'center', overflow:'hidden', minWidth:4, opacity:t==='daily'?0.55:1 }}>
                         {w>20&&<span style={{ fontSize:9, color:'#fff', fontWeight:700 }}>{cnt}</span>}
                       </div>;
                     })}
@@ -1672,64 +1691,118 @@ function RotaAnalytics({ users, rota, holidays, UK_BANK_HOLIDAYS, upgrades }) {
         );
       })()}
 
-      {/* ── Engineer Workload ─────────────────────────────────────────────── */}
+      {/* ── Paid OC Workload ──────────────────────────────────────────────── */}
       {report==='workload' && (() => {
         const usersToShow = selUser==='all' ? activeUsers : activeUsers.filter(u=>u.id===selUser);
-        const maxHrs = Math.max(...usersToShow.map(u=>stats.find(s=>s.user.id===u.id)?.totalHrs||0), 1);
-        const sorted = [...usersToShow].sort((a,b)=>(stats.find(s=>s.user.id===b.id)?.totalHrs||0)-(stats.find(s=>s.user.id===a.id)?.totalHrs||0));
+        const maxHrs = Math.max(...usersToShow.map(u=>stats.find(s=>s.user.id===u.id)?.totalPaidHrs||0), 1);
+        const sorted = [...usersToShow].sort((a,b)=>(stats.find(s=>s.user.id===b.id)?.totalPaidHrs||0)-(stats.find(s=>s.user.id===a.id)?.totalPaidHrs||0));
         return (
           <div className="card">
-            <div style={{ marginBottom:14, fontSize:13, fontWeight:700 }}>Engineer On-Call Workload ({start} → {end})</div>
-            <svg width="100%" height={Math.max(sorted.length*52+60, 200)} style={{ overflow:'visible' }}>
+            <div style={{ marginBottom:4, fontSize:13, fontWeight:700 }}>Paid On-Call Workload</div>
+            <div style={{ marginBottom:14, fontSize:11, color:'#475569' }}>Daily On-Call (09:00–18:00) is excluded — it is not a paid shift.</div>
+            <svg width="100%" height={Math.max(sorted.length*56+80, 200)} style={{ overflow:'visible' }}>
               {sorted.map((u,i)=>{
                 const d=stats.find(s=>s.user.id===u.id);
-                const totalH=d?.totalHrs||0;
-                const barW=Math.round((totalH/maxHrs)*560);
-                const y=i*52+10;
+                const totalH=d?.totalPaidHrs||0;
+                const barW=totalH>0?Math.round((totalH/maxHrs)*560):0;
+                const y=i*56+10;
+                const wdH=(d?.paidHrs?.evening||0), weH=(d?.paidHrs?.weekend||0), upH=(d?.paidHrs?.upgrade||0), bhH=(d?.paidHrs?.bankholiday||0);
+                const wdW=Math.round((wdH/maxHrs)*560), weW=Math.round((weH/maxHrs)*560), upW=Math.round((upH/maxHrs)*560);
                 return (
                   <g key={u.id}>
-                    <text x={130} y={y+14} textAnchor="end" fontSize={11} fill="#94a3b8">{u.name.split(' ')[0]}</text>
-                    {/* Total bar */}
-                    <rect x={140} y={y} width={barW} height={20} rx={4} fill={u.color||'#1d4ed8'} opacity={0.7}/>
-                    {/* Worked hours segment */}
-                    {d && (() => {
-                      const workedH=(d.hrs.daily||0)+(d.hrs.upgrade||0);
-                      const workedW=Math.round((workedH/maxHrs)*560);
-                      const standbyH=(d.hrs.evening||0)+(d.hrs.weekend||0)+(d.hrs.bankholiday||0);
-                      const standbyW=Math.round((standbyH/maxHrs)*560);
-                      return <>
-                        <rect x={140} y={y} width={workedW} height={10} rx={4} fill="#166534" opacity={0.9}/>
-                        <rect x={140} y={y+10} width={standbyW} height={10} rx={4} fill="#854d0e" opacity={0.9}/>
-                      </>;
-                    })()}
-                    <text x={148+barW} y={y+14} fontSize={11} fill="#94a3b8" fontFamily="DM Mono">{totalH}h</text>
-                    {/* Breakdown sub-label */}
-                    {d && <text x={140} y={y+34} fontSize={9} fill="#475569">
-                      {`Daily: ${d.hrs.daily||0}h  |  Standby: ${(d.hrs.evening||0)+(d.hrs.weekend||0)}h  |  Upgrades: ${d.hrs.upgrade||0}h  |  Shifts: ${d.totalShifts}`}
-                    </text>}
+                    <text x={130} y={y+16} textAnchor="end" fontSize={11} fill="#94a3b8">{u.name.split(' ')[0]}</text>
+                    <rect x={140} y={y} width={barW||2} height={24} rx={4} fill={u.color||'#1d4ed8'} opacity={0.15}/>
+                    {[[wdH,'#166534',0],[weH,'#854d0e',wdW],[upH,'#991b1b',wdW+weW],[bhH,'#7f1d1d',wdW+weW+upW]].map(([h,col,x],idx)=>h>0&&(
+                      <rect key={idx} x={140+x} y={y} width={Math.round((h/maxHrs)*560)} height={24} rx={idx===0?4:0} fill={col} opacity={0.9}/>
+                    ))}
+                    <text x={150+barW} y={y+16} fontSize={11} fill="#94a3b8" fontFamily="DM Mono">{totalH}h</text>
+                    <text x={140} y={y+40} fontSize={9} fill="#475569">{`WD:${wdH}h  WE:${weH}h  Upg:${upH}h  BH:${bhH}h`}{(d?.dailyDays||0)>0?`  │  Daily(unpaid):${d.dailyDays}d`:''}</text>
                   </g>
                 );
               })}
-              <text x={140} y={sorted.length*52+50} fontSize={9} fill="#334155">■ Worked (blue)  ■ Daily (green top)  ■ Standby (amber bottom)</text>
+              <g>
+                {[['#166534','WD OC'],['#854d0e','WE OC'],['#991b1b','Upgrade'],['#7f1d1d','BH']].map(([col,lbl],i)=>(
+                  <g key={lbl}>
+                    <rect x={140+i*120} y={sorted.length*56+20} width={10} height={10} rx={2} fill={col}/>
+                    <text x={155+i*120} y={sorted.length*56+29} fontSize={9} fill="#475569">{lbl}</text>
+                  </g>
+                ))}
+              </g>
             </svg>
           </div>
         );
       })()}
 
-      {/* ── Weekly Trends ────────────────────────────────────────────────── */}
+      {/* ── Rotation Fairness ─────────────────────────────────────────────── */}
+      {report==='fairness' && (() => {
+        const usersToShow = selUser==='all' ? activeUsers : activeUsers.filter(u=>u.id===selUser);
+        const list = usersToShow.map(u=>({ user:u, paid:stats.find(s=>s.user.id===u.id)?.totalPaidHrs||0, daily:stats.find(s=>s.user.id===u.id)?.dailyDays||0 }));
+        const avgPaid=list.length?Math.round(list.reduce((s,e)=>s+e.paid,0)/list.length):0;
+        const avgDaily=list.length?Math.round(list.reduce((s,e)=>s+e.daily,0)/list.length):0;
+        const maxPaid=Math.max(...list.map(e=>e.paid),1), maxDaily=Math.max(...list.map(e=>e.daily),1);
+        const sortedPaid=[...list].sort((a,b)=>b.paid-a.paid);
+        const gap=Math.max(...list.map(e=>e.paid))-Math.min(...list.filter(e=>e.paid>0).map(e=>e.paid));
+        return (
+          <div>
+            <div className="grid-4 mb-16">
+              <StatCard label="Avg Paid OC"  value={`${avgPaid}h`}  sub="Per engineer in period"  accent="#6ee7b7" icon="⚖️"/>
+              <StatCard label="Avg Daily OC" value={`${avgDaily}d`} sub="Per engineer (unpaid)"   accent="#90caf9" icon="☀️"/>
+              <StatCard label="Max–Min Gap"  value={`${gap}h`}      sub="Paid OC spread"          accent={gap>48?'#fca5a5':gap>24?'#fcd34d':'#6ee7b7'} icon="📏"/>
+              <StatCard label="Engineers"    value={usersToShow.length} sub="In comparison"       accent="#a78bfa" icon="👥"/>
+            </div>
+            <div className="grid-2 mb-16">
+              <div className="card">
+                <div style={{ fontSize:13, fontWeight:700, marginBottom:4 }}>Paid On-Call Hours</div>
+                <div style={{ fontSize:11, color:'#475569', marginBottom:12 }}>Avg target: {avgPaid}h · vertical line = avg</div>
+                {sortedPaid.map(({user:u, paid})=>{
+                  const v=paid-avgPaid; const bw=maxPaid?Math.round((paid/maxPaid)*100):0;
+                  return (
+                    <div key={u.id} style={{ display:'flex', alignItems:'center', gap:8, marginBottom:10 }}>
+                      <Avatar user={u} size={18}/>
+                      <span style={{ fontSize:12, color:'#94a3b8', width:90 }}>{u.name.split(' ')[0]}</span>
+                      <div style={{ flex:1, height:14, background:'rgba(255,255,255,0.06)', borderRadius:7, overflow:'hidden', position:'relative' }}>
+                        <div style={{ position:'absolute', left:`${avgPaid&&maxPaid?Math.round((avgPaid/maxPaid)*100):50}%`, top:0, bottom:0, width:1, background:'rgba(255,255,255,0.25)', zIndex:1 }}/>
+                        <div style={{ width:`${bw}%`, height:'100%', background:Math.abs(v)>48?'#ef4444':Math.abs(v)>24?'#f59e0b':'#22c55e', borderRadius:7 }}/>
+                      </div>
+                      <span style={{ fontSize:11, fontFamily:'DM Mono', color:'var(--accent)', width:40, textAlign:'right', fontWeight:700 }}>{paid}h</span>
+                      <span style={{ fontSize:10, fontFamily:'DM Mono', color:v>0?'#fcd34d':v<0?'#fca5a5':'#475569', width:46, textAlign:'right' }}>{v===0?'avg':v>0?`+${v}h`:`${v}h`}</span>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="card">
+                <div style={{ fontSize:13, fontWeight:700, marginBottom:4 }}>Daily OC Days <span style={{ fontSize:11, color:'#475569', fontWeight:400 }}>(unpaid)</span></div>
+                <div style={{ fontSize:11, color:'#475569', marginBottom:12 }}>Avg: {avgDaily}d per engineer</div>
+                {[...list].sort((a,b)=>b.daily-a.daily).map(({user:u, daily})=>{
+                  const v=daily-avgDaily; const bw=maxDaily?Math.round((daily/maxDaily)*100):0;
+                  return (
+                    <div key={u.id} style={{ display:'flex', alignItems:'center', gap:8, marginBottom:10 }}>
+                      <Avatar user={u} size={18}/>
+                      <span style={{ fontSize:12, color:'#94a3b8', width:90 }}>{u.name.split(' ')[0]}</span>
+                      <div style={{ flex:1, height:14, background:'rgba(255,255,255,0.06)', borderRadius:7, overflow:'hidden', position:'relative' }}>
+                        <div style={{ position:'absolute', left:`${avgDaily&&maxDaily?Math.round((avgDaily/maxDaily)*100):50}%`, top:0, bottom:0, width:1, background:'rgba(255,255,255,0.25)', zIndex:1 }}/>
+                        <div style={{ width:`${bw}%`, height:'100%', background:'#1565c0', borderRadius:7, opacity:0.8 }}/>
+                      </div>
+                      <span style={{ fontSize:11, fontFamily:'DM Mono', color:'#90caf9', width:32, textAlign:'right', fontWeight:700 }}>{daily}d</span>
+                      <span style={{ fontSize:10, fontFamily:'DM Mono', color:v>2?'#fcd34d':v<-2?'#fca5a5':'#475569', width:46, textAlign:'right' }}>{v===0?'avg':v>0?`+${v}d`:`${v}d`}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ── Weekly Trends ──────────────────────────────────────────────────── */}
       {report==='trends' && (() => {
         const usersToShow = selUser==='all' ? activeUsers.slice(0,6) : activeUsers.filter(u=>u.id===selUser);
-        // Build weekly buckets
-        const weeks = [];
-        const tmp = {}; // weekLabel → { uid: hrs }
+        const tmp={};
         allDates.forEach(ds => {
           const d=new Date(ds+'T12:00:00'); const dow=(d.getDay()+6)%7; const mon=new Date(d); mon.setDate(d.getDate()-dow);
           const wk=mon.toISOString().slice(0,10);
-          if (!tmp[wk]) { tmp[wk]={}; weeks.push(wk); }
-          usersToShow.forEach(u => {
-            const s=getShift(u.id,ds);
-            tmp[wk][u.id]=(tmp[wk][u.id]||0)+(SHIFT_HRS[s]||0);
-          });
+          if (!tmp[wk]) tmp[wk]={};
+          usersToShow.forEach(u=>{ tmp[wk][u.id]=(tmp[wk][u.id]||0)+(PAID_HRS[getShift(u.id,ds)]||0); });
         });
         const wkList=Object.keys(tmp).sort();
         const maxV=Math.max(...wkList.flatMap(w=>usersToShow.map(u=>tmp[w][u.id]||0)),1);
@@ -1738,32 +1811,25 @@ function RotaAnalytics({ users, rota, holidays, UK_BANK_HOLIDAYS, upgrades }) {
         const COLORS=['#3b82f6','#22c55e','#f59e0b','#ef4444','#a855f7','#14b8a6'];
         return (
           <div className="card">
-            <div style={{ marginBottom:14, fontSize:13, fontWeight:700 }}>Weekly On-Call Hours Trend</div>
+            <div style={{ marginBottom:4, fontSize:13, fontWeight:700 }}>Weekly Paid On-Call Hours Trend</div>
+            <div style={{ fontSize:11, color:'#475569', marginBottom:14 }}>Daily OC (unpaid) excluded. Shows payroll-generating hours only.</div>
             <div style={{ overflowX:'auto' }}>
               <svg width={Math.max(W+padL+20, wkList.length*30+padL)} height={H+padB+40} style={{ minWidth:400 }}>
-                {/* Y gridlines */}
-                {[0,0.25,0.5,0.75,1].map(p=>{
-                  const y=H-p*H;
-                  return <g key={p}>
-                    <line x1={padL} y1={y} x2={padL+W} y2={y} stroke="rgba(255,255,255,0.06)" strokeWidth={1}/>
-                    <text x={padL-4} y={y+4} fontSize={9} fill="#475569" textAnchor="end">{Math.round(p*maxV)}h</text>
-                  </g>;
-                })}
-                {/* Lines per user */}
+                {[0,0.25,0.5,0.75,1].map(p=>{ const y=H-p*H; return <g key={p}>
+                  <line x1={padL} y1={y} x2={padL+W} y2={y} stroke="rgba(255,255,255,0.06)" strokeWidth={1}/>
+                  <text x={padL-4} y={y+4} fontSize={9} fill="#475569" textAnchor="end">{Math.round(p*maxV)}h</text>
+                </g>; })}
                 {usersToShow.map((u,ui)=>{
                   const pts=wkList.map((w,i)=>({x:padL+i*xStep, y:H-((tmp[w][u.id]||0)/maxV)*H}));
-                  const path=pts.map((p,i)=>`${i===0?'M':'L'}${p.x},${p.y}`).join(' ');
                   return <g key={u.id}>
-                    <path d={path} stroke={COLORS[ui%COLORS.length]} strokeWidth={2} fill="none"/>
+                    <path d={pts.map((p,i)=>`${i===0?'M':'L'}${p.x},${p.y}`).join(' ')} stroke={COLORS[ui%COLORS.length]} strokeWidth={2} fill="none"/>
                     {pts.map((p,i)=><circle key={i} cx={p.x} cy={p.y} r={3} fill={COLORS[ui%COLORS.length]}/>)}
                   </g>;
                 })}
-                {/* X axis labels */}
-                {wkList.filter((_,i)=>i%Math.max(1,Math.floor(wkList.length/8))===0).map((w,i)=>{
+                {wkList.filter((_,i)=>i%Math.max(1,Math.floor(wkList.length/8))===0).map(w=>{
                   const idx=wkList.indexOf(w);
                   return <text key={w} x={padL+idx*xStep} y={H+16} fontSize={8} fill="#475569" textAnchor="middle" transform={`rotate(-30,${padL+idx*xStep},${H+16})`}>{w.slice(5)}</text>;
                 })}
-                {/* Legend */}
                 {usersToShow.map((u,ui)=>(
                   <g key={u.id}>
                     <rect x={padL+ui*90} y={H+padB+16} width={10} height={10} rx={2} fill={COLORS[ui%COLORS.length]}/>
@@ -1776,144 +1842,167 @@ function RotaAnalytics({ users, rota, holidays, UK_BANK_HOLIDAYS, upgrades }) {
         );
       })()}
 
-      {/* ── Coverage Gaps ────────────────────────────────────────────────── */}
+      {/* ── Coverage Gaps ──────────────────────────────────────────────────── */}
       {report==='gaps' && (() => {
-        const gaps = allDates.filter(ds=>{
-          const dow=new Date(ds+'T12:00:00').getDay();
-          const bh=(UK_BANK_HOLIDAYS||[]).find(b=>b.date===ds);
-          const covered=activeUsers.some(u=>{
-            const s=getShift(u.id,ds); return s!=='off'&&s!=='holiday';
-          });
-          return !covered;
-        }).slice(0,60);
-        const lowCoverage=allDates.filter(ds=>{
-          const count=activeUsers.filter(u=>{ const s=getShift(u.id,ds); return s!=='off'&&s!=='holiday'; }).length;
-          return count===1;
-        }).slice(0,60);
+        const noOC      = allDates.filter(ds=>{ const dow=new Date(ds+'T12:00:00').getDay(); if (dow===0||dow===5||dow===6) return !activeUsers.some(u=>getShift(u.id,ds)==='weekend'); return !activeUsers.some(u=>{ const s=getShift(u.id,ds); return s==='evening'||s==='weekend'; }); }).slice(0,60);
+        const noDaily   = weekdayDates.filter(ds=>!bhSet.has(ds)&&!activeUsers.some(u=>getShift(u.id,ds)==='daily')).slice(0,60);
         return (
           <div className="card">
             <div style={{ marginBottom:14, fontSize:13, fontWeight:700 }}>Coverage Gaps Analysis</div>
-            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }}>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16, marginBottom:20 }}>
               <div>
-                <div style={{ fontSize:12, fontWeight:700, color:'#fca5a5', marginBottom:8 }}>
-                  🔴 Zero Coverage ({gaps.length} days)
-                </div>
-                {gaps.length===0?<div style={{ fontSize:12, color:'#6ee7b7' }}>✅ No gaps found in this period</div>:
+                <div style={{ fontSize:12, fontWeight:700, color:'#fca5a5', marginBottom:8 }}>🔴 No On-Call Cover ({noOC.length} days)</div>
+                {noOC.length===0?<div style={{ fontSize:12, color:'#6ee7b7' }}>✅ Full OC coverage in period</div>:
                   <div style={{ display:'flex', flexWrap:'wrap', gap:4 }}>
-                    {gaps.map(ds=>{
-                      const d=new Date(ds+'T12:00:00');
-                      return <div key={ds} style={{ background:'rgba(239,68,68,0.15)', border:'1px solid rgba(239,68,68,0.3)', borderRadius:5, padding:'3px 8px', fontSize:11, fontFamily:'DM Mono', color:'#fca5a5' }}>
-                        {d.toLocaleDateString('en-GB',{day:'numeric',month:'short'})}
-                      </div>;
-                    })}
+                    {noOC.map(ds=><div key={ds} style={{ background:'rgba(239,68,68,0.15)', border:'1px solid rgba(239,68,68,0.3)', borderRadius:5, padding:'3px 8px', fontSize:11, fontFamily:'DM Mono', color:'#fca5a5' }}>{fmtDow(ds)} {fmtDs(ds)}</div>)}
                   </div>
                 }
               </div>
               <div>
-                <div style={{ fontSize:12, fontWeight:700, color:'#fcd34d', marginBottom:8 }}>
-                  ⚠️ Single Cover ({lowCoverage.length} days)
-                </div>
-                {lowCoverage.length===0?<div style={{ fontSize:12, color:'#6ee7b7' }}>✅ No single-cover days found</div>:
+                <div style={{ fontSize:12, fontWeight:700, color:'#90caf9', marginBottom:8 }}>☀️ No Daily OC ({noDaily.length} weekdays)</div>
+                {noDaily.length===0?<div style={{ fontSize:12, color:'#6ee7b7' }}>✅ Daily OC coverage complete</div>:
                   <div style={{ display:'flex', flexWrap:'wrap', gap:4 }}>
-                    {lowCoverage.map(ds=>{
-                      const d=new Date(ds+'T12:00:00');
-                      const who=activeUsers.find(u=>getShift(u.id,ds)!=='off'&&getShift(u.id,ds)!=='holiday');
-                      return <div key={ds} title={who?.name} style={{ background:'rgba(245,158,11,0.12)', border:'1px solid rgba(245,158,11,0.3)', borderRadius:5, padding:'3px 8px', fontSize:11, fontFamily:'DM Mono', color:'#fcd34d' }}>
-                        {d.toLocaleDateString('en-GB',{day:'numeric',month:'short'})} <span style={{ fontSize:9 }}>({who?.name?.split(' ')[0]||'?'})</span>
-                      </div>;
-                    })}
+                    {noDaily.map(ds=><div key={ds} style={{ background:'rgba(21,101,192,0.15)', border:'1px solid rgba(21,101,192,0.30)', borderRadius:5, padding:'3px 8px', fontSize:11, fontFamily:'DM Mono', color:'#90caf9' }}>{fmtDow(ds)} {fmtDs(ds)}</div>)}
                   </div>
                 }
               </div>
             </div>
-            {/* Coverage % chart */}
-            <div style={{ marginTop:20 }}>
-              <div style={{ fontSize:12, fontWeight:700, color:'#e2e8f0', marginBottom:10 }}>📊 Daily Coverage Count</div>
-              <div style={{ display:'flex', alignItems:'flex-end', gap:1, height:80, overflowX:'auto' }}>
-                {allDates.slice(-60).map(ds=>{
-                  const count=activeUsers.filter(u=>{ const s=getShift(u.id,ds); return s!=='off'&&s!=='holiday'; }).length;
-                  const maxC=Math.max(activeUsers.length,1);
-                  const h=Math.round((count/maxC)*80);
-                  const col=count===0?'#ef4444':count===1?'#f59e0b':'#22c55e';
-                  return <div key={ds} title={`${ds}: ${count} engineers`} style={{ width:8, height:h||2, background:col, borderRadius:'2px 2px 0 0', flexShrink:0, opacity:0.85 }}/>;
-                })}
+            <div style={{ fontSize:12, fontWeight:700, color:'#e2e8f0', marginBottom:10 }}>📊 Daily Coverage (last 60 days)</div>
+            <div style={{ display:'flex', alignItems:'flex-end', gap:1, height:80, overflowX:'auto' }}>
+              {allDates.slice(-60).map(ds=>{
+                const count=activeUsers.filter(u=>{ const s=getShift(u.id,ds); return s!=='off'&&s!=='holiday'; }).length;
+                const hasDaily=activeUsers.some(u=>getShift(u.id,ds)==='daily');
+                const isWD=new Date(ds+'T12:00:00').getDay()>=1&&new Date(ds+'T12:00:00').getDay()<=5;
+                const maxC=Math.max(activeUsers.length,1);
+                return (
+                  <div key={ds} title={`${fmtDow(ds)} ${ds}: ${count} engineers${isWD?(hasDaily?' · daily ✅':' · no daily ⚠️'):''}` } style={{ display:'flex', flexDirection:'column', alignItems:'center', flexShrink:0 }}>
+                    <div style={{ width:8, height:Math.round((count/maxC)*70)||2, background:count===0?'#ef4444':count===1?'#f59e0b':'#22c55e', borderRadius:'2px 2px 0 0', opacity:0.85 }}/>
+                    {isWD&&<div style={{ width:6, height:4, background:hasDaily?'#1565c0':'#ef4444', borderRadius:1, marginTop:1, opacity:0.7 }}/>}
+                  </div>
+                );
+              })}
+            </div>
+            <div style={{ fontSize:9, color:'#334155', marginTop:6, fontFamily:'DM Mono' }}>🟢=2+OC 🟡=1OC 🔴=0OC │ Bottom dot: 🔵=daily cover 🔴=no daily (weekdays)</div>
+          </div>
+        );
+      })()}
+
+      {/* ── OC Burden Heatmap ─────────────────────────────────────────────── */}
+      {report==='oncall' && (() => {
+        const usersToShow = selUser==='all' ? activeUsers : activeUsers.filter(u=>u.id===selUser);
+        const weeks={};
+        allDates.forEach(ds => {
+          const d=new Date(ds+'T12:00:00'); const dow=(d.getDay()+6)%7; const mon=new Date(d); mon.setDate(d.getDate()-dow);
+          const wk=mon.toISOString().slice(0,10);
+          if (!weeks[wk]) weeks[wk]={};
+          usersToShow.forEach(u=>{ weeks[wk][u.id]=(weeks[wk][u.id]||0)+(PAID_HRS[getShift(u.id,ds)]||0); });
+        });
+        const wkArr=Object.keys(weeks).sort();
+        const maxV=Math.max(...wkArr.flatMap(w=>usersToShow.map(u=>weeks[w][u.id]||0)),1);
+        const HEAT=['transparent','rgba(21,101,192,0.25)','rgba(21,101,192,0.50)','rgba(21,101,192,0.75)','rgba(133,77,14,0.60)','rgba(133,77,14,0.85)','#991b1b'];
+        const hCol=v=>v===0?HEAT[0]:HEAT[Math.min(6,Math.ceil((v/maxV)*6))];
+        return (
+          <div className="card" style={{ overflowX:'auto' }}>
+            <div style={{ marginBottom:4, fontSize:13, fontWeight:700 }}>On-Call Burden Heatmap (paid hrs/week)</div>
+            <div style={{ fontSize:11, color:'#475569', marginBottom:14 }}>Darker = more paid on-call hours that week. Daily OC (unpaid) excluded.</div>
+            <div style={{ display:'flex' }}>
+              <div style={{ flexShrink:0 }}>
+                <div style={{ height:24 }}/>
+                {usersToShow.map(u=>(
+                  <div key={u.id} style={{ display:'flex', alignItems:'center', gap:6, height:32, paddingRight:10 }}>
+                    <Avatar user={u} size={18}/>
+                    <span style={{ fontSize:11, color:'#94a3b8', whiteSpace:'nowrap' }}>{u.name.split(' ')[0]}</span>
+                  </div>
+                ))}
               </div>
-              <div style={{ fontSize:9, color:'#334155', marginTop:4, fontFamily:'DM Mono' }}>
-                🔴 = 0 engineers  🟡 = 1 engineer  🟢 = 2+ engineers  (last 60 days shown)
+              <div style={{ overflowX:'auto' }}>
+                <div style={{ display:'flex', gap:2, marginBottom:2 }}>
+                  {wkArr.filter((_,i)=>i%Math.max(1,Math.floor(wkArr.length/12))===0).map(w=>(
+                    <div key={w} style={{ fontSize:8, color:'#475569', fontFamily:'DM Mono', minWidth:28, textAlign:'center' }}>{w.slice(5)}</div>
+                  ))}
+                </div>
+                {usersToShow.map(u=>(
+                  <div key={u.id} style={{ display:'flex', gap:2, marginBottom:2 }}>
+                    {wkArr.map(w=>{
+                      const v=weeks[w]?.[u.id]||0;
+                      return <div key={w} title={`${u.name.split(' ')[0]}: ${v}h w/c ${w}`}
+                        style={{ width:28, height:28, background:hCol(v), borderRadius:4, display:'flex', alignItems:'center', justifyContent:'center', border:'1px solid rgba(255,255,255,0.06)' }}>
+                        {v>0&&<span style={{ fontSize:8, color:'rgba(255,255,255,0.75)', fontFamily:'DM Mono' }}>{v}</span>}
+                      </div>;
+                    })}
+                  </div>
+                ))}
+                <div style={{ display:'flex', alignItems:'center', gap:4, marginTop:10, fontSize:9, color:'#475569' }}>
+                  <span>0h</span>
+                  {HEAT.map((c,i)=><div key={i} style={{ width:20, height:10, background:c||'rgba(255,255,255,0.05)', borderRadius:2, border:'1px solid rgba(255,255,255,0.08)' }}/>)}
+                  <span>{maxV}h</span>
+                </div>
               </div>
             </div>
           </div>
         );
       })()}
 
-      {/* ── Summary Table ────────────────────────────────────────────────── */}
+      {/* ── Summary Table ──────────────────────────────────────────────────── */}
       {report==='summary' && (() => {
         const usersToShow = selUser==='all' ? activeUsers : activeUsers.filter(u=>u.id===selUser);
         const shiftTypes=['daily','evening','weekend','upgrade','holiday','bankholiday'];
         return (
           <div className="card" style={{ overflowX:'auto' }}>
-            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:14 }}>
-              <div style={{ fontSize:13, fontWeight:700 }}>Summary Report: {start} → {end}</div>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10 }}>
+              <div>
+                <div style={{ fontSize:13, fontWeight:700 }}>Summary: {start} → {end}</div>
+                <div style={{ fontSize:11, color:'#475569', marginTop:2 }}>Paid Hrs excludes Daily OC. Daily column = scheduling reference only.</div>
+              </div>
               <button className="btn btn-secondary btn-sm" onClick={()=>{
-                const rows=[['Engineer','Daily','WD OC','WE OC','Upgrade','Holiday','BH','Total Shifts','Total Hours']];
-                usersToShow.forEach(u=>{
-                  const d=stats.find(s=>s.user.id===u.id);
-                  rows.push([u.name,...shiftTypes.map(t=>d?.counts[t]||0),d?.totalShifts||0,d?.totalHrs||0]);
-                });
+                const rows=[['Engineer','Daily*(unpaid)','WD OC','WE OC','Upgrade','Holiday','BH','Shifts','Paid Hrs']];
+                usersToShow.forEach(u=>{ const d=stats.find(s=>s.user.id===u.id); rows.push([u.name,...shiftTypes.map(t=>d?.counts[t]||0),d?.totalShifts||0,d?.totalPaidHrs||0]); });
                 const csv=rows.map(r=>r.join(',')).join('\n');
                 const b=new Blob([csv],{type:'text/csv'}); const a=document.createElement('a'); a.href=URL.createObjectURL(b); a.download=`rota-report-${start}-${end}.csv`; a.click();
               }}>📥 Export CSV</button>
             </div>
             <table style={{ width:'100%', borderCollapse:'collapse' }}>
-              <thead>
-                <tr>
-                  <th style={{ textAlign:'left', padding:'8px 10px', fontSize:10, fontWeight:700, textTransform:'uppercase', color:'#475569', borderBottom:'1px solid rgba(255,255,255,0.08)', letterSpacing:'0.06em' }}>Engineer</th>
-                  {shiftTypes.map(t=><th key={t} style={{ textAlign:'center', padding:'8px 6px', fontSize:10, fontWeight:700, textTransform:'uppercase', color:'#475569', borderBottom:'1px solid rgba(255,255,255,0.08)', letterSpacing:'0.06em' }}>
-                    <div style={{ width:8, height:8, background:C[t], borderRadius:2, margin:'0 auto 2px' }}/>
-                    {t==='daily'?'Daily':t==='evening'?'WD OC':t==='weekend'?'WE OC':t==='upgrade'?'Upg':t==='holiday'?'Hol':'BH'}
-                  </th>)}
-                  <th style={{ textAlign:'center', padding:'8px 6px', fontSize:10, fontWeight:700, textTransform:'uppercase', color:'#475569', borderBottom:'1px solid rgba(255,255,255,0.08)', letterSpacing:'0.06em' }}>Shifts</th>
-                  <th style={{ textAlign:'center', padding:'8px 6px', fontSize:10, fontWeight:700, textTransform:'uppercase', color:'#475569', borderBottom:'1px solid rgba(255,255,255,0.08)', letterSpacing:'0.06em' }}>Hours</th>
-                  <th style={{ textAlign:'center', padding:'8px 6px', fontSize:10, fontWeight:700, textTransform:'uppercase', color:'#475569', borderBottom:'1px solid rgba(255,255,255,0.08)', letterSpacing:'0.06em' }}>Distribution</th>
-                </tr>
-              </thead>
+              <thead><tr>
+                <th style={{ textAlign:'left', padding:'8px 10px', fontSize:10, fontWeight:700, textTransform:'uppercase', color:'#475569', borderBottom:'1px solid rgba(255,255,255,0.08)', letterSpacing:'0.06em' }}>Engineer</th>
+                {shiftTypes.map(t=><th key={t} style={{ textAlign:'center', padding:'8px 6px', fontSize:10, fontWeight:700, textTransform:'uppercase', color:t==='daily'?'#374151':'#475569', borderBottom:'1px solid rgba(255,255,255,0.08)', letterSpacing:'0.06em' }}>
+                  <div style={{ width:8, height:8, background:C[t], borderRadius:2, margin:'0 auto 2px', opacity:t==='daily'?0.45:1 }}/>
+                  {t==='daily'?'Daily*':t==='evening'?'WD OC':t==='weekend'?'WE OC':t==='upgrade'?'Upg':t==='holiday'?'Hol':'BH'}
+                </th>)}
+                <th style={{ textAlign:'center', padding:'8px 6px', fontSize:10, fontWeight:700, textTransform:'uppercase', color:'#475569', borderBottom:'1px solid rgba(255,255,255,0.08)' }}>Shifts</th>
+                <th style={{ textAlign:'center', padding:'8px 6px', fontSize:10, fontWeight:700, textTransform:'uppercase', color:'var(--accent)', borderBottom:'1px solid rgba(255,255,255,0.08)' }}>Paid Hrs</th>
+                <th style={{ padding:'8px 6px', fontSize:10, fontWeight:700, textTransform:'uppercase', color:'#475569', borderBottom:'1px solid rgba(255,255,255,0.08)' }}>Mix (paid only)</th>
+              </tr></thead>
               <tbody>
-                {usersToShow.map((u,idx)=>{
-                  const d=stats.find(s=>s.user.id===u.id);
-                  return (
-                    <tr key={u.id} style={{ background:idx%2===0?'transparent':'rgba(255,255,255,0.015)' }}>
-                      <td style={{ padding:'8px 10px', borderBottom:'1px solid rgba(255,255,255,0.04)' }}>
-                        <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-                          <Avatar user={u} size={22}/>
-                          <div>
-                            <div style={{ fontSize:12, fontWeight:600, color:'#e2e8f0' }}>{u.name}</div>
-                            <div style={{ fontSize:10, color:'#475569', fontFamily:'DM Mono' }}>{u.id}</div>
-                          </div>
-                        </div>
-                      </td>
-                      {shiftTypes.map(t=><td key={t} style={{ textAlign:'center', padding:'8px 6px', fontSize:12, color:d?.counts[t]?TXT[t]:'#334155', fontFamily:'DM Mono', fontWeight:d?.counts[t]?700:400, borderBottom:'1px solid rgba(255,255,255,0.04)' }}>
-                        {d?.counts[t]||'—'}
-                      </td>)}
-                      <td style={{ textAlign:'center', padding:'8px 6px', fontSize:12, color:'#94a3b8', fontFamily:'DM Mono', borderBottom:'1px solid rgba(255,255,255,0.04)' }}>{d?.totalShifts||0}</td>
-                      <td style={{ textAlign:'center', padding:'8px 6px', fontSize:13, color:'var(--accent)', fontFamily:'DM Mono', fontWeight:700, borderBottom:'1px solid rgba(255,255,255,0.04)' }}>{d?.totalHrs||0}h</td>
-                      <td style={{ padding:'8px 6px', borderBottom:'1px solid rgba(255,255,255,0.04)', minWidth:120 }}>
-                        <div style={{ display:'flex', height:12, borderRadius:6, overflow:'hidden', gap:1 }}>
-                          {d && shiftTypes.map(t=>{ const cnt=d.counts[t]||0; if(!cnt) return null;
-                            return <div key={t} title={`${SHIFT_COLORS[t]?.label||t}: ${cnt}`} style={{ flex:cnt, background:C[t], minWidth:2 }}/>;
-                          })}
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
+                {usersToShow.map((u,idx)=>{ const d=stats.find(s=>s.user.id===u.id); return (
+                  <tr key={u.id} style={{ background:idx%2===0?'transparent':'rgba(255,255,255,0.015)' }}>
+                    <td style={{ padding:'8px 10px', borderBottom:'1px solid rgba(255,255,255,0.04)' }}>
+                      <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                        <Avatar user={u} size={22}/>
+                        <div><div style={{ fontSize:12, fontWeight:600, color:'#e2e8f0' }}>{u.name}</div><div style={{ fontSize:10, color:'#475569', fontFamily:'DM Mono' }}>{u.id}</div></div>
+                      </div>
+                    </td>
+                    {shiftTypes.map(t=><td key={t} style={{ textAlign:'center', padding:'8px 6px', fontSize:12, color:d?.counts[t]?(t==='daily'?'#64748b':TXT[t]):'#334155', fontFamily:'DM Mono', fontWeight:d?.counts[t]&&t!=='daily'?700:400, borderBottom:'1px solid rgba(255,255,255,0.04)', opacity:t==='daily'?0.6:1 }}>
+                      {d?.counts[t]||'—'}
+                    </td>)}
+                    <td style={{ textAlign:'center', padding:'8px 6px', fontSize:12, color:'#94a3b8', fontFamily:'DM Mono', borderBottom:'1px solid rgba(255,255,255,0.04)' }}>{d?.totalShifts||0}</td>
+                    <td style={{ textAlign:'center', padding:'8px 6px', fontSize:13, color:'var(--accent)', fontFamily:'DM Mono', fontWeight:700, borderBottom:'1px solid rgba(255,255,255,0.04)' }}>{d?.totalPaidHrs||0}h</td>
+                    <td style={{ padding:'8px 6px', borderBottom:'1px solid rgba(255,255,255,0.04)', minWidth:120 }}>
+                      <div style={{ display:'flex', height:12, borderRadius:6, overflow:'hidden', gap:1 }}>
+                        {d&&shiftTypes.filter(t=>t!=='daily').map(t=>{ const cnt=d.counts[t]||0; if (!cnt) return null; return <div key={t} title={`${SHIFT_COLORS[t]?.label}: ${cnt}`} style={{ flex:cnt, background:C[t], minWidth:2 }}/>; })}
+                      </div>
+                    </td>
+                  </tr>
+                ); })}
               </tbody>
             </table>
+            <div style={{ fontSize:10, color:'#475569', marginTop:8 }}>* Daily OC (09:00–18:00 Mon–Fri) is not a paid shift — scheduling reference only.</div>
           </div>
         );
       })()}
     </div>
   );
 }
+
 
 // ── Bulk Entry (manager-only) ────────────────────────────────────────────────
 // A form-driven alternative to clicking/painting individual cells: queue up
@@ -2011,11 +2100,6 @@ function RotaBulkEntry({ users, rota, setRota, holidays, isManager }) {
           if (existing !== 'off') overwrites.push({ userName, date: dateStr, from: existing, to: value });
           else newCount++;
           merged[entry.userId] = { ...(merged[entry.userId] || {}), [dateStr]: value };
-          // Auto-fill the full Fri→Mon block for any weekend entry
-          if (value === 'weekend') {
-            const completed = autoCompleteWeekendBlock(merged, entry.userId, dateStr, holidays, []);
-            merged[entry.userId] = completed[entry.userId];
-          }
         }
       });
     });
