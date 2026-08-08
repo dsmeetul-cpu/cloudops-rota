@@ -167,7 +167,10 @@ export function calcOncallPay(timesheetEntries, hourlyRate, upgradeHrs = 0, bank
     if (isHol) return;
     const dow = new Date(date).getDay();
     const isWeekend = dow === 0 || dow === 5 || dow === 6;
-    if (shift === 'daily')   { workedWD += 9; }
+    // ── Daily on-call (09:00–18:00 Mon–Fri) is NOT paid ──────────────────
+    // Daily shifts appear on the rota for scheduling/coverage purposes only.
+    // They do not generate standby pay, worked pay, or any other compensation.
+    if (shift === 'daily')   { /* intentionally excluded from payroll */ }
     else if (shift === 'evening') { standbyWD += 12; }
     else if (shift === 'weekend') {
       if (dow === 5) standbyWE += 5;
@@ -287,72 +290,6 @@ export function analyzeOncallBlocks(rotaForUser = {}, bankHolidays = [], userHol
   });
 
   return { wdNights, weBlocks };
-}
-
-// ── calcArrearsItems ────────────────────────────────────────────────────────
-// Scans the full all-time rota for every user and finds weekend blocks that
-// were missing their Monday 00:00–07:00 entry AND where that Monday is already
-// in the past (i.e. the shortfall is historic, not still fixable in the rota).
-// Returns one item per affected block for the Arrears tab and Excel export.
-export function calcArrearsItems(rota, users, bankHolidays, holidays) {
-  const STANDBY_RATE = 5; // £/hr — matches ONCALL_STANDBY_RATE
-  const bhSet  = new Set((bankHolidays || []).map(b => b.date));
-  const today  = new Date().toISOString().slice(0, 10);
-  const items  = [];
-
-  (users || []).forEach(u => {
-    const userRota = rota?.[u.id] || {};
-    const userHols = (holidays || []).filter(h => h.userId === u.id);
-    const inHol    = ds => userHols.some(h => ds >= h.start && ds <= h.end);
-
-    const weDates = Object.entries(userRota)
-      .filter(([, s]) => s === 'weekend')
-      .map(([d]) => d)
-      .sort();
-
-    // Group into consecutive runs
-    const runs = [];
-    weDates.forEach(date => {
-      const last = runs[runs.length - 1];
-      if (last) {
-        const exp = new Date(last[last.length - 1] + 'T12:00:00');
-        exp.setDate(exp.getDate() + 1);
-        if (date === exp.toISOString().slice(0, 10)) { last.push(date); return; }
-      }
-      runs.push([date]);
-    });
-
-    runs.forEach(run => {
-      const dows = run.map(d => new Date(d + 'T12:00:00').getDay());
-      if (!dows.includes(6) || !dows.includes(0) || dows.includes(1)) return;
-
-      const sunDs = run.find(d => new Date(d + 'T12:00:00').getDay() === 0);
-      const monD  = new Date(sunDs + 'T12:00:00');
-      monD.setDate(monD.getDate() + 1);
-      const monDs = monD.toISOString().slice(0, 10);
-
-      if (bhSet.has(monDs) || inHol(monDs)) return; // legitimately excluded
-      if (monDs >= today) return;                    // still fixable — not arrears yet
-
-      items.push({
-        userId:       u.id,
-        userName:     u.name,
-        employmentId: u.employment_id || '—',
-        trigram:      u.id,
-        blockStart:   run[0],
-        blockEnd:     run[run.length - 1],
-        missingDate:  monDs,
-        shortfallHrs: 7,
-        shortfallPay: 7 * STANDBY_RATE,
-        paidHrs:  53,
-        owedHrs:  60,
-      });
-    });
-  });
-
-  return items.sort((a, b) =>
-    a.missingDate.localeCompare(b.missingDate) || a.userName.localeCompare(b.userName)
-  );
 }
 
 // ── calcTOILBalance ───────────────────────────────────────────────────────────
@@ -517,13 +454,6 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
   const safeInc       = Array.isArray(incidents) ? incidents : [];
   const bhList        = (typeof UK_BANK_HOLIDAYS !== 'undefined') ? UK_BANK_HOLIDAYS : [];
   const safeAdj       = Array.isArray(payrollAdjustments) ? payrollAdjustments : [];
-
-  // Arrears: past weekend blocks missing the Monday handover — all-time scan
-  const arrearsItems  = useMemo(
-    () => calcArrearsItems(safeRota, safeUsers, bhList, safeHolidays),
-    [safeRota, safeUsers, bhList, safeHolidays] // eslint-disable-line
-  );
-  const arrearsCount  = arrearsItems.length;
 
   // Load export logs from Drive on mount — MUST be before early return
   useEffect(() => {
@@ -1105,47 +1035,12 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
         }
       });
 
-      // ── SHEET 6: Arrears ─────────────────────────────────────────────────────
-      // Historic weekend blocks missing Monday 00:00–07:00 — same column headers
-      // as Daily Detail so payroll can process them in the same run.
-      const arrearsForExport = calcArrearsItems(safeRota, safeUsers, bhList, safeHolidays);
-      const s6Hdrs = ['Employment ID','Trigram','Full Name','Date','Day','Shift Type','Hours','Category','Notes'];
-      const s6Rows = arrearsForExport.map(item => [
-        item.employmentId,
-        item.trigram,
-        item.userName,
-        fmtUK(item.missingDate),
-        new Date(item.missingDate + 'T12:00:00').toLocaleDateString('en-GB', { weekday: 'long' }),
-        'Weekend On-Call',
-        item.shortfallHrs,
-        'Arrears',
-        `Arrears: WE OC Mon handover missing — block ${fmtUK(item.blockStart)} to ${fmtUK(item.blockEnd)}`,
-      ]);
-      const ws6Data = [s6Hdrs, ...s6Rows];
-      if (s6Rows.length === 0) ws6Data.push(['No arrears','','','','','','','','All past weekend blocks had complete Fri→Mon entries']);
-      else ws6Data.push([
-        '', 'TOTAL', `${arrearsForExport.length} blocks`, '', '', '',
-        arrearsForExport.reduce((s, i) => s + i.shortfallHrs, 0),
-        '', `£${arrearsForExport.reduce((s, i) => s + i.shortfallPay, 0).toFixed(2)} total owed`,
-      ]);
-      const ws6 = XLSX.utils.aoa_to_sheet(ws6Data);
-      ws6['!cols'] = [14,8,22,12,14,20,8,14,52].map(w => ({ wch: w }));
-      const H6 = { font:{bold:true,color:{rgb:'FFFFFF'}}, fill:{fgColor:{rgb:'7F1D1D'}}, alignment:{horizontal:'center',wrapText:true}, border:{bottom:{style:'medium',color:{rgb:'EF4444'}}} };
-      styleRow(ws6, 0, s6Hdrs.length, H6);
-      s6Rows.forEach((_, i) => {
-        styleRow(ws6, i + 1, s6Hdrs.length, { fill:{fgColor:{rgb: i%2===0 ? '1A0000' : '200000'}}, font:{color:{rgb:'FCA5A5'}} });
-        const amtCell = XLSX.utils.encode_cell({ r: i+1, c: 6 });
-        if (ws6[amtCell]) ws6[amtCell].s = { font:{bold:true,color:{rgb:'FCD34D'}}, fill:{fgColor:{rgb: i%2===0 ? '1A0000' : '200000'}} };
-      });
-      if (s6Rows.length > 0) styleRow(ws6, s6Rows.length + 1, s6Hdrs.length, { fill:{fgColor:{rgb:'3B0000'}}, font:{bold:true,color:{rgb:'FCD34D'}}, border:{top:{style:'medium',color:{rgb:'EF4444'}}} });
-
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws3, '📊 Dashboard');
       XLSX.utils.book_append_sheet(wb, ws1, '📋 Hours Summary');
       XLSX.utils.book_append_sheet(wb, ws4, 'Standby & Worked Hours Payroll');
       XLSX.utils.book_append_sheet(wb, ws5, '✏️ Adjustments Audit');
       XLSX.utils.book_append_sheet(wb, ws2, '📅 Daily Detail');
-      XLSX.utils.book_append_sheet(wb, ws6, '⚠️ Arrears');
 
       const fname = `CloudOps-Hours-${(exportStart||'all').replace(/-/g,'')}-${(exportEnd||'time').replace(/-/g,'')}.xlsx`;
 
@@ -1155,17 +1050,15 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
 
       // Build log entry
       const logEntry = {
-        id:            'exp-' + Date.now(),
-        exportedAt:    new Date().toISOString(),
-        exportedBy:    safeUsers[0]?.id || 'manager',
-        filename:      fname,
-        rangeStart:    exportStart || 'all',
-        rangeEnd:      exportEnd   || 'all',
+        id:           'exp-' + Date.now(),
+        exportedAt:   new Date().toISOString(),
+        exportedBy:   safeUsers[0]?.id || 'manager',
+        filename:     fname,
+        rangeStart:   exportStart || 'all',
+        rangeEnd:     exportEnd   || 'all',
         engineerCount: safeUsers.length,
-        totalHrs:      s1Rows.reduce((a,r)=>a+(parseFloat(r[5])||0)+(parseFloat(r[6])||0)+(parseFloat(r[7])||0)+(parseFloat(r[8])||0),0),
-        arrearsBlocks: arrearsForExport.length,
-        arrearsHrs:    arrearsForExport.reduce((s,i)=>s+i.shortfallHrs,0),
-        driveFileId:   null,
+        totalHrs:     s1Rows.reduce((a,r)=>a+(parseFloat(r[5])||0)+(parseFloat(r[6])||0)+(parseFloat(r[7])||0)+(parseFloat(r[8])||0),0),
+        driveFileId:  null, // filled in below if Drive upload succeeds
       };
 
       // Cap logs at 12 (drop oldest)
@@ -1339,7 +1232,7 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
   const [viewCycleEnd,   setViewCycleEnd]   = useState(cycleEnd);
   const viewCycleLabel = `${fmtD(viewCycleStart)} – ${fmtD(viewCycleEnd)}`;
 
-  const tabIcons = { overview: '📋', oncall: '🌙', arrears: '⚠️', takehome: '💷', adjustments: '✏️', log: '📁', reports: '📊' };
+  const tabIcons = { overview: '📋', oncall: '🌙', takehome: '💷', adjustments: '✏️', log: '📁', reports: '📊' };
 
   return (
     <div>
@@ -1383,60 +1276,21 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
       </div>
 
       {/* ── Tab buttons ───────────────────────────────────────────────────── */}
-      <div style={{
-        display: 'flex', gap: 4, padding: '5px 6px',
-        background: 'rgba(0,0,0,0.25)',
-        border: '1px solid var(--border)',
-        borderRadius: 12, marginBottom: 20,
-        flexWrap: 'wrap', backdropFilter: 'blur(8px)',
-      }}>
+      <div className="payroll-tab-bar">
         {[
-          { id:'overview',    label:'Hours Summary' },
-          { id:'oncall',      label:'On-Call Breakdown' },
-          { id:'arrears',     label:'Arrears', badge: arrearsCount || null },
-          { id:'takehome',    label:'Take-Home' },
-          { id:'adjustments', label:'Adjustments', badge: safeAdj.length || null },
-          { id:'log',         label:'Export Log', badge: exportLogs.length || null },
-          { id:'reports',     label:'Reports' },
-        ].map(({ id, label, badge }) => {
-          const isActive = tab === id;
-          const isArrears = id === 'arrears';
-          return (
-            <button key={id} onClick={() => setTab(id)} style={{
-              display: 'flex', alignItems: 'center', gap: 6,
-              padding: '7px 14px', borderRadius: 8, border: 'none',
-              cursor: 'pointer', fontSize: 12, fontWeight: isActive ? 700 : 500,
-              fontFamily: 'DM Sans, sans-serif', whiteSpace: 'nowrap',
-              transition: 'all 0.15s ease',
-              background: isActive
-                ? (isArrears ? 'rgba(239,68,68,0.20)' : 'rgba(0,0,0,0.45)')
-                : 'transparent',
-              color: isActive
-                ? (isArrears ? '#fca5a5' : 'var(--accent)')
-                : (isArrears && badge ? '#fca5a5' : 'var(--text-secondary)'),
-              boxShadow: isActive
-                ? (isArrears
-                    ? '0 0 0 1px rgba(239,68,68,0.45), inset 0 1px 0 rgba(255,255,255,0.06)'
-                    : '0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent), inset 0 1px 0 rgba(255,255,255,0.06)')
-                : 'none',
-            }}>
-              <span style={{ fontSize: 14, lineHeight: 1 }}>{tabIcons[id]}</span>
-              <span>{label}</span>
-              {badge != null && (
-                <span style={{
-                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                  minWidth: 18, height: 18, borderRadius: 9, padding: '0 4px',
-                  fontSize: 10, fontWeight: 800, lineHeight: 1,
-                  background: isArrears ? 'rgba(239,68,68,0.30)' : 'rgba(var(--accent), 0.20)',
-                  color: isArrears ? '#fca5a5' : 'var(--accent)',
-                  border: `1px solid ${isArrears ? 'rgba(239,68,68,0.45)' : 'rgba(79,195,247,0.35)'}`,
-                }}>
-                  {badge}
-                </span>
-              )}
-            </button>
-          );
-        })}
+          { id:'overview',     label:'Hours Summary' },
+          { id:'oncall',       label:'On-Call Breakdown' },
+          { id:'takehome',     label:'Take-Home' },
+          { id:'adjustments',  label:'Adjustments', badge: safeAdj.length || null },
+          { id:'log',          label:'Export Log', badge: exportLogs.length || null },
+          { id:'reports',      label:'Reports' },
+        ].map(({ id, label, badge }) => (
+          <div key={id} className={`payroll-tab${tab === id ? ' active' : ''}`} onClick={() => setTab(id)}>
+            <span>{tabIcons[id]}</span>
+            <span>{label}</span>
+            {badge != null && <span className="tab-badge">{badge}</span>}
+          </div>
+        ))}
       </div>
 
       {/* ── TAB: Overview ─────────────────────────────────────────────────── */}
@@ -1540,16 +1394,6 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
           viewCycleStart={viewCycleStart} viewCycleEnd={viewCycleEnd}
           setViewCycleStart={setViewCycleStart} setViewCycleEnd={setViewCycleEnd}
           allCycles={allCycles} fmtD={fmtD} standbyRate={ONCALL_STANDBY_RATE}
-        />
-      )}
-
-      {/* ── TAB: Arrears ──────────────────────────────────────────────────── */}
-      {tab === 'arrears' && (
-        <ArrearsTab
-          items={arrearsItems}
-          fmtD={fmtD}
-          standbyRate={ONCALL_STANDBY_RATE}
-          onExport={() => setShowExport(true)}
         />
       )}
 
@@ -2030,136 +1874,7 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
 }
 
 
-// ── ArrearsTab ────────────────────────────────────────────────────────────────
-function ArrearsTab({ items, fmtD, standbyRate, onExport }) {
-  const [filterUser, setFilterUser] = useState('all');
-
-  const visible = filterUser === 'all' ? items : items.filter(i => i.userId === filterUser);
-  const totalHrs = items.reduce((s, i) => s + i.shortfallHrs, 0);
-  const totalPay = items.reduce((s, i) => s + i.shortfallPay, 0);
-
-  const byEngineer = {};
-  items.forEach(i => {
-    if (!byEngineer[i.userId]) byEngineer[i.userId] = { name: i.userName, blocks: 0, hrs: 0, pay: 0 };
-    byEngineer[i.userId].blocks++;
-    byEngineer[i.userId].hrs += i.shortfallHrs;
-    byEngineer[i.userId].pay += i.shortfallPay;
-  });
-
-  if (items.length === 0) return (
-    <div style={{ padding: '60px 24px', textAlign: 'center' }}>
-      <div style={{ fontSize: 48, marginBottom: 16 }}>✅</div>
-      <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 8 }}>No arrears found</div>
-      <div style={{ fontSize: 13, color: 'var(--text-muted)', maxWidth: 380, margin: '0 auto' }}>Every past weekend on-call block has a complete Fri → Mon entry. All hours have been paid correctly.</div>
-    </div>
-  );
-
-  return (
-    <div>
-      {/* Warning banner */}
-      <div style={{ background: 'rgba(239,68,68,0.10)', border: '1px solid rgba(239,68,68,0.30)', borderRadius: 12, padding: '16px 20px', marginBottom: 20 }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span style={{ fontSize: 24 }}>⚠️</span>
-            <div>
-              <div style={{ fontSize: 14, fontWeight: 700, color: '#fca5a5' }}>
-                {items.length} past weekend block{items.length !== 1 ? 's' : ''} were underpaid — {totalHrs}h / £{totalPay.toFixed(2)} owed
-              </div>
-              <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 3, lineHeight: 1.5 }}>
-                Each block had Fri/Sat/Sun logged but no Monday 00:00–07:00 entry. Shortfall: 7h × £{standbyRate}/hr = £{(7 * standbyRate).toFixed(2)} per block. These are included automatically in your next Export to Excel under the <strong style={{ color: '#fcd34d' }}>⚠️ Arrears</strong> sheet.
-              </div>
-            </div>
-          </div>
-          <button className="btn btn-primary btn-sm" onClick={onExport} style={{ flexShrink: 0 }}>
-            📥 Export to Excel (includes arrears)
-          </button>
-        </div>
-      </div>
-
-      {/* Stat cards */}
-      <div className="grid-4 mb-16">
-        <StatCard label="Blocks Owed"  value={items.length}              sub="Underpaid weekend blocks"  accent="#ef4444" icon="📋" />
-        <StatCard label="Hours Owed"   value={`${totalHrs}h`}           sub={`£${standbyRate}/hr standby`} accent="#f97316" icon="⏱️" />
-        <StatCard label="Amount Owed"  value={`£${totalPay.toFixed(2)}`} sub="Total arrears payment"     accent="#fcd34d" icon="💷" />
-        <StatCard label="Engineers"    value={Object.keys(byEngineer).length} sub="Affected"            accent="#a78bfa" icon="👤" />
-      </div>
-
-      {/* Engineer filter chips */}
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16, alignItems: 'center' }}>
-        <button onClick={() => setFilterUser('all')} style={{
-          padding: '5px 14px', borderRadius: 20, border: `1px solid ${filterUser==='all' ? 'var(--accent)' : 'var(--border)'}`,
-          background: filterUser==='all' ? 'var(--accent-dim)' : 'transparent',
-          color: filterUser==='all' ? 'var(--accent)' : 'var(--text-secondary)',
-          fontSize: 12, fontWeight: 600, cursor: 'pointer',
-        }}>All engineers</button>
-        {Object.entries(byEngineer).map(([uid, d]) => (
-          <button key={uid} onClick={() => setFilterUser(filterUser === uid ? 'all' : uid)} style={{
-            padding: '5px 14px', borderRadius: 20,
-            border: `1px solid ${filterUser===uid ? 'rgba(239,68,68,0.50)' : 'var(--border)'}`,
-            background: filterUser===uid ? 'rgba(239,68,68,0.14)' : 'transparent',
-            color: filterUser===uid ? '#fca5a5' : 'var(--text-secondary)',
-            fontSize: 12, fontWeight: 600, cursor: 'pointer',
-          }}>
-            {d.name.split(' ')[0]} · {d.blocks} block{d.blocks!==1?'s':''} · £{d.pay.toFixed(2)}
-          </button>
-        ))}
-      </div>
-
-      {/* Table */}
-      <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-            <thead>
-              <tr>
-                {['Engineer', 'Emp. ID', 'Weekend Block', 'Missing Monday', 'Paid', 'Owed', 'Shortfall', 'Amount'].map(h => (
-                  <th key={h} style={{
-                    background: '#0f1629', color: 'rgba(255,255,255,0.90)',
-                    padding: '11px 14px', textAlign: h === 'Paid' || h === 'Owed' || h === 'Shortfall' || h === 'Amount' ? 'right' : 'left',
-                    fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em',
-                    borderBottom: '2px solid rgba(239,68,68,0.40)', whiteSpace: 'nowrap',
-                  }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {visible.map((item, i) => (
-                <tr key={`${item.userId}-${item.missingDate}`} style={{
-                  background: i % 2 === 0 ? 'rgba(239,68,68,0.04)' : 'transparent',
-                  borderBottom: '1px solid var(--border)',
-                }}>
-                  <td style={{ padding: '10px 14px', fontWeight: 600, color: 'var(--text-primary)' }}>{item.userName}</td>
-                  <td style={{ padding: '10px 14px', fontFamily: 'DM Mono, monospace', fontSize: 12, color: 'var(--text-muted)' }}>{item.employmentId}</td>
-                  <td style={{ padding: '10px 14px', fontFamily: 'DM Mono, monospace', fontSize: 12, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{fmtD(item.blockStart)} – {fmtD(item.blockEnd)}</td>
-                  <td style={{ padding: '10px 14px', fontFamily: 'DM Mono, monospace', fontSize: 12, color: '#fca5a5', fontWeight: 600, whiteSpace: 'nowrap' }}>{fmtD(item.missingDate)}</td>
-                  <td style={{ padding: '10px 14px', fontFamily: 'DM Mono, monospace', textAlign: 'right', color: 'var(--text-muted)' }}>{item.paidHrs}h</td>
-                  <td style={{ padding: '10px 14px', fontFamily: 'DM Mono, monospace', textAlign: 'right', color: '#6ee7b7', fontWeight: 700 }}>{item.owedHrs}h</td>
-                  <td style={{ padding: '10px 14px', fontFamily: 'DM Mono, monospace', textAlign: 'right', color: '#fcd34d', fontWeight: 700 }}>+{item.shortfallHrs}h</td>
-                  <td style={{ padding: '10px 14px', fontFamily: 'DM Mono, monospace', textAlign: 'right', color: '#fcd34d', fontWeight: 800, fontSize: 14 }}>£{item.shortfallPay.toFixed(2)}</td>
-                </tr>
-              ))}
-              {/* Totals row */}
-              <tr style={{ background: 'rgba(239,68,68,0.10)', borderTop: '2px solid rgba(239,68,68,0.35)' }}>
-                <td colSpan={4} style={{ padding: '11px 14px', fontWeight: 700, color: 'var(--text-secondary)', fontFamily: 'DM Mono, monospace', fontSize: 12 }}>
-                  TOTAL — {visible.length} block{visible.length!==1?'s':''}{filterUser!=='all' ? ` (${byEngineer[filterUser]?.name})` : ' (all engineers)'}
-                </td>
-                <td style={{ padding: '11px 14px', fontFamily: 'DM Mono, monospace', textAlign: 'right', color: 'var(--text-muted)', fontWeight: 700 }}>{visible.reduce((s,i)=>s+i.paidHrs,0)}h</td>
-                <td style={{ padding: '11px 14px', fontFamily: 'DM Mono, monospace', textAlign: 'right', color: '#6ee7b7', fontWeight: 700 }}>{visible.reduce((s,i)=>s+i.owedHrs,0)}h</td>
-                <td style={{ padding: '11px 14px', fontFamily: 'DM Mono, monospace', textAlign: 'right', color: '#fcd34d', fontWeight: 700 }}>+{visible.reduce((s,i)=>s+i.shortfallHrs,0)}h</td>
-                <td style={{ padding: '11px 14px', fontFamily: 'DM Mono, monospace', textAlign: 'right', color: '#fcd34d', fontWeight: 800, fontSize: 14 }}>£{visible.reduce((s,i)=>s+i.shortfallPay,0).toFixed(2)}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-        <div style={{ padding: '10px 16px', fontSize: 11, color: 'var(--text-muted)', borderTop: '1px solid var(--border)', lineHeight: 1.6 }}>
-          These rows are appended to the <strong>⚠️ Arrears</strong> sheet and <strong>📅 Daily Detail</strong> sheet in the Excel export, matching the same column headers so your payroll provider can process them in the same run. Note field reads: <em>"Arrears: WE OC Mon handover missing [date]"</em>.
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // ── OnCallBreakdownTab ───────────────────────────────────────────────────────
-
 // Full visual breakdown of every engineer's on-call hours for the selected
 // cycle: WD nights, WE blocks (with the Fri/Sat/Sun/Mon split shown day by
 // day), Bank Holiday exclusions, and any block missing its Monday handover.
