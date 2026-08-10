@@ -117,6 +117,20 @@ function isoWeek(date) {
   return Math.ceil((((d - jan1) / 86400000) + 1) / 7);
 }
 
+// ── StatCard ─────────────────────────────────────────────────────────────────
+function StatCard({ label, value, sub, accent, icon, onClick }) {
+  return (
+    <div className="stat-card" onClick={onClick}
+      style={onClick ? { cursor: 'pointer' } : undefined}
+      title={onClick ? `View ${label.toLowerCase()}` : undefined}>
+      {accent && <div className="stat-accent" style={{ background: accent }} />}
+      <div className="stat-label">{label}</div>
+      <div className="stat-value">{icon ? <span style={{ marginRight: 6 }}>{icon}</span> : null}{value}</div>
+      {sub && <div className="stat-sub">{sub}</div>}
+    </div>
+  );
+}
+
 // ── Avatar ────────────────────────────────────────────────────────────────────
 function Avatar({ user, size = 24 }) {
   if (!user) return <div style={{ width:size, height:size, borderRadius:'50%', background:'#1e293b' }} />;
