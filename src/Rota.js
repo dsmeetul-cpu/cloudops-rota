@@ -490,6 +490,14 @@ function RotaContent({
     });
   };
 
+  // ── completeWeekendBlock ─────────────────────────────────────────────────
+  // Must be declared BEFORE paintCell/setCell/applyBulk/applySwap/approveSwap
+  // which all depend on it. Wraps the module-level pure function, closing over
+  // UK_BANK_HOLIDAYS and holidays so call-sites don't need to pass them.
+  const completeWeekendBlock = useCallback((rotaArg, userId, triggerDate) => {
+    return autoCompleteWeekendBlock(rotaArg, userId, triggerDate, UK_BANK_HOLIDAYS, holidays);
+  }, [UK_BANK_HOLIDAYS, holidays]);
+
   const paintCell = useCallback((userId, date) => {
     if (!canEdit) return;
     const user = users.find(u => u.id === userId);
@@ -568,13 +576,6 @@ function RotaContent({
     });
     setGenerated(true);
   };
-
-  // ── completeWeekendBlock (RotaContent closure wrapper) ──────────────────
-  // Wraps the module-level pure autoCompleteWeekendBlock, closing over
-  // UK_BANK_HOLIDAYS and holidays so call-sites stay concise.
-  const completeWeekendBlock = useCallback((rotaArg, userId, triggerDate) => {
-    return autoCompleteWeekendBlock(rotaArg, userId, triggerDate, UK_BANK_HOLIDAYS, holidays);
-  }, [UK_BANK_HOLIDAYS, holidays]);
 
   const setCell = useCallback((userId, date, shift) => {
     if (!canEdit) return;
