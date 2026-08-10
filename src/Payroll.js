@@ -933,7 +933,11 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
 
       // ─────────────────────────────────────────────────────────────────────
       // SHEET 4 — Standby & Worked Hours for Payroll
-      // Standby WD + Standby WE + Bank Hol     = Hours on Standby Shifts @ £5/hr <1164>
+      // FIX (this export): the <1164> column previously folded Bank Holiday
+      // standby hours into the same total as WD + WE standby. Per corrected
+      // spec: WE Standby + WD Standby = Hours on Standby Shifts @ £5/hr <1164>.
+      // Bank Holiday standby hours are now broken out into their own column so
+      // they're still visible/payable, but no longer silently inflate <1164>.
       // Incidents + Overtime + Upgrade day hrs  = Hours Worked on Standby @ 1.5× <2011>
       // ─────────────────────────────────────────────────────────────────────
       const STANDBY_RATE = 5;    // £5 per standby hour  (pay code 1164)
@@ -945,12 +949,13 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
         'Full Name',
         'Period',
         'Hours on Standby Shifts @ £5 per hour <1164>',
+        'Bank Holiday Standby Hours (separate — not in <1164>)',
         'Hours Worked while on Standby Shift @ 1.5 times Basic hourly rate <2011>',
       ];
 
       const s4Rows = safeUsers.map(u => {
         const { oc, incHrs, upgradeHrs, bankHolHrs, overtimeHrs } = getUserData(u, exportStart, exportEnd);
-        const standbyTotal = (oc.standbyWD || 0) + (oc.standbyWE || 0) + (bankHolHrs || 0);
+        const standbyTotal = (oc.standbyWD || 0) + (oc.standbyWE || 0); // WD + WE only — BH excluded
         const workedTotal  = (incHrs || 0) + (overtimeHrs || 0) + (upgradeHrs || 0);
         return [
           u.employment_id || '—',
@@ -958,6 +963,7 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
           u.name,
           rangeLabel,
           standbyTotal,
+          bankHolHrs || 0,
           workedTotal,
         ];
       });
@@ -966,34 +972,97 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
       const s4TotRow = ['', 'TOTAL', `${safeUsers.length} engineers`, rangeLabel,
         +s4Rows.reduce((a,r) => a + (parseFloat(r[4]) || 0), 0).toFixed(1),
         +s4Rows.reduce((a,r) => a + (parseFloat(r[5]) || 0), 0).toFixed(1),
+        +s4Rows.reduce((a,r) => a + (parseFloat(r[6]) || 0), 0).toFixed(1),
       ];
 
       const ws4Data = [s4Hdrs, ...s4Rows, s4TotRow];
       const ws4     = XLSX.utils.aoa_to_sheet(ws4Data);
-      ws4['!cols']  = [14, 8, 22, 20, 46, 52].map(w => ({wch:w}));
+      ws4['!cols']  = [14, 8, 22, 20, 46, 40, 52].map(w => ({wch:w}));
       ws4['!freeze']= { xSplit: 3, ySplit: 1 };
 
       const H4 = { font:{bold:true,color:{rgb:'FFFFFF'}}, fill:{fgColor:{rgb:'0F1629'}}, alignment:{horizontal:'center',wrapText:true}, border:{bottom:{style:'medium',color:{rgb:'10B981'}}} };
       styleRow(ws4, 0, s4Hdrs.length, H4);
 
       const standbyColour = { fill:{fgColor:{rgb:'064E3B'}}, font:{color:{rgb:'6EE7B7'},bold:true} };
+      const bhColour      = { fill:{fgColor:{rgb:'451A03'}}, font:{color:{rgb:'FDBA74'},bold:true} };
       const workedColour  = { fill:{fgColor:{rgb:'78350F'}}, font:{color:{rgb:'FCD34D'},bold:true} };
 
       s4Rows.forEach((_, i) => {
         const bg = i % 2 === 0 ? '0F1629' : '111827';
         styleRow(ws4, i+1, s4Hdrs.length, { fill:{fgColor:{rgb:bg}}, font:{color:{rgb:'E2E8F0'}} });
-        // Standby hours — col 4
+        // Standby hours (WD+WE) — col 4
         const sAddr = XLSX.utils.encode_cell({r:i+1, c:4});
         if (ws4[sAddr]) ws4[sAddr].s = standbyColour;
-        // Worked hours — col 5
-        const wAddr = XLSX.utils.encode_cell({r:i+1, c:5});
+        // Bank Holiday standby hours — col 5
+        const bAddr = XLSX.utils.encode_cell({r:i+1, c:5});
+        if (ws4[bAddr]) ws4[bAddr].s = bhColour;
+        // Worked hours — col 6
+        const wAddr = XLSX.utils.encode_cell({r:i+1, c:6});
         if (ws4[wAddr]) ws4[wAddr].s = workedColour;
       });
       styleRow(ws4, s4Rows.length+1, s4Hdrs.length, { fill:{fgColor:{rgb:'1E3A5F'}}, font:{bold:true,color:{rgb:'6EE7B7'}}, border:{top:{style:'medium',color:{rgb:'10B981'}}} });
 
       // ─────────────────────────────────────────────────────────────────────
-      // Build workbook — 4 sheets
+      // SHEET 6 — Audit: Standby Calc Review (old vs corrected, all past cycles)
+      // Recomputes every completed payroll cycle from Jan 2026 using CURRENT
+      // rota/holiday data under both the OLD formula (WD+WE+BH, what this
+      // export used to produce) and the CORRECTED formula (WD+WE only), so
+      // past discrepancies — and the resulting £ over/under-payment at the
+      // £5/hr standby rate — are visible per engineer per cycle.
       // ─────────────────────────────────────────────────────────────────────
+      const todayDs = new Date().toISOString().slice(0,10);
+      const pastCycles = allCycles.filter(c => c.end <= todayDs).sort((a,b) => a.start.localeCompare(b.start));
+
+      const s6Hdrs = [
+        'Cycle', 'Employment ID', 'Trigram', 'Full Name',
+        'OLD Total (WD+WE+BH) <1164>', 'CORRECTED Total (WD+WE) <1164>',
+        'Bank Holiday Hrs (excluded from <1164>)',
+        'Variance (hrs)', 'Variance (£ @ £5/hr)', 'Flag',
+      ];
+      const s6Rows = [];
+      pastCycles.forEach(c => {
+        safeUsers.forEach(u => {
+          const { oc, bankHolHrs } = getUserData(u, c.start, c.end);
+          const wd = oc.standbyWD || 0, we = oc.standbyWE || 0, bh = bankHolHrs || 0;
+          const oldTotal = wd + we + bh;
+          const newTotal = wd + we;
+          const varianceHrs = +(oldTotal - newTotal).toFixed(1);
+          if (varianceHrs === 0) return; // only list cycles/engineers actually affected
+          s6Rows.push([
+            c.label, u.employment_id || '—', u.id, u.name,
+            +oldTotal.toFixed(1), +newTotal.toFixed(1), +bh.toFixed(1),
+            varianceHrs, +(varianceHrs * STANDBY_RATE).toFixed(2),
+            'Was overstated — BH wrongly folded into <1164>',
+          ]);
+        });
+      });
+
+      const s6TotRow = ['TOTAL AFFECTED', '', '', `${s6Rows.length} row(s)`,
+        '', '', '',
+        +s6Rows.reduce((a,r) => a + (parseFloat(r[7]) || 0), 0).toFixed(1),
+        +s6Rows.reduce((a,r) => a + (parseFloat(r[8]) || 0), 0).toFixed(2),
+        '',
+      ];
+
+      const ws6Data = s6Rows.length
+        ? [s6Hdrs, ...s6Rows, s6TotRow]
+        : [s6Hdrs, ['No discrepancies found — every past cycle already matches the corrected WD+WE formula', '', '', '', '', '', '', '', '', '']];
+      const ws6     = XLSX.utils.aoa_to_sheet(ws6Data);
+      ws6['!cols']  = [26, 14, 8, 22, 24, 24, 22, 14, 16, 44].map(w => ({wch:w}));
+      ws6['!freeze']= { xSplit: 4, ySplit: 1 };
+
+      const H6 = { font:{bold:true,color:{rgb:'FFFFFF'}}, fill:{fgColor:{rgb:'7C2D12'}}, alignment:{horizontal:'center',wrapText:true}, border:{bottom:{style:'medium',color:{rgb:'F97316'}}} };
+      styleRow(ws6, 0, s6Hdrs.length, H6);
+      s6Rows.forEach((_, i) => {
+        const bg = i % 2 === 0 ? '0F1629' : '111827';
+        styleRow(ws6, i+1, s6Hdrs.length, { fill:{fgColor:{rgb:bg}}, font:{color:{rgb:'E2E8F0'}} });
+        const vAddr = XLSX.utils.encode_cell({r:i+1, c:7});
+        if (ws6[vAddr]) ws6[vAddr].s = { font:{bold:true,color:{rgb:'FCA5A5'}}, fill:{fgColor:{rgb:bg}} };
+        const pAddr = XLSX.utils.encode_cell({r:i+1, c:8});
+        if (ws6[pAddr]) ws6[pAddr].s = { font:{bold:true,color:{rgb:'FCA5A5'}}, fill:{fgColor:{rgb:bg}} };
+      });
+      if (s6Rows.length) styleRow(ws6, s6Rows.length+1, s6Hdrs.length, { fill:{fgColor:{rgb:'451A03'}}, font:{bold:true,color:{rgb:'FDBA74'}}, border:{top:{style:'medium',color:{rgb:'F97316'}}} });
+
       // ─────────────────────────────────────────────────────────────────────
       // SHEET 5 — Manual Adjustments Audit Trail
       // ─────────────────────────────────────────────────────────────────────
@@ -1039,6 +1108,7 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
       XLSX.utils.book_append_sheet(wb, ws3, '📊 Dashboard');
       XLSX.utils.book_append_sheet(wb, ws1, '📋 Hours Summary');
       XLSX.utils.book_append_sheet(wb, ws4, 'Standby & Worked Hours Payroll');
+      XLSX.utils.book_append_sheet(wb, ws6, '⚠️ Standby Calc Audit');
       XLSX.utils.book_append_sheet(wb, ws5, '✏️ Adjustments Audit');
       XLSX.utils.book_append_sheet(wb, ws2, '📅 Daily Detail');
 
