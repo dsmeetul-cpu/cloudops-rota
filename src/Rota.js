@@ -243,40 +243,124 @@ function findOnCallGaps(rota, users, bhList, holidays) {
   return gaps.sort((a, b) => a.missingDate.localeCompare(b.missingDate));
 }
 
-function OnCallGapBanner({ users, rota, holidays, UK_BANK_HOLIDAYS }) {
-  const [dismissed, setDismissed] = useState(false);
+function OnCallGapBanner({ users, rota, holidays, UK_BANK_HOLIDAYS, onCallGapLog, setOnCallGapLog, onJump }) {
+  const [showHistory, setShowHistory] = useState(false);
+  const [reasonFor, setReasonFor] = useState(null); // { id, action: 'resolve'|'dismiss' }
+  const [reasonText, setReasonText] = useState('');
+
   const gaps = React.useMemo(
     () => findOnCallGaps(rota, users, UK_BANK_HOLIDAYS, holidays),
     [rota, users, UK_BANK_HOLIDAYS, holidays]
   );
-  if (dismissed || gaps.length === 0) return null;
-  const totalShortfall = gaps.reduce((s, g) => s + g.shortfallHrs, 0);
-  const fmtD = ds => ds ? new Date(ds + 'T12:00:00').toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
+
+  const log = Array.isArray(onCallGapLog) ? onCallGapLog : [];
+  // Latest log entry per gap id (id = userId::missingDate)
+  const latestById = {};
+  log.forEach(e => {
+    const existing = latestById[e.id];
+    if (!existing || (e.loggedAt || 0) > (existing.loggedAt || 0)) latestById[e.id] = e;
+  });
+
+  const gapId = g => `${g.userId}::${g.missingDate}`;
+  const activeGaps  = gaps.filter(g => !latestById[gapId(g)]);
+  const loggedGaps  = gaps.filter(g => !!latestById[gapId(g)]).map(g => ({ ...g, log: latestById[gapId(g)] }));
+  const historyExtra = log.filter(e => !gaps.some(g => gapId(g) === e.id)); // resolved gaps that no longer show (rota was fixed too)
+
+  if (gaps.length === 0 && log.length === 0) return null;
+
+  const totalShortfall = activeGaps.reduce((s, g) => s + g.shortfallHrs, 0);
+  const fmtD  = ds => ds ? new Date(ds + 'T12:00:00').toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
+  const fmtDT = ts => ts ? new Date(ts).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—';
+
+  const openReason = (g, action) => { setReasonFor({ id: gapId(g), action, g }); setReasonText(''); };
+  const cancelReason = () => { setReasonFor(null); setReasonText(''); };
+  const submitReason = () => {
+    if (!reasonFor || !reasonText.trim()) return;
+    const { id, action, g } = reasonFor;
+    const entry = {
+      id, userId: g.userId, userName: g.userName,
+      blockStart: g.blockStart, blockEnd: g.blockEnd, missingDate: g.missingDate,
+      status: action === 'resolve' ? 'resolved' : 'dismissed',
+      reason: reasonText.trim(), loggedAt: Date.now(),
+    };
+    setOnCallGapLog?.(prev => [...(Array.isArray(prev) ? prev : []), entry]);
+    setReasonFor(null); setReasonText('');
+  };
+  const reopen = (id) => {
+    setOnCallGapLog?.(prev => (Array.isArray(prev) ? prev : []).filter(e => e.id !== id));
+  };
+
+  if (activeGaps.length === 0 && loggedGaps.length === 0 && historyExtra.length === 0) return null;
+
   return (
     <div style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.25)', borderRadius: 10, padding: '12px 16px', marginBottom: 14 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 8, flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={{ fontSize: 18 }}>⚠️</span>
           <strong style={{ color: '#fca5a5', fontSize: 13 }}>
-            {gaps.length} weekend on-call block{gaps.length !== 1 ? 's' : ''} missing the Monday 07:00 handover — {totalShortfall}h not being paid
+            {activeGaps.length > 0
+              ? `${activeGaps.length} weekend on-call block${activeGaps.length !== 1 ? 's' : ''} missing the Monday 07:00 handover — ${totalShortfall}h not being paid`
+              : 'All flagged weekend on-call gaps have been resolved or dismissed'}
           </strong>
         </div>
-        <button className="btn btn-secondary btn-sm" onClick={() => setDismissed(true)}>Dismiss</button>
+        {(loggedGaps.length + historyExtra.length) > 0 && (
+          <button className="btn btn-secondary btn-sm" onClick={() => setShowHistory(s => !s)}>
+            {showHistory ? 'Hide' : 'Show'} history ({loggedGaps.length + historyExtra.length})
+          </button>
+        )}
       </div>
-      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
-        Weekend on-call runs Fri 19:00 → Mon 07:00. Each block below has Sat+Sun logged but no Monday 00:00–07:00 entry, so payroll only pays 53h instead of 60h for it. Add the "Weekend On-Call" shift on the Monday to fix — or check the On-Call Breakdown tab in Payroll for the full picture.
-      </div>
+      {activeGaps.length > 0 && (
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
+          Weekend on-call runs Fri 19:00 → Mon 07:00. Each block below has Sat+Sun logged but no Monday 00:00–07:00 entry, so payroll only pays 53h instead of 60h for it. Click a row to jump to it in the rota grid, add the missing "Weekend On-Call" shift on the Monday to fix it — or Resolve / Dismiss if it's already been handled.
+        </div>
+      )}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-        {gaps.map((g, i) => (
-          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontFamily: 'DM Mono', background: 'rgba(0,0,0,0.15)', borderRadius: 6, padding: '6px 10px', flexWrap: 'wrap' }}>
-            <span style={{ color: '#fca5a5' }}>●</span>
-            <strong style={{ color: 'var(--text-primary)', fontFamily: 'inherit' }}>{g.userName}</strong>
-            <span style={{ color: 'var(--text-muted)' }}>· {fmtD(g.blockStart)} – {fmtD(g.blockEnd)}</span>
-            <span style={{ color: 'var(--text-muted)' }}>· missing Mon {fmtD(g.missingDate)}</span>
-            <span style={{ marginLeft: 'auto', color: '#fcd34d' }}>-{g.shortfallHrs}h</span>
+        {activeGaps.map((g, i) => (
+          <div key={i} style={{ display: 'flex', flexDirection:'column', gap:6, background: 'rgba(0,0,0,0.15)', borderRadius: 6, padding: '6px 10px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontFamily: 'DM Mono', flexWrap: 'wrap' }}>
+              <span style={{ color: '#fca5a5' }}>●</span>
+              <span onClick={() => onJump?.(g.userId, g.missingDate)}
+                style={{ display:'flex', alignItems:'center', gap:8, flexWrap:'wrap', cursor: onJump ? 'pointer' : 'default', flex:1 }}
+                title={onJump ? 'Click to jump to this cell in the rota grid' : undefined}>
+                <strong style={{ color: 'var(--text-primary)', fontFamily: 'inherit', textDecoration: onJump ? 'underline' : 'none', textDecorationColor:'rgba(255,255,255,0.2)' }}>{g.userName}</strong>
+                <span style={{ color: 'var(--text-muted)' }}>· {fmtD(g.blockStart)} – {fmtD(g.blockEnd)}</span>
+                <span style={{ color: 'var(--text-muted)' }}>· missing Mon {fmtD(g.missingDate)}</span>
+                <span style={{ color: '#fcd34d' }}>-{g.shortfallHrs}h</span>
+              </span>
+              <button className="btn btn-secondary btn-sm" style={{ padding:'3px 9px', fontSize:11 }} onClick={() => openReason(g, 'resolve')}>✓ Resolve</button>
+              <button className="btn btn-secondary btn-sm" style={{ padding:'3px 9px', fontSize:11 }} onClick={() => openReason(g, 'dismiss')}>✕ Dismiss</button>
+            </div>
+            {reasonFor?.id === gapId(g) && (
+              <div style={{ display:'flex', gap:6, alignItems:'center', paddingLeft:18, flexWrap:'wrap' }}>
+                <input autoFocus className="input" style={{ flex:1, minWidth:200, fontSize:11, padding:'5px 8px' }}
+                  placeholder={reasonFor.action === 'resolve' ? 'Reason this is resolved (e.g. paid manually via adjustment)…' : 'Reason for dismissing permanently…'}
+                  value={reasonText} onChange={e => setReasonText(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') submitReason(); if (e.key === 'Escape') cancelReason(); }} />
+                <button className="btn btn-primary btn-sm" style={{ padding:'4px 10px', fontSize:11 }} disabled={!reasonText.trim()} onClick={submitReason}>
+                  {reasonFor.action === 'resolve' ? 'Mark resolved' : 'Dismiss permanently'}
+                </button>
+                <button className="btn btn-secondary btn-sm" style={{ padding:'4px 10px', fontSize:11 }} onClick={cancelReason}>Cancel</button>
+              </div>
+            )}
           </div>
         ))}
       </div>
+
+      {showHistory && (loggedGaps.length + historyExtra.length) > 0 && (
+        <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid rgba(255,255,255,0.08)', display:'flex', flexDirection:'column', gap:5 }}>
+          {[...loggedGaps.map(g => ({ ...g.log, blockStart: g.blockStart, blockEnd: g.blockEnd })), ...historyExtra].map((e, i) => (
+            <div key={e.id + i} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, fontFamily: 'DM Mono', background: 'rgba(0,0,0,0.12)', borderRadius: 6, padding: '6px 10px', flexWrap: 'wrap' }}>
+              <span style={{ color: e.status === 'resolved' ? '#6ee7b7' : '#94a3b8' }}>{e.status === 'resolved' ? '✓' : '✕'}</span>
+              <strong style={{ color: 'var(--text-secondary)', fontFamily: 'inherit' }}>{e.userName}</strong>
+              <span style={{ color: 'var(--text-muted)' }}>· missing Mon {fmtD(e.missingDate)}</span>
+              <span style={{ color: 'var(--text-muted)', textTransform:'capitalize' }}>· {e.status}</span>
+              <span style={{ color: 'var(--text-muted)', fontStyle:'italic' }}>"{e.reason}"</span>
+              <span style={{ color: 'var(--text-muted)' }}>· {fmtDT(e.loggedAt)}</span>
+              <button className="btn btn-secondary btn-sm" style={{ marginLeft:'auto', padding:'2px 8px', fontSize:10 }} onClick={() => reopen(e.id)}>↩ Reopen</button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -421,6 +505,7 @@ function CellEditorPopover({ cell, users, rota, holidays, UK_BANK_HOLIDAYS, upgr
 function RotaContent({
   users, rota, setRota, holidays, upgrades, swapRequests, setSwapRequests,
   isManager, UK_BANK_HOLIDAYS, generateRota, generateICalFeed, downloadIcal,
+  onCallGapLog, setOnCallGapLog,
 }) {
   const [startDate,       setStartDate]       = useState(() => new Date().toISOString().slice(0, 10));
   const [weeks,           setWeeks]           = useState(4);
@@ -446,6 +531,28 @@ function RotaContent({
     const d = new Date();
     return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
   });
+
+  // ── Jump-to-cell (used by OnCallGapBanner "click issue → find it") ────────
+  const [highlightCell, setHighlightCell] = useState(null); // { userId, date }
+  const jumpToCell = (userId, date) => {
+    setViewMode('compact');
+    // Align the visible window's week-0 to the Monday of the target date so
+    // the cell is guaranteed to be on screen.
+    const d = new Date(date + 'T12:00:00');
+    const dow = d.getDay();
+    d.setDate(d.getDate() + (dow === 0 ? -6 : 1 - dow));
+    setStartDate(d.toISOString().slice(0, 10));
+    setHighlightCell({ userId, date, ts: Date.now() });
+  };
+  useEffect(() => {
+    if (!highlightCell) return;
+    const t = setTimeout(() => {
+      const el = document.querySelector(`[data-cell="${highlightCell.userId}::${highlightCell.date}"]`);
+      el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 80);
+    const clear = setTimeout(() => setHighlightCell(null), 3200);
+    return () => { clearTimeout(t); clearTimeout(clear); };
+  }, [highlightCell?.ts]); // eslint-disable-line
 
   const toggleLock  = (userId, date) => {
     const key = `${userId}::${date}`;
@@ -793,7 +900,8 @@ function RotaContent({
 
       <ReadinessBanner users={users} startDate={startDate} weeks={weeks} />
       {isManager && (
-        <OnCallGapBanner users={users} rota={rota} holidays={holidays} UK_BANK_HOLIDAYS={UK_BANK_HOLIDAYS} />
+        <OnCallGapBanner users={users} rota={rota} holidays={holidays} UK_BANK_HOLIDAYS={UK_BANK_HOLIDAYS}
+          onCallGapLog={onCallGapLog} setOnCallGapLog={setOnCallGapLog} onJump={jumpToCell} />
       )}
 
       {/* ── Sticky Manager Toolbar ─────────────────────────────────────────── */}
@@ -1388,9 +1496,15 @@ function RotaContent({
                       const hasCarryOver = (prevS==='evening'||prevS==='weekend') && currentHasNoShift && isOnCallActive(u,prevDs);
                       const prevCol=SHIFT_COLORS[prevS]||{};
                       const isEditTarget = editCell?.userId===u.id && editCell?.date===ds;
+                      const isHighlighted = highlightCell?.userId===u.id && highlightCell?.date===ds;
 
                       return (
-                        <td key={ds} style={{ textAlign:'center', padding:'3px 2px', background:isWkd?'rgba(255,255,255,0.02)':undefined, verticalAlign:'top' }}>
+                        <td key={ds} data-cell={`${u.id}::${ds}`} style={{ textAlign:'center', padding:'3px 2px',
+                          background: isHighlighted ? 'rgba(239,68,68,0.16)' : (isWkd?'rgba(255,255,255,0.02)':undefined),
+                          boxShadow: isHighlighted ? 'inset 0 0 0 2px #ef4444' : undefined,
+                          borderRadius: isHighlighted ? 6 : undefined,
+                          transition:'background 0.4s, box-shadow 0.4s',
+                          verticalAlign:'top' }}>
                           {!active && !hol && !bh && (
                             <div style={{ background:'rgba(30,41,59,0.6)', borderRadius:5, padding:'4px 4px', fontSize:9, color:'#334155', fontStyle:'italic', minWidth:30 }}>
                               {status?.type==='terminated'?'left':status?.type==='not_started'?'tbc':'—'}
