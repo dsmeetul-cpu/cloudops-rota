@@ -719,6 +719,64 @@ h1, h2, h3 { font-family: 'Syne', sans-serif; }
   transform: none;
 }
 
+/* ── Payroll Tab Bar ─────────────────────────────────────────────────────── */
+/* FIX: these classes were referenced in Payroll.js but never defined, so the
+   tabs rendered as unstyled stacked <div>s instead of a horizontal bar. */
+.payroll-tab-bar {
+  display: flex;
+  gap: 2px;
+  padding: 4px;
+  background: rgba(0,0,0,0.15);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  margin-bottom: 18px;
+  flex-wrap: wrap;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+.payroll-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s, color 0.15s, box-shadow 0.15s;
+  white-space: nowrap;
+}
+.payroll-tab:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-secondary);
+}
+.payroll-tab.active {
+  background: rgba(0,0,0,0.35);
+  color: var(--accent);
+  font-weight: 700;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: rgba(0,194,255,0.18);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 700;
+  font-family: 'DM Mono', monospace;
+  line-height: 16px;
+}
+.payroll-tab.active .tab-badge {
+  background: color-mix(in srgb, var(--accent) 25%, transparent);
+}
+
 /* ── Calendar ────────────────────────────────────────────────────────────── */
 .cal-grid {
   display: grid;
