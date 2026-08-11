@@ -53,6 +53,11 @@ const FILES = {
   // effect, manual sync, load) but was missing here — every save/load for
   // it was throwing "Unknown key: payrollAdjustments" ──────────────────────
   payrollAdjustments: 'payrollAdjustments.json',
+  // ── onCallGapLog: resolve/dismiss audit trail for missing weekend-handover
+  // gaps flagged on the Rota page. Wired up in App.js the same way as
+  // payrollAdjustments (state, save effect, sync list, load) but was missing
+  // here too — same "Unknown key" failure. ──────────────────────────────────
+  onCallGapLog: 'onCallGapLog.json',
 };
 
 let folderId = null;
