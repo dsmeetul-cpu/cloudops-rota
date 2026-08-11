@@ -4414,6 +4414,7 @@ export default function App() {
   const [absences, setAbsences]       = useState([]);
   const [overtime, setOvertime]       = useState([]);
   const [payrollAdjustments, setPayrollAdjustments] = useState([]);
+  const [onCallGapLog, setOnCallGapLog] = useState([]); // resolve/dismiss audit trail for missing-handover gaps
   const [logbook, setLogbook]         = useState([]);
   const [documents, setDocuments]     = useState([]);
   const [timekeeping, setTimekeeping] = useState({});
@@ -4567,7 +4568,7 @@ export default function App() {
       }
       if (pics) { setProfilePics(pics); setProfilePicsState(pics); }
 
-      const defaults = { users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, overtime, logbook, documents, obsidianNotes, whatsappChats, payrollAdjustments };
+      const defaults = { users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, overtime, logbook, documents, obsidianNotes, whatsappChats, payrollAdjustments, onCallGapLog };
       const data = await loadAllFromDrive(token, defaults);
 
       // Only mark driveReady if users actually loaded from Drive
@@ -4595,6 +4596,7 @@ export default function App() {
       if (data.absences     != null) setAbsences(data.absences);
       if (data.overtime     != null) setOvertime(data.overtime);
       if (data.payrollAdjustments != null) setPayrollAdjustments(data.payrollAdjustments);
+      if (data.onCallGapLog != null) setOnCallGapLog(data.onCallGapLog);
       if (data.logbook      != null) setLogbook(data.logbook);
       if (data.documents    != null) setDocuments(data.documents);
       if (data.timekeeping  != null) setTimekeeping(data.timekeeping);
@@ -4799,6 +4801,7 @@ export default function App() {
   useEffect(() => { save('absences', absences); },         [absences]);
   useEffect(() => { save('overtime', overtime); },         [overtime]);
   useEffect(() => { save('payrollAdjustments', payrollAdjustments); }, [payrollAdjustments]);
+  useEffect(() => { save('onCallGapLog', onCallGapLog); }, [onCallGapLog]);
   useEffect(() => { save('logbook', logbook); },           [logbook]);
   useEffect(() => { save('documents', documents); },       [documents]);
   useEffect(() => { save('timekeeping', timekeeping); },   [timekeeping]);
@@ -4830,6 +4833,7 @@ export default function App() {
     permissions:   'manager',
     permTemplates: 'manager',
     payrollAdjustments: 'manager',
+    onCallGapLog:  'shared',
     holidays:      'shared',
     incidents:     'shared',
     upgrades:      'shared',
@@ -4897,11 +4901,11 @@ export default function App() {
     const allKeys = ['users','holidays','incidents','timesheets','upgrades','wiki','glossary',
                      'contacts','payconfig','rota','swapRequests','toil','absences','overtime',
                      'logbook','documents','obsidianNotes','whatsappChats','permissions','permTemplates',
-                     'payrollAdjustments'];
+                     'payrollAdjustments', 'onCallGapLog'];
     const vals = { users, holidays, incidents, timesheets, upgrades, wiki, glossary,
                    contacts, payconfig, rota, swapRequests, toil, absences, overtime,
                    logbook, documents, obsidianNotes, whatsappChats, permissions, permTemplates,
-                   payrollAdjustments };
+                   payrollAdjustments, onCallGapLog };
 
     // Engineers only touch shared + their own engineer-owned keys
     // Managers sync everything
@@ -4995,7 +4999,7 @@ export default function App() {
         if (pics) { setProfilePics(pics); setProfilePicsState(pics); }
 
         setLoadProgress(40); setLoadStatus('Loading rota & schedules…');
-        const defaults = { users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, overtime, logbook, documents, obsidianNotes, whatsappChats, payrollAdjustments };
+        const defaults = { users, holidays, incidents, timesheets, upgrades, wiki, glossary, contacts, payconfig, rota, swapRequests, toil, absences, overtime, logbook, documents, obsidianNotes, whatsappChats, payrollAdjustments, onCallGapLog };
         const data = await loadAllFromDrive(token, defaults);
 
         setLoadProgress(75); setLoadStatus('Applying team data…');
@@ -5014,6 +5018,7 @@ export default function App() {
         if (data.absences != null) setAbsences(data.absences);
         if (data.overtime != null) setOvertime(data.overtime);
         if (data.payrollAdjustments != null) setPayrollAdjustments(data.payrollAdjustments);
+        if (data.onCallGapLog != null) setOnCallGapLog(data.onCallGapLog);
         if (data.logbook != null) setLogbook(data.logbook);
         if (data.documents != null) setDocuments(data.documents);
         if (data.timekeeping != null) setTimekeeping(data.timekeeping);
@@ -5162,6 +5167,7 @@ export default function App() {
     absences, setAbsences,
     overtime, setOvertime,
     payrollAdjustments, setPayrollAdjustments,
+    onCallGapLog, setOnCallGapLog,
     logbook, setLogbook,
     documents, setDocuments,
     obsidianNotes, setObsidianNotes,
@@ -5183,7 +5189,7 @@ export default function App() {
       case 'oncall':     return <OnCall {...props} />;
       case 'myshift':    return <MyShift {...props} />;
       case 'calendar':   return <CalendarPage users={users} rota={rota} holidays={holidays} upgrades={upgrades} absences={absences} incidents={incidents} UK_BANK_HOLIDAYS={UK_BANK_HOLIDAYS} currentUser={currentUser} isManager={isManager} calendarEvents={calendarEvents} setCalendarEvents={setCalendarEvents} userCalendars={userCalendars} setUserCalendars={setUserCalendars} />;
-      case 'rota':       return <RotaPage users={users} rota={rota} setRota={setRota} holidays={holidays} upgrades={upgrades} swapRequests={swapRequests} setSwapRequests={setSwapRequests} isManager={isManager} UK_BANK_HOLIDAYS={UK_BANK_HOLIDAYS} generateRota={generateRota} generateICalFeed={generateICalFeed} downloadIcal={downloadIcal} />;
+      case 'rota':       return <RotaPage users={users} rota={rota} setRota={setRota} holidays={holidays} upgrades={upgrades} swapRequests={swapRequests} setSwapRequests={setSwapRequests} isManager={isManager} UK_BANK_HOLIDAYS={UK_BANK_HOLIDAYS} generateRota={generateRota} generateICalFeed={generateICalFeed} downloadIcal={downloadIcal} onCallGapLog={onCallGapLog} setOnCallGapLog={setOnCallGapLog} />;
       case 'incidents':  return <Incidents {...props} timesheets={timesheets} setTimesheets={setTimesheets} addLog={addLog} initialFilter={incidentsPrefilter} onConsumeInitialFilter={() => setIncidentsPrefilter(null)} />;
       case 'timesheets': return <Timesheets {...props} />;
       case 'timekeeping': return <TimeKeeping users={users} holidays={holidays} currentUser={currentUser} isManager={isManager} bankHolidays={UK_BANK_HOLIDAYS} timekeeping={timekeeping} setTimekeeping={setTimekeeping} driveToken={driveToken} />;
