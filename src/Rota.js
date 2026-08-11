@@ -1,5 +1,5 @@
 // src/Rota.js
-// CloudOps Rota — improved editing: floating cell editor, sticky toolbar, floating bulk bar 30th May 2026
+// CloudOps Rota — 11/08/2026
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import InstallAppButton from './InstallAppButton';
 
@@ -591,9 +591,12 @@ function RotaContent({
   const isBrushValidForDate = (brush, dateStr) => {
     const dow = new Date(dateStr + 'T12:00:00').getDay();
     const isWeekend = dow === 0 || dow === 6;
-    if (brush === 'daily')   return !isWeekend;
+    if (brush === 'daily')   return !isWeekend && dow >= 1 && dow <= 5;
     if (brush === 'evening') return dow >= 1 && dow <= 4;
-    return true;
+    // Weekend brush: only valid on Fri(5), Sat(6), Sun(0), Mon(1)
+    // Tue/Wed/Thu are NOT part of the Fri→Mon block and must be blocked
+    if (brush === 'weekend') return dow === 5 || dow === 6 || dow === 0 || dow === 1;
+    return true; // holiday, upgrade, off etc — allow any day
   };
 
   const beginPaintStroke = () => {
@@ -708,9 +711,10 @@ function RotaContent({
     const dow = new Date(date + 'T12:00:00').getDay();
     const isWeekend = dow === 0 || dow === 6;
     const value = (shift === 'daily' && isWeekend) ? 'weekend' : shift;
+    // Guard: weekend is only valid on Fri(5)/Sat(6)/Sun(0)/Mon(1) — never write to Tue/Wed/Thu
+    if (value === 'weekend' && !(dow === 5 || dow === 6 || dow === 0 || dow === 1)) return;
     setRota(prev => {
       const next = { ...prev, [userId]: { ...(prev[userId]||{}), [date]: value } };
-      // Auto-fill the full Fri→Mon block whenever 'weekend' is set on any day
       return value === 'weekend' ? completeWeekendBlock(next, userId, date) : next;
     });
   }, [canEdit, users, setRota, completeWeekendBlock]);
@@ -1755,6 +1759,7 @@ function RotaAnalytics({ users, rota, holidays, UK_BANK_HOLIDAYS, upgrades }) {
 
       {/* ── Daily OC Coverage ──────────────────────────────────────────────── */}
       {report==='daily' && (() => {
+        if (!activeUsers.length) return <div style={{ padding:40, textAlign:'center', color:'#475569' }}>No active engineers in this date range.</div>;
         const wdNoBH      = weekdayDates.filter(ds=>!bhSet.has(ds));
         const covered     = wdNoBH.filter(ds=>activeUsers.some(u=>getShift(u.id,ds)==='daily'));
         const uncovered   = wdNoBH.filter(ds=>!activeUsers.some(u=>getShift(u.id,ds)==='daily'));
@@ -1890,6 +1895,7 @@ function RotaAnalytics({ users, rota, holidays, UK_BANK_HOLIDAYS, upgrades }) {
       {/* ── Paid OC Workload ──────────────────────────────────────────────── */}
       {report==='workload' && (() => {
         const usersToShow = selUser==='all' ? activeUsers : activeUsers.filter(u=>u.id===selUser);
+        if (!usersToShow.length) return <div style={{ padding:40, textAlign:'center', color:'#475569' }}>No engineers to show. Adjust the date range or engineer filter.</div>;
         const maxHrs = Math.max(...usersToShow.map(u=>stats.find(s=>s.user.id===u.id)?.totalPaidHrs||0), 1);
         const sorted = [...usersToShow].sort((a,b)=>(stats.find(s=>s.user.id===b.id)?.totalPaidHrs||0)-(stats.find(s=>s.user.id===a.id)?.totalPaidHrs||0));
         return (
@@ -1937,7 +1943,8 @@ function RotaAnalytics({ users, rota, holidays, UK_BANK_HOLIDAYS, upgrades }) {
         const avgDaily=list.length?Math.round(list.reduce((s,e)=>s+e.daily,0)/list.length):0;
         const maxPaid=Math.max(...list.map(e=>e.paid),1), maxDaily=Math.max(...list.map(e=>e.daily),1);
         const sortedPaid=[...list].sort((a,b)=>b.paid-a.paid);
-        const gap=Math.max(...list.map(e=>e.paid))-Math.min(...list.filter(e=>e.paid>0).map(e=>e.paid));
+        const paidList = list.filter(e=>e.paid>0).map(e=>e.paid);
+        const gap = paidList.length >= 2 ? Math.max(...paidList) - Math.min(...paidList) : 0;
         return (
           <div>
             <div className="grid-4 mb-16">
