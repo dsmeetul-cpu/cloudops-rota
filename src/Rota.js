@@ -8,6 +8,13 @@ import InstallAppButton from './InstallAppButton';
 // days (Fri/Sat/Sun/Mon) that aren't already set, aren't a Bank Holiday, and
 // aren't approved leave. This prevents the Monday 00:00–07:00 missing-hours bug.
 //
+// Bank Holiday Monday extension: if Monday is a BH, the WE block extends to
+// Tuesday 07:00. We add a 'weekend' entry on Tuesday as well so that:
+//   (a) The rota grid shows the extension visually
+//   (b) calcOncallPay (which skips BH dates) still has a date it can count
+// The BH-Monday hours are then corrected in the bankHolHrs computation:
+//   Normal Mon 7h → BH Mon 24h + Tue 7h = 31h total (via bankHolHrs).
+//
 // This is the pure version used throughout: in RotaContent (via useCallback
 // wrapper) AND in RotaBulkEntry (which is outside RotaContent's closure).
 //
@@ -26,23 +33,46 @@ function autoCompleteWeekendBlock(rotaArg, userId, triggerDate, bhList, holidays
   else if (dow === 6) { fridayDate = new Date(d); fridayDate.setDate(d.getDate() - 1); }
   else if (dow === 0) { fridayDate = new Date(d); fridayDate.setDate(d.getDate() - 2); }
   else if (dow === 1) { fridayDate = new Date(d); fridayDate.setDate(d.getDate() - 3); }
-  else return rotaArg; // Tue–Thu: not a weekend-block day — no-op
+  else if (dow === 2) {
+    // Tuesday — only valid if Monday was a BH (block extended to Tue)
+    // Back-track to find the Monday
+    const mon = new Date(d); mon.setDate(d.getDate() - 1);
+    const monDs = mon.toISOString().slice(0, 10);
+    if (!bhSet.has(monDs)) return rotaArg; // Tue with no BH Mon — no-op
+    fridayDate = new Date(d); fridayDate.setDate(d.getDate() - 4);
+  }
+  else return rotaArg; // Wed–Thu: not a weekend-block day — no-op
 
-  // The four calendar dates: Fri, Sat, Sun, Mon
+  // The four core calendar dates: Fri, Sat, Sun, Mon
   const blockDates = [0, 1, 2, 3].map(offset => {
     const bd = new Date(fridayDate);
     bd.setDate(fridayDate.getDate() + offset);
     return bd.toISOString().slice(0, 10);
   });
 
+  // Tuesday date (Mon + 1)
+  const monDate = blockDates[3]; // Monday
+  const tueD    = new Date(monDate + 'T12:00:00'); tueD.setDate(tueD.getDate() + 1);
+  const tueDs   = tueD.toISOString().slice(0, 10);
+  const monIsBH = bhSet.has(monDate);
+
   const userRota = { ...(rotaArg[userId] || {}) };
   let changed = false;
+
   blockDates.forEach(ds => {
     if (userRota[ds] === 'weekend') return; // already correct — skip
-    if (bhSet.has(ds) || inHol(ds))   return; // legitimate exclusion — skip
+    if (bhSet.has(ds) || inHol(ds))   return; // BH or leave — skip (handled by bankHolHrs)
     userRota[ds] = 'weekend';
     changed = true;
   });
+
+  // If Monday is a Bank Holiday, extend the block to Tuesday 00:00–07:00
+  if (monIsBH && !inHol(tueDs)) {
+    if (userRota[tueDs] !== 'weekend') {
+      userRota[tueDs] = 'weekend';
+      changed = true;
+    }
+  }
 
   return changed ? { ...rotaArg, [userId]: userRota } : rotaArg;
 }
@@ -1497,14 +1527,17 @@ function RotaContent({
                       const prevRotaShift = rota[u.id]?.[prevDs] || 'off';
                       const prevS = prevHol ? 'holiday' : prevRotaShift;
                       const prevDow = prevDate.getDay();
+                      const prevIsBH = (UK_BANK_HOLIDAYS||[]).some(b => b.date === prevDs);
                       const currentHasNoShift = (s==='off' || (bh && rotaShift==='off') || hol);
-                      // Show carry-over only when the previous overnight shift genuinely
-                      // runs into this calendar day. Weekend on Monday ends at 07:00, so
-                      // Tuesday does NOT carry over. Evening (WD) always carries into the next morning.
-                      // Weekend on Fri/Sat/Sun carries into the next day. Weekend on Mon does NOT.
-                      const prevIsCarryingOver = (prevS==='evening') ||
-                        (prevS==='weekend' && prevDow !== 1); // Mon WE ends 07:00 — no Tue carry-over
-                      const hasCarryOver = prevIsCarryingOver && currentHasNoShift && isOnCallActive(u,prevDs);
+                      // Show carry-over when the previous overnight shift genuinely
+                      // runs into this calendar day:
+                      // - WD evening always carries into next morning
+                      // - WE weekend carries into next day EXCEPT Mon→Tue
+                      //   UNLESS Monday was a Bank Holiday (block extends to Tue 07:00)
+                      const monTueBHExtension = prevDow === 1 && prevIsBH;
+                      const prevIsCarryingOver = (prevS === 'evening') ||
+                        (prevS === 'weekend' && (prevDow !== 1 || monTueBHExtension));
+                      const hasCarryOver = prevIsCarryingOver && currentHasNoShift && isOnCallActive(u, prevDs);
                       const prevCol=SHIFT_COLORS[prevS]||{};
                       const isEditTarget = editCell?.userId===u.id && editCell?.date===ds;
                       const isHighlighted = highlightCell?.userId===u.id && highlightCell?.date===ds;
