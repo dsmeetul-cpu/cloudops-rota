@@ -4408,6 +4408,22 @@ export default function App() {
   const [glossary, setGlossary]       = useState(DEFAULT_GLOSSARY);
   const [contacts, setContacts]       = useState(DEFAULT_CONTACTS);
   const [payconfig, setPayconfig]     = useState(DEFAULT_PAYCONFIG);
+  const [appSettings, setAppSettings] = useState({
+    schedules: [
+      { id:'v1', label:'Original (pre W35)', effectiveFrom:'2026-01-01', effectiveTo:'2026-08-23', dailyStart:'09:00', dailyEnd:'18:00', wdStart:'19:00', wdEnd:'07:00', wdHoursPerNight:12, wdNights:['Mon','Tue','Wed','Thu'], weStart:'19:00', weFriHrs:5, weSatHrs:24, weSunHrs:24, weMonHrs:7, weTotal:60, bhMonHrs:31, bhFriHrs:17, bhMidweekHrs:22 },
+      { id:'v2', label:'Current (W35, 24 Aug 2026+)', effectiveFrom:'2026-08-24', effectiveTo:null, dailyStart:'09:00', dailyEnd:'18:00', wdStart:'18:00', wdEnd:'09:00', wdHoursPerNight:15, wdNights:['Mon','Tue','Wed','Thu'], weStart:'18:00', weFriHrs:6, weSatHrs:24, weSunHrs:24, weMonHrs:9, weTotal:63, bhMonHrs:33, bhFriHrs:15, bhMidweekHrs:24 },
+    ],
+    pay: { standbyRate: 5, workedMultiplier: 1.5, cycleStartDay: 10 },
+    timekeeping: { lateThresholdMins: 10, gracePeriodMins: 5, reminderMins60: true, reminderMins10: true },
+    holidays: { annualEntitlement: 25, carryOverDays: 5, requiresApproval: true },
+    toil: { autoAccrual: true, maxBalanceDays: 10, expiryMonths: 12, bhAutoToil: false },
+    overtime: { weeklyThresholdHrs: 40, multiplier: 1.5 },
+    incidents: { severities: ['Critical','High','Medium','Low'], toilForCallout: true, escalationMins: 15 },
+    notifications: { enableToastOS: true, enableInApp: true, rotaReminderHrs: 24, shiftSoonMins: 60, lateWarningMins: 10, triggers: { upgradeReminder:true, incidentOpen:true, holidayPending:true, swapPending:true, onCallGap:true, payrollDeadline:true, payslipReady:true, shiftReminder:true, lateWarning:true } },
+    stressScore: { weights: { evening:2, weekend:3, bankholiday:4, upgrade:5, incident:6, daily:1 }, highThreshold:20, criticalThreshold:35 },
+    shiftReminders: { leadTimeHrs: 24, channels: ['inapp','os'] },
+    access: { managerPin:'', payConfigAccess:'manager', pageAccess: { dashboard:false, oncall:true, myshift:true, calendar:true, rota:true, incidents:true, timesheets:true, timekeeping:true, holidays:true, swaps:true, upgrades:true, stress:false, toil:true, absence:true, overtime:true, logbook:true, wiki:true, glossary:true, contacts:true, notes:true, docs:true, whatsapp:true, announcements:true, shiftreminders:true, insights:false, capacity:false, reports:false, payroll:false, payconfig:false, settings:false, logs:false, myaccount:true } },
+  });
   const [rota, setRota]               = useState(() => sanitiseRota(generateRota(DEFAULT_USERS, '2026-03-30', 8)));
   const [swapRequests, setSwapRequests] = useState([]);
   const [toil, setToil]               = useState([]);
@@ -4590,6 +4606,7 @@ export default function App() {
       if (data.glossary     != null) setGlossary(data.glossary);
       if (data.contacts     != null) setContacts(data.contacts);
       if (data.payconfig    != null) setPayconfig(data.payconfig);
+      if (data.appSettings  != null) setAppSettings(prev => ({ ...prev, ...data.appSettings }));
       if (data.rota         != null) setRota(sanitiseRota(data.rota));
       if (data.swapRequests != null) setSwapRequests(data.swapRequests);
       if (data.toil         != null) setToil(Array.isArray(data.toil) ? data.toil : Object.values(data.toil));
@@ -4795,6 +4812,7 @@ export default function App() {
   useEffect(() => { save('glossary', glossary); },         [glossary]);
   useEffect(() => { save('contacts', contacts); },         [contacts]);
   useEffect(() => { save('payconfig', payconfig); },       [payconfig]);
+  useEffect(() => { save('appSettings', appSettings); },   [appSettings]);
   useEffect(() => { save('rota', rota); },                 [rota]);
   useEffect(() => { save('swapRequests', swapRequests); }, [swapRequests]);
   useEffect(() => { save('toil', toil); },                 [toil]);
@@ -5012,6 +5030,7 @@ export default function App() {
         if (data.glossary != null) setGlossary(data.glossary);
         if (data.contacts != null) setContacts(data.contacts);
         if (data.payconfig != null) setPayconfig(data.payconfig);
+        if (data.appSettings != null) setAppSettings(prev => ({ ...prev, ...data.appSettings }));
         if (data.rota != null) setRota(sanitiseRota(data.rota));
         if (data.swapRequests != null) setSwapRequests(data.swapRequests);
         if (data.toil != null) setToil(Array.isArray(data.toil) ? data.toil : Object.values(data.toil));
@@ -5161,6 +5180,7 @@ export default function App() {
     glossary, setGlossary,
     contacts, setContacts,
     payconfig, setPayconfig,
+    appSettings, setAppSettings,
     rota, setRota,
     swapRequests, setSwapRequests,
     toil, setToil,
@@ -5213,7 +5233,7 @@ export default function App() {
       case 'insights':   return <Insights {...props} />;
       case 'capacity':   return <Capacity {...props} incidents={incidents} />;
       case 'reports':    return <WeeklyReports {...props} />;
-      case 'payroll':    return <Payroll {...props} incidents={incidents} upgrades={upgrades} rota={rota} overtime={overtime} driveToken={driveToken} payrollAdjustments={payrollAdjustments} setPayrollAdjustments={setPayrollAdjustments} goToIncidents={goToIncidents} />;
+      case 'payroll':    return <Payroll {...props} incidents={incidents} upgrades={upgrades} rota={rota} overtime={overtime} driveToken={driveToken} payrollAdjustments={payrollAdjustments} setPayrollAdjustments={setPayrollAdjustments} goToIncidents={goToIncidents} appSettings={appSettings} />;
       case 'payconfig':  return <PayConfig {...props} timesheets={timesheets} overtime={overtime} rota={rota} holidays={holidays} />;
       case 'settings':   return <SettingsPage
         users={users} setUsers={setUsers}
@@ -5237,6 +5257,8 @@ export default function App() {
         syncUsersFromSheet={syncUsersFromSheet}
         syncUsersToSheet={syncUsersToSheet}
         driveWriteJson={driveWriteJson}
+        settings={appSettings} setSettings={setAppSettings}
+        payconfig={payconfig} setPayconfig={setPayconfig}
       />;
       case 'myaccount':  return <MyAccount currentUser={currentUser} users={users} setUsers={setUsers} driveToken={driveToken} profilePics={profilePics} setProfilePicsState={setProfilePicsState} />;
       default: return <p className="muted-sm">Page coming soon</p>;
