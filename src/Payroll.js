@@ -4,10 +4,27 @@
 
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { UK_BANK_HOLIDAYS } from './utils/defaults';
+// ── Built-in schedule defaults (no import needed — avoids circular dep) ─────
+const _SCH_V1 = { id:'v1', wdHoursPerNight:12, weFriHrs:5, weSatHrs:24, weSunHrs:24, weMonHrs:7, weTotal:60, dailyEnd:'07:00', bhMonHrs:31, bhFriHrs:17, bhMidweekHrs:22 };
+const _SCH_V2 = { id:'v2', wdHoursPerNight:15, weFriHrs:6, weSatHrs:24, weSunHrs:24, weMonHrs:9, weTotal:63, dailyEnd:'09:00', bhMonHrs:33, bhFriHrs:15, bhMidweekHrs:24 };
 
-// ── On-call pay constants ─────────────────────────────────────────────────────
-const ONCALL_STANDBY_RATE      = 5;    // £/hr flat
-const ONCALL_WORKED_MULTIPLIER = 1.5;  // 1.5× hourly for active on-call hours
+// ── Schedule cutover ──────────────────────────────────────────────────────────
+const SCHEDULE_CUTOVER = '2026-08-24';
+
+function scheduleFor(dateStr, appSettings) {
+  const schedules = appSettings?.schedules;
+  if (schedules?.length) {
+    const sorted = [...schedules].sort((a, b) => a.effectiveFrom.localeCompare(b.effectiveFrom));
+    let active = sorted[0];
+    for (const s of sorted) { if (dateStr >= s.effectiveFrom) active = s; }
+    return active;
+  }
+  return dateStr >= SCHEDULE_CUTOVER ? _SCH_V2 : _SCH_V1;
+}
+
+// ── On-call pay constants (read from settings at runtime) ─────────────────────
+const ONCALL_STANDBY_RATE      = 5;    // £/hr flat (pay code 1164) — overridden by settings
+const ONCALL_WORKED_MULTIPLIER = 1.5;  // 1.5× hourly (pay code 2011)
 const TOIL_ACCRUAL_RATE        = 1.0;  // 1:1 per UK WTR
 
 // ── Drive helpers (self-contained copies — no App.js dependency) ──────────────
@@ -153,10 +170,15 @@ function Avatar({ user, size = 32 }) {
 }
 
 // ── calcOncallPay ─────────────────────────────────────────────────────────────
+// Schedule-versioned: picks the correct WD/WE hours for each individual date
+// based on whether that date falls before or after the W35 cutover (24 Aug 2026).
+// Pre-cutover: WD=12h/night, WE=5+24+24+7=60h. Post-cutover: WD=15h/night, WE=6+24+24+9=63h.
+// appSettings is optional — if provided, custom schedule versions are respected.
 export function calcOncallPay(timesheetEntries, hourlyRate, upgradeHrs = 0, bankHolHrs = 0,
                        rotaForUser = {}, holidays = [], bankHolidays = [], startDs = null, endDs = null,
-                       liveIncidentIds = null) {
+                       liveIncidentIds = null, appSettings = null) {
   let standbyWD = 0, workedWD = 0, standbyWE = 0, workedWE = 0;
+
   Object.entries(rotaForUser).forEach(([date, shift]) => {
     if (startDs && date < startDs) return;
     if (endDs   && date > endDs)   return;
@@ -165,18 +187,25 @@ export function calcOncallPay(timesheetEntries, hourlyRate, upgradeHrs = 0, bank
     if (isBH) return;
     const isHol = holidays.some(h => h.userId !== undefined ? (date >= h.start && date <= h.end) : false);
     if (isHol) return;
-    const dow = new Date(date).getDay();
-    const isWeekend = dow === 0 || dow === 5 || dow === 6;
-    if (shift === 'daily')   { workedWD += 9; }
-    else if (shift === 'evening') { standbyWD += 12; }
-    else if (shift === 'weekend') {
-      if (dow === 5) standbyWE += 5;
-      else if (dow === 6) standbyWE += 24;
-      else if (dow === 0) standbyWE += 24;
-      else if (dow === 1) standbyWE += 7;
-      else standbyWE += 12;
+
+    // ── Get the schedule active on this specific date ──────────────────────
+    const sch = scheduleFor(date, appSettings);
+    const dow  = new Date(date).getDay();
+
+    if (shift === 'daily') {
+      // Daily OC is NOT paid — intentionally excluded
+    } else if (shift === 'evening') {
+      standbyWD += sch.wdHoursPerNight; // 12h pre-cutover, 15h post-cutover
+    } else if (shift === 'weekend') {
+      // WE split uses the schedule's per-day hours
+      if      (dow === 5) standbyWE += sch.weFriHrs; // Fri:  5h → 6h
+      else if (dow === 6) standbyWE += sch.weSatHrs; // Sat: 24h
+      else if (dow === 0) standbyWE += sch.weSunHrs; // Sun: 24h
+      else if (dow === 1) standbyWE += sch.weMonHrs; // Mon:  7h → 9h
+      else                standbyWE += 24;            // fallback (BH extension days)
     }
   });
+
   const bhStandby = bankHolHrs;
   let incidentHrs = 0;
   (timesheetEntries || [])
@@ -184,30 +213,28 @@ export function calcOncallPay(timesheetEntries, hourlyRate, upgradeHrs = 0, bank
       if (!e.week || !e.week.startsWith('INC')) return false;
       const incId = e.week.slice(4).trim();
       if (liveIncidentIds && !liveIncidentIds.has(incId)) return false;
-      // ── FIX: filter by the entry's stored date, not by the INC string ──
-      // Previously e.week ("INC MBA47-xxx") was compared to date strings,
-      // always failing the <= endDs check and silently dropping all incidents.
       if (startDs || endDs) {
         const entryDate = e.date || '';
         if (entryDate) return (!startDs || entryDate >= startDs) && (!endDs || entryDate <= endDs);
-        // No date on entry → always include (backward compatibility)
       }
       return true;
     })
     .forEach(e => {
-      // ── FIX: prefer worked_wd+worked_we (set by Incidents.js fix) over
-      // weekday_oncall+weekend_oncall (used by the old double-count buggy path)
       const hasWorked = (e.worked_wd || 0) + (e.worked_we || 0) > 0;
       const hrs = hasWorked
         ? (e.worked_wd || 0) + (e.worked_we || 0)
         : (e.weekday_oncall || 0) + (e.weekend_oncall || 0);
       incidentHrs += hrs;
     });
-  const standbyPay  = (standbyWD + standbyWE + bhStandby) * ONCALL_STANDBY_RATE;
-  const workedPay   = (workedWD + workedWE) * hourlyRate * ONCALL_WORKED_MULTIPLIER;
-  const incidentPay = incidentHrs * hourlyRate * ONCALL_WORKED_MULTIPLIER;
-  const upgradePay  = upgradeHrs * hourlyRate * ONCALL_WORKED_MULTIPLIER;
-  const bankHolPay  = bhStandby * ONCALL_STANDBY_RATE;
+
+  const standbyRate   = appSettings?.pay?.standbyRate       ?? ONCALL_STANDBY_RATE;
+  const workedMult    = appSettings?.pay?.workedMultiplier  ?? ONCALL_WORKED_MULTIPLIER;
+
+  const standbyPay  = (standbyWD + standbyWE + bhStandby) * standbyRate;
+  const workedPay   = (workedWD + workedWE) * hourlyRate * workedMult;
+  const incidentPay = incidentHrs * hourlyRate * workedMult;
+  const upgradePay  = upgradeHrs  * hourlyRate * workedMult;
+  const bankHolPay  = bhStandby   * standbyRate;
   const totalOncallHours = standbyWD + workedWD + standbyWE + workedWE + incidentHrs + upgradeHrs + bhStandby;
   return {
     standbyWD: Math.round(standbyWD * 10) / 10,
@@ -418,7 +445,7 @@ function calcUKTax(grossAnnual, { pensionPct = 0, studentLoan = false } = {}) {
 }
 
 // ── Payroll (Manager only) ─────────────────────────────────────────────────
-function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents, upgrades, rota, holidays, isManager, overtime: overtimeArr, driveToken, payrollAdjustments, setPayrollAdjustments, goToIncidents }) {
+function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents, upgrades, rota, holidays, isManager, overtime: overtimeArr, driveToken, payrollAdjustments, setPayrollAdjustments, goToIncidents, appSettings }) {
   const [tab,         setTab]         = useState('overview');  // 'overview' | 'takehome' | 'log' | 'reports' | 'adjustments'
   const [showExport, setShowExport]   = useState(false);
   const [exporting,   setExporting]   = useState(false);
@@ -570,9 +597,9 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
         if (endDs   && bh.date > endDs)   return;
 
         const bhDow = new Date(bh.date + 'T12:00:00').getDay();
+        // Pick the schedule active on this specific BH date
+        const sch = scheduleFor(bh.date, appSettings);
 
-        // Determine which shift covers this BH — check direct rota entry first,
-        // then look back up to 3 days for an active weekend block
         let coverShift = safeRota[u.id]?.[bh.date];
         if (!coverShift || coverShift === 'off') {
           for (let back = 1; back <= 3; back++) {
@@ -586,46 +613,37 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
             }
           }
         }
-        if (!coverShift || coverShift === 'off') return; // engineer not covering this BH
+        if (!coverShift || coverShift === 'off') return;
 
-        // Also check if engineer is on approved leave on this BH
         const onLeave = userHols.some(h => bh.date >= h.start && bh.date <= h.end);
         if (onLeave) return;
 
+        // Parse daily end time (e.g. "09:00" → 9) for BH Friday calculation
+        const [dailyEndH, dailyEndM] = (sch.dailyEnd || '09:00').split(':').map(Number);
+        const bhFriHrs = Math.round((24 - dailyEndH - dailyEndM / 60) * 10) / 10;
+
         if (coverShift === 'weekend') {
           if (bhDow === 1) {
-            // BH Monday: WE block extends — Mon becomes full 24h (not just 7h)
-            // PLUS the new Tuesday 00:00–07:00 handover (7h)
-            // calcOncallPay already skipped the Mon rota entry (isBH guard),
-            // so we add the FULL replacement here: 24h + 7h = 31h
-            // (vs the normal 7h Mon slot → net +24h over what calcOncallPay saw)
-            total += 31;
+            // BH Monday: full 24h + Tue morning handover (weMonHrs)
+            // v1: 24 + 7 = 31h   v2: 24 + 9 = 33h
+            total += 24 + sch.weMonHrs;
           } else if (bhDow === 5) {
-            // BH Friday: WE block starts at 07:00 not 19:00 → +12h extra
-            // calcOncallPay already counted the Fri rota entry (not a BH date = Friday),
-            // Wait — if Friday IS the BH, calcOncallPay will skip it (isBH return).
-            // So we must add the FULL 17h here (07:00–24:00), not just the extra 12h.
-            total += 17;
+            // BH Friday: WE engineer starts at dailyEnd not weStart
+            // v1: 24 - 7 = 17h   v2: 24 - 9 = 15h
+            total += bhFriHrs;
           } else {
-            // WE shift on another BH (Sat/Sun unlikely but possible): full 24h
-            total += 24;
+            total += 24; // Sat/Sun BH (unusual)
           }
         } else if (coverShift === 'evening') {
           if (bhDow === 5) {
-            // WD engineer on BH Friday: covers from 07:00 (handover from WE) to 24:00 = 17h
-            // calcOncallPay skipped this (isBH), so add 17h
-            total += 17;
+            total += bhFriHrs;  // v1: 17h  v2: 15h
           } else if (bhDow === 1) {
-            // WD engineer on BH Monday (no WE in their block): covers full 24h
-            total += 24;
+            total += 24;         // Full BH Monday
           } else {
-            // WD BH on Tue/Wed/Thu: evening shift normally = 12h, BH extends to full day
-            // Standard: engineer covers 19:00 prev evening → 07:00 next morning + full BH
-            // = 22h (industry standard for midweek BH on standby)
-            total += 22;
+            total += sch.bhMidweekHrs ?? 22;  // Tue/Wed/Thu BH
           }
         } else {
-          total += 22; // fallback for daily/other
+          total += sch.bhMidweekHrs ?? 22;
         }
       });
       return total;
@@ -640,7 +658,7 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
     // Build a Set of live incident IDs so calcOncallPay can exclude orphaned INC timesheet entries
     const liveIncidentIds = new Set((Array.isArray(incidents) ? incidents : []).map(i => i.id));
 
-    const oc = calcOncallPay(ts, hourly, upgradeHrs, bankHolHrs, rotaForUser, userHols, bhList, startDs, endDs, liveIncidentIds);
+    const oc = calcOncallPay(ts, hourly, upgradeHrs, bankHolHrs, rotaForUser, userHols, bhList, startDs, endDs, liveIncidentIds, appSettings);
     const tb = calcTOILBalance(safeTS[u.id], safeToil, u.id);
     const incHrs = oc.incidentHrs || 0;
 
@@ -987,24 +1005,36 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
       const STANDBY_RATE = 5;    // £5 per standby hour  (pay code 1164)
       const WORKED_MULT  = 1.5;  // 1.5× basic hourly rate (pay code 2011)
 
+      const standbyRate = appSettings?.pay?.standbyRate ?? ONCALL_STANDBY_RATE;
+      const workedMult  = appSettings?.pay?.workedMultiplier ?? ONCALL_WORKED_MULTIPLIER;
+
       const s4Hdrs = [
         'Employment ID',
         'Trigram',
         'Full Name',
         'Period',
-        'Hours on Standby Shifts @ £5 per hour <1164>',
-        'Hours Worked while on Standby Shift @ 1.5 times Basic hourly rate <2011>',
+        'WE Standby Hrs',
+        'WD Standby Hrs',
+        'BH Standby Hrs',
+        'Hours on Standby Shifts @ £' + standbyRate + ' per hour <1164>',
+        'Hours Worked while on Standby Shift @ ' + workedMult + 'x Basic hourly rate <2011>',
       ];
 
       const s4Rows = safeUsers.map(u => {
         const { oc, incHrs, upgradeHrs, bankHolHrs, overtimeHrs } = getUserData(u, exportStart, exportEnd);
-        const standbyTotal = (oc.standbyWD || 0) + (oc.standbyWE || 0) + (bankHolHrs || 0);
+        const weHrs       = oc.standbyWE || 0;
+        const wdHrs       = oc.standbyWD || 0;
+        const bhHrs       = bankHolHrs   || 0;
+        const standbyTotal = weHrs + wdHrs + bhHrs;  // WE + WD + BH = total standby
         const workedTotal  = (incHrs || 0) + (overtimeHrs || 0) + (upgradeHrs || 0);
         return [
           u.employment_id || '—',
           u.id,
           u.name,
           rangeLabel,
+          weHrs,
+          wdHrs,
+          bhHrs,
           standbyTotal,
           workedTotal,
         ];
@@ -1014,11 +1044,14 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
       const s4TotRow = ['', 'TOTAL', `${safeUsers.length} engineers`, rangeLabel,
         +s4Rows.reduce((a,r) => a + (parseFloat(r[4]) || 0), 0).toFixed(1),
         +s4Rows.reduce((a,r) => a + (parseFloat(r[5]) || 0), 0).toFixed(1),
+        +s4Rows.reduce((a,r) => a + (parseFloat(r[6]) || 0), 0).toFixed(1),
+        +s4Rows.reduce((a,r) => a + (parseFloat(r[7]) || 0), 0).toFixed(1),
+        +s4Rows.reduce((a,r) => a + (parseFloat(r[8]) || 0), 0).toFixed(1),
       ];
 
       const ws4Data = [s4Hdrs, ...s4Rows, s4TotRow];
       const ws4     = XLSX.utils.aoa_to_sheet(ws4Data);
-      ws4['!cols']  = [14, 8, 22, 20, 46, 52].map(w => ({wch:w}));
+      ws4['!cols']  = [14, 8, 22, 20, 14, 14, 14, 46, 52].map(w => ({wch:w}));
       ws4['!freeze']= { xSplit: 3, ySplit: 1 };
 
       const H4 = { font:{bold:true,color:{rgb:'FFFFFF'}}, fill:{fgColor:{rgb:'0F1629'}}, alignment:{horizontal:'center',wrapText:true}, border:{bottom:{style:'medium',color:{rgb:'10B981'}}} };
@@ -1026,15 +1059,24 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
 
       const standbyColour = { fill:{fgColor:{rgb:'064E3B'}}, font:{color:{rgb:'6EE7B7'},bold:true} };
       const workedColour  = { fill:{fgColor:{rgb:'78350F'}}, font:{color:{rgb:'FCD34D'},bold:true} };
+      const weColour      = { fill:{fgColor:{rgb:'0C2D2D'}}, font:{color:{rgb:'6EE7B7'}} };
+      const wdColour      = { fill:{fgColor:{rgb:'0C2820'}}, font:{color:{rgb:'86EFAC'}} };
+      const bhColour      = { fill:{fgColor:{rgb:'2D0C0C'}}, font:{color:{rgb:'FCA5A5'}} };
 
       s4Rows.forEach((_, i) => {
         const bg = i % 2 === 0 ? '0F1629' : '111827';
         styleRow(ws4, i+1, s4Hdrs.length, { fill:{fgColor:{rgb:bg}}, font:{color:{rgb:'E2E8F0'}} });
-        // Standby hours — col 4
-        const sAddr = XLSX.utils.encode_cell({r:i+1, c:4});
+        const r = i + 1;
+        // WE col 4, WD col 5, BH col 6, standby total col 7, worked col 8
+        const weAddr = XLSX.utils.encode_cell({r, c:4});
+        if (ws4[weAddr]) ws4[weAddr].s = weColour;
+        const wdAddr = XLSX.utils.encode_cell({r, c:5});
+        if (ws4[wdAddr]) ws4[wdAddr].s = wdColour;
+        const bhAddr = XLSX.utils.encode_cell({r, c:6});
+        if (ws4[bhAddr]) ws4[bhAddr].s = bhColour;
+        const sAddr = XLSX.utils.encode_cell({r, c:7});
         if (ws4[sAddr]) ws4[sAddr].s = standbyColour;
-        // Worked hours — col 5
-        const wAddr = XLSX.utils.encode_cell({r:i+1, c:5});
+        const wAddr = XLSX.utils.encode_cell({r, c:8});
         if (ws4[wAddr]) ws4[wAddr].s = workedColour;
       });
       styleRow(ws4, s4Rows.length+1, s4Hdrs.length, { fill:{fgColor:{rgb:'1E3A5F'}}, font:{bold:true,color:{rgb:'6EE7B7'}}, border:{top:{style:'medium',color:{rgb:'10B981'}}} });
