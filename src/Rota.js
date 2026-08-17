@@ -77,7 +77,27 @@ function autoCompleteWeekendBlock(rotaArg, userId, triggerDate, bhList, holidays
   return changed ? { ...rotaArg, [userId]: userRota } : rotaArg;
 }
 
-// ── Constants ────────────────────────────────────────────────────────────────
+// ── Schedule cutover ─────────────────────────────────────────────────────────
+// W35, 24 Aug 2026: hours change from 19:00–07:00 (12h WD, 60h WE)
+//                                  to 18:00–09:00 (15h WD, 63h WE)
+const SCHEDULE_CUTOVER = '2026-08-24';
+
+// Returns the active schedule config for a given date string.
+// Falls back to built-in V1/V2 defaults if appSettings not provided.
+function rotaScheduleFor(dateStr, appSettings) {
+  if (appSettings?.schedules?.length) {
+    const sorted = [...appSettings.schedules].sort((a, b) => a.effectiveFrom.localeCompare(b.effectiveFrom));
+    let active = sorted[0];
+    for (const s of sorted) { if (dateStr >= s.effectiveFrom) active = s; }
+    return active;
+  }
+  // Built-in defaults
+  if (dateStr >= SCHEDULE_CUTOVER) {
+    return { wdStart:'18:00', wdEnd:'09:00', wdHoursPerNight:15, weStart:'18:00', weFriHrs:6, weSatHrs:24, weSunHrs:24, weMonHrs:9, weTotal:63, dailyStart:'09:00', dailyEnd:'18:00' };
+  }
+  return { wdStart:'19:00', wdEnd:'07:00', wdHoursPerNight:12, weStart:'19:00', weFriHrs:5, weSatHrs:24, weSunHrs:24, weMonHrs:7, weTotal:60, dailyStart:'09:00', dailyEnd:'18:00' };
+}
+
 const SHIFT_COLORS = {
   daily:       { bg: '#1565c0', label: 'Daily On-Call (09:00–18:00)', text: '#90caf9' },
   evening:     { bg: '#166534', label: 'Weekday On-Call (paid)',       text: '#bbf7d0' },
@@ -95,11 +115,16 @@ const SHIFT_ABBR = {
 
 const SHIFT_HOURS = {
   daily:       { start: '09:00', end: '18:00', label: '9am – 6pm',    desc: 'Daily On-Call (Mon–Fri, NOT paid)',  standbyHrs: 0,  workedHrs: 9  },
-  evening:     { start: '19:00', end: '07:00', label: '7pm – 7am',    desc: 'Weekday On-Call (Mon–Thu, paid)',    standbyHrs: 12, workedHrs: 0  },
-  weekend:     { start: '19:00', end: '07:00', label: '7pm – 7am',    desc: 'Weekend On-Call (Fri 7pm–Mon 7am)', standbyHrs: 60, workedHrs: 0  },
-  bankholiday: { start: '09:00', end: '07:00', label: '9am – 7am',    desc: 'Bank Holiday On-Call',              standbyHrs: 22, workedHrs: 0  },
+  evening:     { start: '18:00', end: '09:00', label: '6pm – 9am',    desc: 'Weekday On-Call (Mon–Thu, paid)',    standbyHrs: 15, workedHrs: 0  },
+  weekend:     { start: '18:00', end: '09:00', label: '6pm – 9am',    desc: 'Weekend On-Call (Fri 6pm–Mon 9am)', standbyHrs: 63, workedHrs: 0  },
+  bankholiday: { start: '09:00', end: '09:00', label: '9am – 9am',    desc: 'Bank Holiday On-Call',              standbyHrs: 24, workedHrs: 0  },
   upgrade:     { start: '00:00', end: '23:59', label: 'All day',       desc: 'Upgrade Day',                      standbyHrs: 0,  workedHrs: 8  },
   holiday:     { start: '',      end: '',       label: 'Holiday',       desc: 'Annual Leave',                     standbyHrs: 0,  workedHrs: 0  },
+};
+// Pre-cutover hours (for display on historical cells)
+const SHIFT_HOURS_V1 = {
+  evening: { start: '19:00', end: '07:00', label: '7pm – 7am', standbyHrs: 12 },
+  weekend: { start: '19:00', end: '07:00', label: '7pm – 7am', standbyHrs: 60 },
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -178,7 +203,7 @@ function ShiftLegend() {
     <div style={{ display:'flex', flexWrap:'wrap', gap:8, marginBottom:12 }}>
       {[
         ['#1e40af', 'D',  'Daily Shift (9am–6pm)'],
-        ['#166534', 'WD', 'Weekday On-Call (19:00–07:00)'],
+        ['#166534', 'WD', 'Weekday On-Call (18:00–09:00)'],
         ['#854d0e', 'WE', 'Weekend On-Call (19:00–07:00)'],
         ['#991b1b', 'UD', 'Upgrade Day'],
         ['#92400e', 'H',  'Holiday'],
@@ -449,7 +474,7 @@ function CellEditorPopover({ cell, users, rota, holidays, UK_BANK_HOLIDAYS, upgr
   ].filter(o => !o.hideOn);
 
   const timeHint = {
-    daily: '09:00 – 19:00', evening: '19:00 – 07:00 (+1)',
+    daily: '09:00 – 18:00', evening: '18:00 – 09:00 (+1)',
     weekend: '19:00 – 07:00 (+1)', upgrade: 'All day',
     holiday: 'Annual leave', bankholiday: 'Bank holiday', off: 'Not scheduled',
   }[currentShift] || '';
@@ -1482,7 +1507,7 @@ function RotaContent({
                         <div style={{ fontWeight:800, fontSize:11 }}>{DAY_NAMES[dow]}</div>
                         <div style={{ fontFamily:'DM Mono', fontSize:10, opacity:0.8 }}>{d.getDate()} {MON_SHORT[d.getMonth()]}</div>
                         <div style={{ fontSize:8, color:'rgba(255,255,255,0.2)', fontFamily:'DM Mono', marginTop:1 }}>
-                          {bh?bh.title?.slice(0,10)||'Bank Hol':isWkd?'19:00–07:00':'09:00 / 19:00→'}
+                          {bh?bh.title?.slice(0,10)||'Bank Hol':isWkd?'18:00–09:00':'09:00 / 18:00→'}
                         </div>
                       </th>
                     );
@@ -1529,18 +1554,23 @@ function RotaContent({
                       const prevDow = prevDate.getDay();
                       const prevIsBH = (UK_BANK_HOLIDAYS||[]).some(b => b.date === prevDs);
                       const currentHasNoShift = (s==='off' || (bh && rotaShift==='off') || hol);
-                      // Show carry-over when the previous overnight shift genuinely
-                      // runs into this calendar day:
-                      // - WD evening always carries into next morning
-                      // - WE weekend carries into next day EXCEPT Mon→Tue
-                      //   UNLESS Monday was a Bank Holiday (block extends to Tue 07:00)
+                      // Show carry-over when the previous overnight shift runs into this day.
+                      // WD evening always carries into next morning.
+                      // WE weekend carries into next day EXCEPT Mon→Tue (ends at wdEnd)
+                      //   UNLESS Monday was a Bank Holiday (block extends to Tue at wdEnd)
                       const monTueBHExtension = prevDow === 1 && prevIsBH;
                       const prevIsCarryingOver = (prevS === 'evening') ||
                         (prevS === 'weekend' && (prevDow !== 1 || monTueBHExtension));
                       const hasCarryOver = prevIsCarryingOver && currentHasNoShift && isOnCallActive(u, prevDs);
+                      // Get the end time for the carry-over display (schedule-versioned)
+                      const prevSch = rotaScheduleFor(prevDs, null);
+                      const carryEndTime = prevSch.wdEnd || '09:00'; // '07:00' pre-cutover, '09:00' post
                       const prevCol=SHIFT_COLORS[prevS]||{};
                       const isEditTarget = editCell?.userId===u.id && editCell?.date===ds;
                       const isHighlighted = highlightCell?.userId===u.id && highlightCell?.date===ds;
+                      // Get schedule for current date for overnight arrow display
+                      const curSch = rotaScheduleFor(ds, null);
+                      const overnightEndTime = curSch.wdEnd || '09:00';
 
                       return (
                         <td key={ds} data-cell={`${u.id}::${ds}`} style={{ textAlign:'center', padding:'3px 2px',
@@ -1597,11 +1627,11 @@ function RotaContent({
                                 {isLocked(u.id,ds) && (
                                   <span style={{ position:'absolute', bottom:-3, right:-3, fontSize:7, lineHeight:1 }}>🔒</span>
                                 )}
-                                {isOvernight&&<div style={{ fontSize:7, color:displayCol.text, opacity:0.8, marginTop:1 }}>→07:00</div>}
+                                {isOvernight&&<div style={{ fontSize:7, color:displayCol.text, opacity:0.8, marginTop:1 }}>→{overnightEndTime}</div>}
                               </div>
                               {hasCarryOver&&(
                                 <div style={{ marginTop:2, background:(prevCol.bg||'#166534')+'33', color:prevCol.text||'#bbf7d0', border:`1px solid ${prevCol.bg||'#166534'}66`, borderRadius:6, padding:'2px 4px', fontSize:8, fontWeight:600, lineHeight:1.3 }}>
-                                  ←07:00<div style={{ fontSize:7, opacity:0.8 }}>cont.</div>
+                                  ←{carryEndTime}<div style={{ fontSize:7, opacity:0.8 }}>cont.</div>
                                 </div>
                               )}
                             </>
