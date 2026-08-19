@@ -91,10 +91,10 @@ export const DEFAULT_SETTINGS = {
   },
 
   toil: {
-    autoAccrual:        true,  // accrue 1h TOIL per 1h incident/upgrade worked
-    maxBalanceDays:     10,
-    expiryMonths:       12,    // TOIL expires after this many months
-    bhAutoToil:         false, // BH standby generates TOIL automatically?
+    autoAccrual:        true,
+    maxBalanceDays:     0,     // 0 = no limit
+    expiryMonths:       0,     // 0 = no expiry
+    bhAutoToil:         false,
   },
 
   overtime: {
@@ -619,11 +619,21 @@ export default function SettingsPage({
         <Row label="BH standby generates TOIL" hint="Being on standby over a Bank Holiday automatically accrues TOIL">
           <Toggle value={!!S.toil?.bhAutoToil} onChange={v => upd('toil.bhAutoToil', v)} label="Enabled"/>
         </Row>
-        <Row label="Maximum balance" hint="TOIL balance cannot exceed this — excess must be used or lost">
-          <NumberInput value={S.toil?.maxBalanceDays ?? 10} onChange={v => upd('toil.maxBalanceDays', v)} min={0} max={30} suffix="days"/>
+        <Row label="Maximum balance" hint="TOIL balance cap — set to 0 for no limit">
+          <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+            <NumberInput value={S.toil?.maxBalanceDays ?? 0} onChange={v => upd('toil.maxBalanceDays', Math.max(0, v))} min={0} suffix="days"/>
+            {(S.toil?.maxBalanceDays === 0 || !S.toil?.maxBalanceDays) && (
+              <span style={{ fontSize:11, color:'#6ee7b7', fontFamily:'DM Mono' }}>No limit</span>
+            )}
+          </div>
         </Row>
-        <Row label="TOIL expiry" hint="Unused TOIL expires after this many months">
-          <NumberInput value={S.toil?.expiryMonths ?? 12} onChange={v => upd('toil.expiryMonths', v)} min={0} max={36} suffix="months"/>
+        <Row label="TOIL expiry" hint="Unused TOIL expires after this many months — set to 0 for no expiry">
+          <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+            <NumberInput value={S.toil?.expiryMonths ?? 0} onChange={v => upd('toil.expiryMonths', Math.max(0, v))} min={0} suffix="months"/>
+            {(S.toil?.expiryMonths === 0 || !S.toil?.expiryMonths) && (
+              <span style={{ fontSize:11, color:'#6ee7b7', fontFamily:'DM Mono' }}>No expiry</span>
+            )}
+          </div>
         </Row>
       </SectionCard>
 
