@@ -4416,7 +4416,7 @@ export default function App() {
     pay: { standbyRate: 5, workedMultiplier: 1.5, cycleStartDay: 10 },
     timekeeping: { lateThresholdMins: 10, gracePeriodMins: 5, reminderMins60: true, reminderMins10: true },
     holidays: { annualEntitlement: 25, carryOverDays: 5, requiresApproval: true },
-    toil: { autoAccrual: true, maxBalanceDays: 10, expiryMonths: 12, bhAutoToil: false },
+    toil: { autoAccrual: true, maxBalanceDays: 0, expiryMonths: 0, bhAutoToil: false },
     overtime: { weeklyThresholdHrs: 40, multiplier: 1.5 },
     incidents: { severities: ['Critical','High','Medium','Low'], toilForCallout: true, escalationMins: 15 },
     notifications: { enableToastOS: true, enableInApp: true, rotaReminderHrs: 24, shiftSoonMins: 60, lateWarningMins: 10, triggers: { upgradeReminder:true, incidentOpen:true, holidayPending:true, swapPending:true, onCallGap:true, payrollDeadline:true, payslipReady:true, shiftReminder:true, lateWarning:true } },
