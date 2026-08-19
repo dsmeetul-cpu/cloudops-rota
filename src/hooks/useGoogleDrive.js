@@ -58,6 +58,10 @@ const FILES = {
   // payrollAdjustments (state, save effect, sync list, load) but was missing
   // here too — same "Unknown key" failure. ──────────────────────────────────
   onCallGapLog: 'onCallGapLog.json',
+  // ── App-wide settings (schedule versions, pay rates, access control, etc.)
+  // Managed by Settings.js (manager-only). Missing here caused every save to
+  // throw "Unknown key: appSettings".
+  appSettings:  'appSettings.json',
 };
 
 let folderId = null;
