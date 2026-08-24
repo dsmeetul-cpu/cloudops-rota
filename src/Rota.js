@@ -77,54 +77,31 @@ function autoCompleteWeekendBlock(rotaArg, userId, triggerDate, bhList, holidays
   return changed ? { ...rotaArg, [userId]: userRota } : rotaArg;
 }
 
-// ── Schedule cutover ─────────────────────────────────────────────────────────
-// W35, 24 Aug 2026: hours change from 19:00–07:00 (12h WD, 60h WE)
-//                                  to 18:00–09:00 (15h WD, 63h WE)
-const SCHEDULE_CUTOVER = '2026-08-24';
-
-// Returns the active schedule config for a given date string.
-// Falls back to built-in V1/V2 defaults if appSettings not provided.
-function rotaScheduleFor(dateStr, appSettings) {
-  if (appSettings?.schedules?.length) {
-    const sorted = [...appSettings.schedules].sort((a, b) => a.effectiveFrom.localeCompare(b.effectiveFrom));
-    let active = sorted[0];
-    for (const s of sorted) { if (dateStr >= s.effectiveFrom) active = s; }
-    return active;
-  }
-  // Built-in defaults
-  if (dateStr >= SCHEDULE_CUTOVER) {
-    return { wdStart:'18:00', wdEnd:'09:00', wdHoursPerNight:15, weStart:'18:00', weFriHrs:6, weSatHrs:24, weSunHrs:24, weMonHrs:9, weTotal:63, dailyStart:'09:00', dailyEnd:'18:00' };
-  }
-  return { wdStart:'19:00', wdEnd:'07:00', wdHoursPerNight:12, weStart:'19:00', weFriHrs:5, weSatHrs:24, weSunHrs:24, weMonHrs:7, weTotal:60, dailyStart:'09:00', dailyEnd:'18:00' };
-}
-
+// ── Constants ────────────────────────────────────────────────────────────────
 const SHIFT_COLORS = {
   daily:       { bg: '#1565c0', label: 'Daily On-Call (09:00–18:00)', text: '#90caf9' },
   evening:     { bg: '#166534', label: 'Weekday On-Call (paid)',       text: '#bbf7d0' },
   weekend:     { bg: '#854d0e', label: 'Weekend On-Call (paid)',       text: '#fef08a' },
   upgrade:     { bg: '#991b1b', label: 'Upgrade Day',                  text: '#fecaca' },
   holiday:     { bg: '#92400e', label: 'Holiday',                      text: '#fde68a' },
+  toil:        { bg: '#5b21b6', label: 'TOIL',                         text: '#ddd6fe' },
   bankholiday: { bg: '#7f1d1d', label: 'Bank Holiday',                 text: '#fca5a5' },
   inactive:    { bg: '#1e293b', label: 'Not on-call yet',              text: '#475569' },
 };
 
 const SHIFT_ABBR = {
   daily: 'D', evening: 'WD', weekend: 'WE',
-  upgrade: 'UD', holiday: 'H', bankholiday: 'BH', off: '—',
+  upgrade: 'UD', holiday: 'H', toil: 'T',
+  bankholiday: 'BH', off: '—',
 };
 
 const SHIFT_HOURS = {
   daily:       { start: '09:00', end: '18:00', label: '9am – 6pm',    desc: 'Daily On-Call (Mon–Fri, NOT paid)',  standbyHrs: 0,  workedHrs: 9  },
-  evening:     { start: '18:00', end: '09:00', label: '6pm – 9am',    desc: 'Weekday On-Call (Mon–Thu, paid)',    standbyHrs: 15, workedHrs: 0  },
-  weekend:     { start: '18:00', end: '09:00', label: '6pm – 9am',    desc: 'Weekend On-Call (Fri 6pm–Mon 9am)', standbyHrs: 63, workedHrs: 0  },
-  bankholiday: { start: '09:00', end: '09:00', label: '9am – 9am',    desc: 'Bank Holiday On-Call',              standbyHrs: 24, workedHrs: 0  },
+  evening:     { start: '19:00', end: '07:00', label: '7pm – 7am',    desc: 'Weekday On-Call (Mon–Thu, paid)',    standbyHrs: 12, workedHrs: 0  },
+  weekend:     { start: '19:00', end: '07:00', label: '7pm – 7am',    desc: 'Weekend On-Call (Fri 7pm–Mon 7am)', standbyHrs: 60, workedHrs: 0  },
+  bankholiday: { start: '09:00', end: '07:00', label: '9am – 7am',    desc: 'Bank Holiday On-Call',              standbyHrs: 22, workedHrs: 0  },
   upgrade:     { start: '00:00', end: '23:59', label: 'All day',       desc: 'Upgrade Day',                      standbyHrs: 0,  workedHrs: 8  },
   holiday:     { start: '',      end: '',       label: 'Holiday',       desc: 'Annual Leave',                     standbyHrs: 0,  workedHrs: 0  },
-};
-// Pre-cutover hours (for display on historical cells)
-const SHIFT_HOURS_V1 = {
-  evening: { start: '19:00', end: '07:00', label: '7pm – 7am', standbyHrs: 12 },
-  weekend: { start: '19:00', end: '07:00', label: '7pm – 7am', standbyHrs: 60 },
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -202,11 +179,13 @@ function ShiftLegend() {
   return (
     <div style={{ display:'flex', flexWrap:'wrap', gap:8, marginBottom:12 }}>
       {[
-        ['#1e40af', 'D',  'Daily Shift (9am–6pm)'],
+        ['#1565c0', 'D',  'Daily On-Call (9am–6pm)'],
         ['#166534', 'WD', 'Weekday On-Call (18:00–09:00)'],
-        ['#854d0e', 'WE', 'Weekend On-Call (19:00–07:00)'],
+        ['#854d0e', 'WE', 'Weekend On-Call (18:00–09:00)'],
         ['#991b1b', 'UD', 'Upgrade Day'],
         ['#92400e', 'H',  'Holiday'],
+        ['#5b21b6', 'T',  'TOIL'],
+        ['#7f1d1d', 'BH', 'Bank Holiday'],
         ['#1e293b', '—',  'Not on-call yet'],
       ].map(([bg, abbr, label]) => (
         <div key={label} style={{ display:'flex', alignItems:'center', gap:5, fontSize:11, color:'var(--text-secondary)' }}>
@@ -459,6 +438,7 @@ function CellEditorPopover({ cell, users, rota, holidays, UK_BANK_HOLIDAYS, upgr
   const isWeekend = dow === 0 || dow === 6;
   const locked = isLockedFn(userId, date);
   const hol = holidays.find(h => h.userId === userId && date >= h.start && date <= h.end);
+  // Note: TOIL does not block autoCompleteWeekendBlock — TOIL is displayed on top
   const bh  = (UK_BANK_HOLIDAYS||[]).find(b => b.date === date);
   const d   = new Date(date + 'T12:00:00');
   const dayLabel = d.toLocaleDateString('en-GB', { weekday:'long', day:'numeric', month:'short', year:'numeric' });
@@ -474,7 +454,7 @@ function CellEditorPopover({ cell, users, rota, holidays, UK_BANK_HOLIDAYS, upgr
   ].filter(o => !o.hideOn);
 
   const timeHint = {
-    daily: '09:00 – 18:00', evening: '18:00 – 09:00 (+1)',
+    daily: '09:00 – 19:00', evening: '19:00 – 07:00 (+1)',
     weekend: '19:00 – 07:00 (+1)', upgrade: 'All day',
     holiday: 'Annual leave', bankholiday: 'Bank holiday', off: 'Not scheduled',
   }[currentShift] || '';
@@ -559,6 +539,7 @@ function CellEditorPopover({ cell, users, rota, holidays, UK_BANK_HOLIDAYS, upgr
 // ── Rota content (schedule views) ────────────────────────────────────────────
 function RotaContent({
   users, rota, setRota, holidays, upgrades, swapRequests, setSwapRequests,
+  toil,
   isManager, UK_BANK_HOLIDAYS, generateRota, generateICalFeed, downloadIcal,
   onCallGapLog, setOnCallGapLog,
 }) {
@@ -1294,7 +1275,8 @@ function RotaContent({
                 const shiftsToday = visibleUsers.map(u => {
                   if (!isOnCallActive(u, ds)) return null;
                   const hol = holidays.find(h=>h.userId===u.id && ds>=h.start && ds<=h.end);
-                  const shift = hol ? 'holiday' : (rota[u.id]?.[ds] || 'off');
+                  const toilC=(toil||[]).find(t=>t.userId===u.id && t.type==='Used' && t.status==='approved' && t.date===ds);
+                  const shift = hol ? 'holiday' : toilC ? 'toil' : (rota[u.id]?.[ds] || 'off');
                   if (shift === 'off') return null;
                   return { user: u, shift };
                 }).filter(Boolean);
@@ -1368,7 +1350,8 @@ function RotaContent({
             const hasShift = wdates.slice(0,7).some(d => {
               const ds = d.toISOString().slice(0,10);
               const hol = holidays.find(h=>h.userId===u.id && ds>=h.start && ds<=h.end);
-              const shift = hol ? 'holiday' : (rota[u.id]?.[ds] || 'off');
+              const toilTL=(toil||[]).find(t=>t.userId===u.id && t.type==='Used' && t.status==='approved' && t.date===ds);
+              const shift = hol ? 'holiday' : toilTL ? 'toil' : (rota[u.id]?.[ds] || 'off');
               return shift === filterShift;
             });
             if (!hasShift) return false;
@@ -1382,14 +1365,15 @@ function RotaContent({
           const user = users.find(u=>u.id===userId);
           if (!isOnCallActive(user, dateStr)) return null;
           const hol  = holidays.find(h=>h.userId===userId && dateStr>=h.start && dateStr<=h.end);
+          const toilCE=(toil||[]).find(t=>t.userId===userId && t.type==='Used' && t.status==='approved' && t.date===dateStr);
           const bh   = (UK_BANK_HOLIDAYS||[]).find(b=>b.date===dateStr);
           const rotaEntry = rota[userId]?.[dateStr] || 'off';
-          const thisShift = hol ? 'holiday' : bh ? (rotaEntry !== 'off' ? rotaEntry : 'bankholiday') : rotaEntry;
+          const thisShift = hol ? 'holiday' : toilCE ? 'toil' : bh ? (rotaEntry !== 'off' ? rotaEntry : 'bankholiday') : rotaEntry;
           if (hour>=7) {
             if (thisShift==='daily')   return hour<19?'daily':null;
             if (thisShift==='evening') return hour>=19?'evening':null;
             if (thisShift==='weekend') return hour>=19?'weekend':null;
-            if (['upgrade','holiday','bankholiday'].includes(thisShift)) return thisShift;
+            if (['upgrade','holiday','bankholiday','toil'].includes(thisShift)) return thisShift;
             return null;
           }
           for (let back = 1; back <= 3; back++) {
@@ -1434,9 +1418,10 @@ function RotaContent({
                     </div>
                     {filteredUsers.map(u => {
                       const hol   = holidays.find(h=>h.userId===u.id && ds>=h.start && ds<=h.end);
+                      const toilRow=(toil||[]).find(t=>t.userId===u.id && t.type==='Used' && t.status==='approved' && t.date===ds);
                       const active= isOnCallActive(u, ds);
                       const status= getOnCallStatus(u, ds);
-                      const shift = hol?'holiday':bh?'bankholiday':(rota[u.id]?.[ds]||'off');
+                      const shift = hol?'holiday':toilRow?'toil':bh?'bankholiday':(rota[u.id]?.[ds]||'off');
                       const col   = active?SHIFT_COLORS[shift]||{}:SHIFT_COLORS.inactive;
                       return (
                         <div key={u.id} style={{ display:'flex', alignItems:'center', marginBottom:2 }}>
@@ -1507,7 +1492,7 @@ function RotaContent({
                         <div style={{ fontWeight:800, fontSize:11 }}>{DAY_NAMES[dow]}</div>
                         <div style={{ fontFamily:'DM Mono', fontSize:10, opacity:0.8 }}>{d.getDate()} {MON_SHORT[d.getMonth()]}</div>
                         <div style={{ fontSize:8, color:'rgba(255,255,255,0.2)', fontFamily:'DM Mono', marginTop:1 }}>
-                          {bh?bh.title?.slice(0,10)||'Bank Hol':isWkd?'18:00–09:00':'09:00 / 18:00→'}
+                          {bh?bh.title?.slice(0,10)||'Bank Hol':isWkd?'19:00–07:00':'09:00 / 19:00→'}
                         </div>
                       </th>
                     );
@@ -1533,15 +1518,17 @@ function RotaContent({
                     {wdates.slice(0,7).map((d,di) => {
                       const ds=d.toISOString().slice(0,10);
                       const hol  = holidays.find(h=>h.userId===u.id && ds>=h.start && ds<=h.end);
+                      const toilUsed = (toil||[]).find(t=>t.userId===u.id && t.type==='Used' && t.status==='approved' && t.date===ds);
                       const bh   = (UK_BANK_HOLIDAYS||[]).find(b=>b.date===ds);
                       const upg  = (upgrades||[]).find(up=>up.date===ds && up.attendees?.includes(u.id));
                       const active=isOnCallActive(u,ds);
                       const status=getOnCallStatus(u,ds);
                       const rotaShift = rota[u.id]?.[ds] || 'off';
-                      const s    = hol ? 'holiday' : rotaShift;
+                      // Priority: holiday > toil > rota shift
+                      const s    = hol ? 'holiday' : toilUsed ? 'toil' : rotaShift;
                       const col  = active ? (SHIFT_COLORS[s]||{}) : SHIFT_COLORS.inactive;
-                      const bhOverlay = bh && rotaShift !== 'off' && !hol;
-                      const displayCol = (bh && rotaShift === 'off' && !hol) ? SHIFT_COLORS.bankholiday : col;
+                      const bhOverlay = bh && rotaShift !== 'off' && !hol && !toilUsed;
+                      const displayCol = (bh && rotaShift === 'off' && !hol && !toilUsed) ? SHIFT_COLORS.bankholiday : col;
                       const key  = `${u.id}::${ds}`;
                       const isBulkSel=bulkSelected.has(key);
                       const dow=d.getDay(); const isWkd=dow===0||dow===6;
@@ -1549,28 +1536,24 @@ function RotaContent({
                       const prevDate=new Date(d); prevDate.setDate(d.getDate()-1);
                       const prevDs=prevDate.toISOString().slice(0,10);
                       const prevHol=holidays.find(h=>h.userId===u.id && prevDs>=h.start && prevDs<=h.end);
+                      const prevToilUsed=(toil||[]).find(t=>t.userId===u.id && t.type==='Used' && t.status==='approved' && t.date===prevDs);
                       const prevRotaShift = rota[u.id]?.[prevDs] || 'off';
-                      const prevS = prevHol ? 'holiday' : prevRotaShift;
+                      const prevS = prevHol ? 'holiday' : prevToilUsed ? 'toil' : prevRotaShift;
                       const prevDow = prevDate.getDay();
                       const prevIsBH = (UK_BANK_HOLIDAYS||[]).some(b => b.date === prevDs);
-                      const currentHasNoShift = (s==='off' || (bh && rotaShift==='off') || hol);
-                      // Show carry-over when the previous overnight shift runs into this day.
-                      // WD evening always carries into next morning.
-                      // WE weekend carries into next day EXCEPT Mon→Tue (ends at wdEnd)
-                      //   UNLESS Monday was a Bank Holiday (block extends to Tue at wdEnd)
+                      const currentHasNoShift = (s==='off' || (bh && rotaShift==='off') || hol || toilUsed);
+                      // Show carry-over when the previous overnight shift genuinely
+                      // runs into this calendar day:
+                      // - WD evening always carries into next morning
+                      // - WE weekend carries into next day EXCEPT Mon→Tue
+                      //   UNLESS Monday was a Bank Holiday (block extends to Tue 07:00)
                       const monTueBHExtension = prevDow === 1 && prevIsBH;
                       const prevIsCarryingOver = (prevS === 'evening') ||
                         (prevS === 'weekend' && (prevDow !== 1 || monTueBHExtension));
                       const hasCarryOver = prevIsCarryingOver && currentHasNoShift && isOnCallActive(u, prevDs);
-                      // Get the end time for the carry-over display (schedule-versioned)
-                      const prevSch = rotaScheduleFor(prevDs, null);
-                      const carryEndTime = prevSch.wdEnd || '09:00'; // '07:00' pre-cutover, '09:00' post
                       const prevCol=SHIFT_COLORS[prevS]||{};
                       const isEditTarget = editCell?.userId===u.id && editCell?.date===ds;
                       const isHighlighted = highlightCell?.userId===u.id && highlightCell?.date===ds;
-                      // Get schedule for current date for overnight arrow display
-                      const curSch = rotaScheduleFor(ds, null);
-                      const overnightEndTime = curSch.wdEnd || '09:00';
 
                       return (
                         <td key={ds} data-cell={`${u.id}::${ds}`} style={{ textAlign:'center', padding:'3px 2px',
@@ -1579,12 +1562,12 @@ function RotaContent({
                           borderRadius: isHighlighted ? 6 : undefined,
                           transition:'background 0.4s, box-shadow 0.4s',
                           verticalAlign:'top' }}>
-                          {!active && !hol && !bh && (
+                          {!active && !hol && !bh && !toilUsed && (
                             <div style={{ background:'rgba(30,41,59,0.6)', borderRadius:5, padding:'4px 4px', fontSize:9, color:'#334155', fontStyle:'italic', minWidth:30 }}>
                               {status?.type==='terminated'?'left':status?.type==='not_started'?'tbc':'—'}
                             </div>
                           )}
-                          {(active || hol || bh) && (
+                          {(active || hol || bh || toilUsed) && (
                             <>
                               <div
                                 onMouseDown={e => {
@@ -1627,11 +1610,11 @@ function RotaContent({
                                 {isLocked(u.id,ds) && (
                                   <span style={{ position:'absolute', bottom:-3, right:-3, fontSize:7, lineHeight:1 }}>🔒</span>
                                 )}
-                                {isOvernight&&<div style={{ fontSize:7, color:displayCol.text, opacity:0.8, marginTop:1 }}>→{overnightEndTime}</div>}
+                                {isOvernight&&<div style={{ fontSize:7, color:displayCol.text, opacity:0.8, marginTop:1 }}>→07:00</div>}
                               </div>
                               {hasCarryOver&&(
                                 <div style={{ marginTop:2, background:(prevCol.bg||'#166534')+'33', color:prevCol.text||'#bbf7d0', border:`1px solid ${prevCol.bg||'#166534'}66`, borderRadius:6, padding:'2px 4px', fontSize:8, fontWeight:600, lineHeight:1.3 }}>
-                                  ←{carryEndTime}<div style={{ fontSize:7, opacity:0.8 }}>cont.</div>
+                                  ←07:00<div style={{ fontSize:7, opacity:0.8 }}>cont.</div>
                                 </div>
                               )}
                             </>
@@ -1677,6 +1660,8 @@ function RotaAnalytics({ users, rota, holidays, UK_BANK_HOLIDAYS, upgrades }) {
   const getShift = (uid, ds) => {
     const hol = (holidays||[]).find(h=>h.userId===uid && ds>=h.start && ds<=h.end);
     if (hol) return 'holiday';
+    const toilR=(toil||[]).find(t=>t.userId===uid && t.type==='Used' && t.status==='approved' && t.date===ds);
+    if (toilR) return 'toil';
     const bh = (UK_BANK_HOLIDAYS||[]).find(b=>b.date===ds);
     const r  = rota[uid]?.[ds] || 'off';
     if (bh && r !== 'off') return r;
