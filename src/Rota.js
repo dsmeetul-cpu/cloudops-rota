@@ -1658,7 +1658,7 @@ function RotaContent({
 }
 
 // ── Rota Analytics ────────────────────────────────────────────────────────────
-function RotaAnalytics({ users, rota, holidays, UK_BANK_HOLIDAYS, upgrades }) {
+function RotaAnalytics({ users, rota, holidays, UK_BANK_HOLIDAYS, upgrades, appSettings }) {
   const today = (() => { const d=new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; })();
   const [report, setReport] = React.useState('heatmap');
   const [start, setStart]   = React.useState(() => { const d=new Date(); d.setMonth(d.getMonth()-3); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; });
@@ -1684,19 +1684,44 @@ function RotaAnalytics({ users, rota, holidays, UK_BANK_HOLIDAYS, upgrades }) {
     return r;
   };
 
-  // Hours for analytics display — daily counts as 9h for scheduling visibility
-  const SHIFT_HRS = { daily:9, evening:12, weekend:12, upgrade:8, holiday:0, bankholiday:22, off:0 };
-  // Paid hours only — daily is EXCLUDED from pay
-  const PAID_HRS  = { daily:0, evening:12, weekend:12, upgrade:8, holiday:0, bankholiday:22, off:0 };
+  // Hours for analytics display — schedule-versioned via rotaScheduleFor(ds, appSettings)
+  // so this matches the actual payroll run instead of a flat per-day guess.
+  // Previously this was a flat table (evening:12, weekend:12 for every day, bankholiday:22)
+  // that (a) never picked up the W35 cutover to 15h WD / 63h WE, and (b) gave every
+  // day of a weekend block the same 12h instead of the true Fri/Sat/Sun/Mon split
+  // — understating a 60–63h weekend block as 4×12=48h.
+  const shiftHoursFor = (s, ds) => {
+    if (s === 'daily')   return { display: 9, paid: 0 };
+    if (s === 'upgrade') return { display: 8, paid: 8 };
+    if (s === 'holiday' || s === 'off' || !s) return { display: 0, paid: 0 };
+    if (s === 'bankholiday') {
+      const h = ds >= SCHEDULE_CUTOVER ? 24 : 22;
+      return { display: h, paid: h };
+    }
+    const sch = rotaScheduleFor(ds, appSettings);
+    if (s === 'evening') return { display: sch.wdHoursPerNight, paid: sch.wdHoursPerNight };
+    if (s === 'weekend') {
+      const dow = new Date(ds + 'T12:00:00').getDay(); // timezone-safe, per convention
+      let h;
+      if (dow === 5) h = sch.weFriHrs;
+      else if (dow === 6) h = sch.weSatHrs;
+      else if (dow === 0) h = sch.weSunHrs;
+      else if (dow === 1) h = sch.weMonHrs;
+      else h = sch.wdHoursPerNight; // shouldn't normally occur
+      return { display: h, paid: h };
+    }
+    return { display: 0, paid: 0 };
+  };
 
   const stats = React.useMemo(() => {
     return activeUsers.map(u => {
       const counts = {}; const hrs = {}; const paidHrs = {};
       allDates.forEach(ds => {
         const s = getShift(u.id, ds);
+        const { display, paid } = shiftHoursFor(s, ds);
         counts[s]  = (counts[s]||0)+1;
-        hrs[s]     = (hrs[s]||0)+(SHIFT_HRS[s]||0);
-        paidHrs[s] = (paidHrs[s]||0)+(PAID_HRS[s]||0);
+        hrs[s]     = (hrs[s]||0)+display;
+        paidHrs[s] = (paidHrs[s]||0)+paid;
       });
       const totalShifts  = allDates.filter(ds=>getShift(u.id,ds)!=='off').length;
       const totalHrs     = Object.values(hrs).reduce((a,b)=>a+b,0);
@@ -2072,7 +2097,7 @@ function RotaAnalytics({ users, rota, holidays, UK_BANK_HOLIDAYS, upgrades }) {
           const d=new Date(ds+'T12:00:00'); const dow=(d.getDay()+6)%7; const mon=new Date(d); mon.setDate(d.getDate()-dow);
           const wk=mon.toISOString().slice(0,10);
           if (!tmp[wk]) tmp[wk]={};
-          usersToShow.forEach(u=>{ tmp[wk][u.id]=(tmp[wk][u.id]||0)+(PAID_HRS[getShift(u.id,ds)]||0); });
+          usersToShow.forEach(u=>{ tmp[wk][u.id]=(tmp[wk][u.id]||0)+shiftHoursFor(getShift(u.id,ds), ds).paid; });
         });
         const wkList=Object.keys(tmp).sort();
         const maxV=Math.max(...wkList.flatMap(w=>usersToShow.map(u=>tmp[w][u.id]||0)),1);
@@ -2165,7 +2190,7 @@ function RotaAnalytics({ users, rota, holidays, UK_BANK_HOLIDAYS, upgrades }) {
           const d=new Date(ds+'T12:00:00'); const dow=(d.getDay()+6)%7; const mon=new Date(d); mon.setDate(d.getDate()-dow);
           const wk=mon.toISOString().slice(0,10);
           if (!weeks[wk]) weeks[wk]={};
-          usersToShow.forEach(u=>{ weeks[wk][u.id]=(weeks[wk][u.id]||0)+(PAID_HRS[getShift(u.id,ds)]||0); });
+          usersToShow.forEach(u=>{ weeks[wk][u.id]=(weeks[wk][u.id]||0)+shiftHoursFor(getShift(u.id,ds), ds).paid; });
         });
         const wkArr=Object.keys(weeks).sort();
         const maxV=Math.max(...wkArr.flatMap(w=>usersToShow.map(u=>weeks[w][u.id]||0)),1);
