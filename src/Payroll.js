@@ -11,7 +11,7 @@ const _SCH_V2 = { id:'v2', wdHoursPerNight:15, weFriHrs:6, weSatHrs:24, weSunHrs
 // ── Schedule cutover ──────────────────────────────────────────────────────────
 const SCHEDULE_CUTOVER = '2026-08-24';
 
-function scheduleFor(dateStr, appSettings) {
+export function scheduleFor(dateStr, appSettings) {
   const schedules = appSettings?.schedules;
   if (schedules?.length) {
     const sorted = [...schedules].sort((a, b) => a.effectiveFrom.localeCompare(b.effectiveFrom));
@@ -249,6 +249,78 @@ export function calcOncallPay(timesheetEntries, hourlyRate, upgradeHrs = 0, bank
     totalStandbyHours: Math.round((standbyWD + standbyWE + bhStandby) * 10) / 10,
     totalWorkedHours:  Math.round((workedWD + workedWE + upgradeHrs) * 10) / 10,
   };
+}
+
+// ── calcBankHolidayHours ─────────────────────────────────────────────────────
+// Schedule-versioned Bank Holiday standby hours for one user across a date
+// range. Extracted from PayrollReports so App.js (PayConfig) can share the
+// exact same logic instead of keeping a separate, stale, hardcoded copy.
+//
+// WHO covers: whoever is on the Weekend On-Call shift that spans the BH.
+//   - BH Monday  → WE engineer (their WE block Fri 19:00 → Mon continues to Tue 07:00)
+//   - BH Friday  → WE engineer (their shift starts 07:00 instead of 19:00)
+//   - Other BH   → engineer on rota that day (evening or weekend)
+//
+// HOURS (schedule-versioned via scheduleFor(bh.date, appSettings)):
+//   BH Monday (WE engineer):   24h (full BH day) + sch.weMonHrs (Tue handover)
+//                               v1: 24+7=31h   v2: 24+9=33h
+//   BH Friday (WE engineer):   bhFriHrs = hours from dailyEnd to midnight
+//                               v1: 17h        v2: 15h
+//   BH on other weekday (WD engineer on evening shift): sch.bhMidweekHrs
+//                               v1: 22h        v2: 24h
+export function calcBankHolidayHours(userId, safeRota, bhList, userHols, startDs = null, endDs = null, appSettings = null) {
+  let total = 0;
+  (bhList || []).forEach(bh => {
+    if (startDs && bh.date < startDs) return;
+    if (endDs   && bh.date > endDs)   return;
+
+    const bhDow = new Date(bh.date + 'T12:00:00').getDay();
+    // Pick the schedule active on this specific BH date
+    const sch = scheduleFor(bh.date, appSettings);
+
+    let coverShift = safeRota?.[bh.date];
+    if (!coverShift || coverShift === 'off') {
+      for (let back = 1; back <= 3; back++) {
+        const prev = new Date(bh.date + 'T12:00:00');
+        prev.setDate(prev.getDate() - back);
+        const prevDs  = prev.toISOString().slice(0, 10);
+        const prevShift = safeRota?.[prevDs];
+        if (prevShift === 'weekend' || prevShift === 'evening') {
+          coverShift = prevShift;
+          break;
+        }
+      }
+    }
+    if (!coverShift || coverShift === 'off') return;
+
+    const onLeave = (userHols || []).some(h => bh.date >= h.start && bh.date <= h.end);
+    if (onLeave) return;
+
+    // Parse daily end time (e.g. "09:00" → 9) for BH Friday calculation
+    const [dailyEndH, dailyEndM] = (sch.dailyEnd || '09:00').split(':').map(Number);
+    const bhFriHrs = Math.round((24 - dailyEndH - dailyEndM / 60) * 10) / 10;
+
+    if (coverShift === 'weekend') {
+      if (bhDow === 1) {
+        total += 24 + sch.weMonHrs;      // v1: 31h   v2: 33h
+      } else if (bhDow === 5) {
+        total += bhFriHrs;               // v1: 17h   v2: 15h
+      } else {
+        total += 24; // Sat/Sun BH (unusual)
+      }
+    } else if (coverShift === 'evening') {
+      if (bhDow === 5) {
+        total += bhFriHrs;               // v1: 17h   v2: 15h
+      } else if (bhDow === 1) {
+        total += 24;                      // Full BH Monday
+      } else {
+        total += sch.bhMidweekHrs ?? 22;  // Tue/Wed/Thu BH
+      }
+    } else {
+      total += sch.bhMidweekHrs ?? 22;
+    }
+  });
+  return total;
 }
 
 // ── analyzeOncallBlocks ─────────────────────────────────────────────────────────
@@ -590,64 +662,7 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
     // NOTE: calcOncallPay skips BH dates (if (isBH) return), so any WE rota entry
     // on a BH Monday is excluded from standbyWE. We correct this entirely here.
 
-    const bankHolHrs = (() => {
-      let total = 0;
-      bhList.forEach(bh => {
-        if (startDs && bh.date < startDs) return;
-        if (endDs   && bh.date > endDs)   return;
-
-        const bhDow = new Date(bh.date + 'T12:00:00').getDay();
-        // Pick the schedule active on this specific BH date
-        const sch = scheduleFor(bh.date, appSettings);
-
-        let coverShift = safeRota[u.id]?.[bh.date];
-        if (!coverShift || coverShift === 'off') {
-          for (let back = 1; back <= 3; back++) {
-            const prev = new Date(bh.date + 'T12:00:00');
-            prev.setDate(prev.getDate() - back);
-            const prevDs  = prev.toISOString().slice(0, 10);
-            const prevShift = safeRota[u.id]?.[prevDs];
-            if (prevShift === 'weekend' || prevShift === 'evening') {
-              coverShift = prevShift;
-              break;
-            }
-          }
-        }
-        if (!coverShift || coverShift === 'off') return;
-
-        const onLeave = userHols.some(h => bh.date >= h.start && bh.date <= h.end);
-        if (onLeave) return;
-
-        // Parse daily end time (e.g. "09:00" → 9) for BH Friday calculation
-        const [dailyEndH, dailyEndM] = (sch.dailyEnd || '09:00').split(':').map(Number);
-        const bhFriHrs = Math.round((24 - dailyEndH - dailyEndM / 60) * 10) / 10;
-
-        if (coverShift === 'weekend') {
-          if (bhDow === 1) {
-            // BH Monday: full 24h + Tue morning handover (weMonHrs)
-            // v1: 24 + 7 = 31h   v2: 24 + 9 = 33h
-            total += 24 + sch.weMonHrs;
-          } else if (bhDow === 5) {
-            // BH Friday: WE engineer starts at dailyEnd not weStart
-            // v1: 24 - 7 = 17h   v2: 24 - 9 = 15h
-            total += bhFriHrs;
-          } else {
-            total += 24; // Sat/Sun BH (unusual)
-          }
-        } else if (coverShift === 'evening') {
-          if (bhDow === 5) {
-            total += bhFriHrs;  // v1: 17h  v2: 15h
-          } else if (bhDow === 1) {
-            total += 24;         // Full BH Monday
-          } else {
-            total += sch.bhMidweekHrs ?? 22;  // Tue/Wed/Thu BH
-          }
-        } else {
-          total += sch.bhMidweekHrs ?? 22;
-        }
-      });
-      return total;
-    })();
+    const bankHolHrs = calcBankHolidayHours(u.id, safeRota[u.id], bhList, userHols, startDs, endDs, appSettings);
 
     // Approved overtime hours in range
     const overtimeHrs = safeOT.filter(o =>
