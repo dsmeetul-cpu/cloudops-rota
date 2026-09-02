@@ -28,7 +28,7 @@ import Incidents from './Incidents';
 import Logs, { createLogWriter, readLogs, LoginIssuesBreakdown } from './Logs';
 import UpgradeDays from './UpgradeDays';
 import Holidays from './Holidays';
-import Payroll from './Payroll';
+import Payroll, { calcOncallPay, calcBankHolidayHours } from './Payroll';
 import TeamChat from './TeamChat';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1792,107 +1792,12 @@ const ONCALL_WORKED_MULTIPLIER = 1.5;
 const TOIL_ACCRUAL_RATE = 1.0;       // 1:1 per UK WTR
 
 // ── calcOncallPay ──────────────────────────────────────────────────────────
-// Derives standby/worked hours directly from the ROTA (single source of truth)
-// rather than relying on timesheet fields which may be incomplete.
-//
-// Shift hour rules:
-//   daily       10:00–19:00  = 9h worked  (Mon–Fri)
-//   evening     19:00–07:00  = 12h standby (Mon–Thu)
-//   weekend     Fri19:00–Mon07:00 = 60h standby total (split across 3 nights)
-//   bankholiday 09:00–07:00  = 22h standby
-//   upgrade     approved hours at 1.5x worked rate
-//
-// Incident hours come from timesheets entries flagged with week starting "INC".
-function calcOncallPay(timesheetEntries, hourlyRate, upgradeHrs = 0, bankHolHrs = 0,
-                       rotaForUser = {}, holidays = [], bankHolidays = [], startDs = null, endDs = null,
-                       liveIncidentIds = null) {
-  // liveIncidentIds: Set of incident IDs that still exist. If provided, INC timesheet
-  // entries whose incident has been deleted are excluded from the calculation.
-
-  // ── Derive hours from rota entries ───────────────────────────────────────
-  let standbyWD = 0, workedWD = 0, standbyWE = 0, workedWE = 0;
-
-  Object.entries(rotaForUser).forEach(([date, shift]) => {
-    if (startDs && date < startDs) return;
-    if (endDs   && date > endDs)   return;
-    if (!shift || shift === 'off') return;
-
-    // Skip bank holidays — counted separately below
-    const isBH = bankHolidays.some(b => b.date === date);
-    if (isBH) return;
-
-    const isHol = holidays.some(h => h.userId !== undefined
-      ? (date >= h.start && date <= h.end) : false);
-    if (isHol) return;
-
-    const dow = new Date(date).getDay(); // 0=Sun,1=Mon…6=Sat
-    const isWeekend = dow === 0 || dow === 5 || dow === 6; // Fri/Sat/Sun = weekend OC
-
-    if (shift === 'daily') {
-      workedWD += 9; // 10:00–19:00
-    } else if (shift === 'evening') {
-      // Weekday OC: 19:00–07:00 = 12h standby per night
-      standbyWD += 12;
-    } else if (shift === 'weekend') {
-      // Weekend OC: each day contributes standby hours
-      // Fri: 5h (19:00–24:00), Sat: 24h, Sun: 24h, Mon morning handled as carry-over
-      // Simpler: each weekend rota entry represents one day's portion
-      if (dow === 5) standbyWE += 5;      // Fri 19:00–24:00
-      else if (dow === 6) standbyWE += 24; // Sat full day
-      else if (dow === 0) standbyWE += 24; // Sun full day
-      else if (dow === 1) standbyWE += 7;  // Mon 00:00–07:00
-      else standbyWE += 12; // fallback
-    }
-  });
-
-  // Bank holiday standby hours — pre-calculated hours
-  const bhStandby = bankHolHrs;
-
-  // Incident hours from timesheets (entries with week starting "INC")
-  // Only count entries whose incident still exists in the live incidents list.
-  // IMPORTANT: these hours are tracked separately in incidentHrs and must NOT
-  // also be added to workedWD/workedWE — doing so would double-count them in
-  // workedPay and show e.g. 6h for a 3h incident.
-  let incidentHrs = 0;
-  (timesheetEntries || [])
-    .filter(e => {
-      if (!e.week || !e.week.startsWith('INC')) return false;
-      const incId = e.week.slice(4).trim();
-      if (liveIncidentIds && !liveIncidentIds.has(incId)) return false;
-      return true;
-    })
-    .forEach(e => {
-      // Sum all hour fields but deduplicate: worked_wd mirrors weekday_oncall, so
-      // prefer worked_wd+worked_we when present, otherwise fall back to oncall fields.
-      const hasWorked = (e.worked_wd || 0) + (e.worked_we || 0) > 0;
-      const hrs = hasWorked
-        ? (e.worked_wd || 0) + (e.worked_we || 0)
-        : (e.weekday_oncall || 0) + (e.weekend_oncall || 0);
-      incidentHrs += hrs;
-      // Do NOT add to workedWD/workedWE — incident pay is charged via incidentHrs
-    });
-
-  const standbyPay  = (standbyWD + standbyWE + bhStandby) * ONCALL_STANDBY_RATE;
-  const workedPay   = (workedWD + workedWE) * hourlyRate * ONCALL_WORKED_MULTIPLIER;
-  const incidentPay = incidentHrs * hourlyRate * ONCALL_WORKED_MULTIPLIER;
-  const upgradePay  = upgradeHrs * hourlyRate * ONCALL_WORKED_MULTIPLIER;
-  const bankHolPay  = bhStandby * ONCALL_STANDBY_RATE;
-  const totalOncallHours = standbyWD + workedWD + standbyWE + workedWE + incidentHrs + upgradeHrs + bhStandby;
-
-  return {
-    standbyWD: Math.round(standbyWD * 10) / 10,
-    workedWD:  Math.round(workedWD  * 10) / 10,
-    standbyWE: Math.round(standbyWE * 10) / 10,
-    workedWE:  Math.round(workedWE  * 10) / 10,
-    upgradeHrs, bankHolHrs,
-    incidentHrs: Math.round(incidentHrs * 10) / 10,
-    standbyPay, workedPay, incidentPay, upgradePay, bankHolPay,
-    total: standbyPay + workedPay + incidentPay + upgradePay,
-    totalOncallHours: Math.round(totalOncallHours * 10) / 10,
-    totalStandbyHours: Math.round((standbyWD + standbyWE + bhStandby) * 10) / 10,
-    totalWorkedHours:  Math.round((workedWD + workedWE + upgradeHrs) * 10) / 10,
-  };
-}
+// NOTE: this used to be a local copy that hardcoded the pre-cutover schedule
+// (12h WD nights, Fri=5h/Mon=7h weekend split, 22h flat BH) and never checked
+// the date. That silently under-paid every shift after the W35 (24 Aug 2026)
+// schedule cutover to 15h WD / 63h WE. It's now imported from Payroll.js,
+// which picks the correct schedule per-date via scheduleFor(date, appSettings)
+// — see Payroll.js for the full implementation.
 
 function calcTOILBalance(timesheetEntries, toilEntries, userId) {
   // Accrual: worked on-call hours beyond contracted hours → TOIL at 1:1 (UK WTR)
@@ -4012,7 +3917,7 @@ function PayrollReports({ users, timesheets, incidents, upgrades, overtime, toil
 }
 
 // ── Pay Config (Manager only) ──────────────────────────────────────────────
-function PayConfig({ users, payconfig, setPayconfig, isManager, timesheets, overtime, rota, holidays }) {
+function PayConfig({ users, payconfig, setPayconfig, isManager, timesheets, overtime, rota, holidays, appSettings }) {
   if (!isManager) return <Alert type="warning">⚠ Pay configuration is restricted to managers.</Alert>;
 
   const [taxMsg, setTaxMsg]     = useState('');
@@ -4048,20 +3953,11 @@ function PayConfig({ users, payconfig, setPayconfig, isManager, timesheets, over
   const userSheets  = safeTS[selectedUid] || [];
   const userHols    = safeHols.filter(h => h.userId === selectedUid);
   const upgradeHrs  = 0; // simplified — no upgrade days in this view
-  const bankHolHrs  = (() => {
-    let total = 0;
-    bhList.forEach(bh => {
-      const s = safeRota[selectedUid]?.[bh.date];
-      if (!s || s === 'off') return;
-      const dow = new Date(bh.date).getDay();
-      if (s === 'weekend' || s === 'bankholiday') {
-        total += dow === 1 ? 24 : dow === 5 ? 12 : 22;
-      } else { total += 22; }
-    });
-    return total;
-  })();
+  // Schedule-versioned BH hours — shared with Payroll.js so this view matches
+  // the actual payroll run instead of drifting with its own hardcoded copy.
+  const bankHolHrs  = calcBankHolidayHours(selectedUid, safeRota[selectedUid] || {}, bhList, userHols, null, null, appSettings);
   const oc = (typeof calcOncallPay === 'function')
-    ? calcOncallPay(userSheets, hourly, upgradeHrs, bankHolHrs, safeRota[selectedUid] || {}, userHols, bhList)
+    ? calcOncallPay(userSheets, hourly, upgradeHrs, bankHolHrs, safeRota[selectedUid] || {}, userHols, bhList, null, null, null, appSettings)
     : { total: 0, standbyWD: 0, workedWD: 0, standbyWE: 0, workedWE: 0 };
   const approvedOT = safeOT.filter(o => o.userId === selectedUid && o.status === 'approved')
     .reduce((s, o) => s + (o.hours || 0), 0);
@@ -5209,7 +5105,7 @@ export default function App() {
       case 'oncall':     return <OnCall {...props} />;
       case 'myshift':    return <MyShift {...props} />;
       case 'calendar':   return <CalendarPage users={users} rota={rota} holidays={holidays} upgrades={upgrades} absences={absences} incidents={incidents} UK_BANK_HOLIDAYS={UK_BANK_HOLIDAYS} currentUser={currentUser} isManager={isManager} calendarEvents={calendarEvents} setCalendarEvents={setCalendarEvents} userCalendars={userCalendars} setUserCalendars={setUserCalendars} />;
-      case 'rota':       return <RotaPage users={users} rota={rota} setRota={setRota} holidays={holidays} upgrades={upgrades} swapRequests={swapRequests} setSwapRequests={setSwapRequests} isManager={isManager} UK_BANK_HOLIDAYS={UK_BANK_HOLIDAYS} generateRota={generateRota} generateICalFeed={generateICalFeed} downloadIcal={downloadIcal} onCallGapLog={onCallGapLog} setOnCallGapLog={setOnCallGapLog} />;
+      case 'rota':       return <RotaPage users={users} rota={rota} setRota={setRota} holidays={holidays} upgrades={upgrades} swapRequests={swapRequests} setSwapRequests={setSwapRequests} isManager={isManager} UK_BANK_HOLIDAYS={UK_BANK_HOLIDAYS} generateRota={generateRota} generateICalFeed={generateICalFeed} downloadIcal={downloadIcal} onCallGapLog={onCallGapLog} setOnCallGapLog={setOnCallGapLog} appSettings={appSettings} />;
       case 'incidents':  return <Incidents {...props} timesheets={timesheets} setTimesheets={setTimesheets} addLog={addLog} initialFilter={incidentsPrefilter} onConsumeInitialFilter={() => setIncidentsPrefilter(null)} />;
       case 'timesheets': return <Timesheets {...props} />;
       case 'timekeeping': return <TimeKeeping users={users} holidays={holidays} currentUser={currentUser} isManager={isManager} bankHolidays={UK_BANK_HOLIDAYS} timekeeping={timekeeping} setTimekeeping={setTimekeeping} driveToken={driveToken} />;
