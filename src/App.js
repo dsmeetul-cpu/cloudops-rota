@@ -17,6 +17,7 @@ import {
 import TimeKeeping from './TimeKeeping';
 import TOIL from './TOIL';
 import RotaPage from './Rota';
+import OnCallPlanning from './oncallplanning';
 import SettingsPage from './Settings';
 import Wiki from './Wiki';
 import Announcements, { AnnouncementBanners } from './Announcements';
@@ -1025,6 +1026,7 @@ const NAV = [
   { section: 'Operations', items: [
     { id: 'rota',      icon: '🔄', label: 'Rota'            },
     { id: 'incidents', icon: '🚨', label: 'Incidents', badge: true },
+    { id: 'oncallplanning', icon: '🗂️', label: 'OnCall Planning DS' },
   ]},
   { section: 'People', items: [
     { id: 'timesheets',   icon: '⏱', label: 'Timesheets'                      },
@@ -5062,7 +5064,7 @@ export default function App() {
     notes: '📝 Notes', docs: '📄 Documents', whatsapp: '💬 WhatsApp',
     insights: '📈 Insights', capacity: '⚡ Capacity', reports: '📊 Weekly Reports',
     payroll: '💷 Payroll', payconfig: '⚙ Pay Config', settings: '🔧 Settings',
-    myaccount: '👤 My Account',
+    myaccount: '👤 My Account', oncallplanning: '🗂️ OnCall Planning DS',
   };
 
   // ── Props passed to all page components ────────────────────────────────
@@ -5106,6 +5108,7 @@ export default function App() {
       case 'myshift':    return <MyShift {...props} />;
       case 'calendar':   return <CalendarPage users={users} rota={rota} holidays={holidays} upgrades={upgrades} absences={absences} incidents={incidents} UK_BANK_HOLIDAYS={UK_BANK_HOLIDAYS} currentUser={currentUser} isManager={isManager} calendarEvents={calendarEvents} setCalendarEvents={setCalendarEvents} userCalendars={userCalendars} setUserCalendars={setUserCalendars} />;
       case 'rota':       return <RotaPage users={users} rota={rota} setRota={setRota} holidays={holidays} upgrades={upgrades} swapRequests={swapRequests} setSwapRequests={setSwapRequests} isManager={isManager} UK_BANK_HOLIDAYS={UK_BANK_HOLIDAYS} generateRota={generateRota} generateICalFeed={generateICalFeed} downloadIcal={downloadIcal} onCallGapLog={onCallGapLog} setOnCallGapLog={setOnCallGapLog} appSettings={appSettings} />;
+      case 'oncallplanning': return <OnCallPlanning users={users} rota={rota} driveToken={driveToken} appSettings={appSettings} isManager={isManager} />;
       case 'incidents':  return <Incidents {...props} timesheets={timesheets} setTimesheets={setTimesheets} addLog={addLog} initialFilter={incidentsPrefilter} onConsumeInitialFilter={() => setIncidentsPrefilter(null)} />;
       case 'timesheets': return <Timesheets {...props} />;
       case 'timekeeping': return <TimeKeeping users={users} holidays={holidays} currentUser={currentUser} isManager={isManager} bankHolidays={UK_BANK_HOLIDAYS} timekeeping={timekeeping} setTimekeeping={setTimekeeping} driveToken={driveToken} />;
