@@ -1,6 +1,6 @@
 // src/Incidents.js
 // CloudOps Rota — Incidents
-// Meetul Bhundia (MBA47) · Cloud Run Operations · July 2026
+// Meetul Bhundia (MBA47) · Cloud Run Operations · September 2026
 
 import React, { useState, useRef, useEffect } from 'react';
 
@@ -63,7 +63,7 @@ const EDITOR_TABS = [
 // these map onto the incident-log email template's per-tab columns.
 const STRUCTURED_FIELDS = {
   issue: [
-    { key:'startTime', label:'Start Time (UTC)', type:'text',   placeholder:'e.g. 14:32 UTC, 08 Sep 2026', w:180 },
+    { key:'startTime', label:'Start Time', type:'datetime', w:190 },
     { key:'whoCalled',  label:'Who Called',        type:'text',   placeholder:'L1 or France', w:140 },
     { key:'env',        label:'Env',                type:'text',   placeholder:'e.g. PRD', w:110 },
     { key:'supLink',     label:'SUP Link',           type:'text',   placeholder:'https://…', w:220 },
@@ -76,11 +76,51 @@ const STRUCTURED_FIELDS = {
     { key:'escalated',    label:'Escalated? If so who?',    type:'text',   placeholder:'No, or name of escalation contact', w:220 },
   ],
   resolution: [
-    { key:'endTime',               label:'End Time (UTC)',              type:'text',   placeholder:'e.g. 15:10 UTC, 08 Sep 2026', w:180 },
+    { key:'endTime',               label:'End Time',                    type:'datetime', w:190 },
+    { key:'duration',              label:'Duration',                     type:'computed', compute:f=>durationBetween(f.startTime,f.endTime), w:110 },
     { key:'servicesBackToNormal',  label:'Service(s) back to normal',   type:'select', options:['','Yes','No'], w:150 },
     { key:'other',                 label:'Other',                        type:'text',   placeholder:'Anything else worth noting', w:220 },
   ],
 };
+
+// Returns what should be displayed for a structured field, given either the
+// live form (while editing) or a saved incident (read-only detail view).
+// Handles the two field types that don't map 1:1 onto a raw stored value:
+// 'datetime' (stored as a datetime-local string, shown human-readable) and
+// 'computed' (never stored — derived live from other fields, e.g. Duration).
+function fieldDisplayValue(f, obj){
+  if (f.type==='computed') return f.compute(obj) || '';
+  if (f.type==='datetime') return fmtDateTimeLocal(obj[f.key]);
+  return obj[f.key] || '';
+}
+
+// `datetime-local` input value ("YYYY-MM-DDTHH:mm") for right now, used to
+// auto-stamp Start Time the moment a new incident is logged.
+function nowLocalDateTime(){
+  const d = new Date();
+  const pad = n => String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+// Human-readable rendering of a datetime-local value for the email/detail view.
+function fmtDateTimeLocal(v){
+  if (!v) return '';
+  const d = new Date(v);
+  if (isNaN(d)) return v;
+  return d.toLocaleString('en-GB', {day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'});
+}
+
+// "2h 15m" between two datetime-local values — blank if either is missing
+// or End is before Start.
+function durationBetween(startV, endV){
+  if (!startV || !endV) return '';
+  const s = new Date(startV), e = new Date(endV);
+  if (isNaN(s) || isNaN(e)) return '';
+  const mins = Math.round((e - s) / 60000);
+  if (mins < 0) return '';
+  const h = Math.floor(mins/60), m = mins%60;
+  return h>0 ? `${h}h ${m}m` : `${m}m`;
+}
 
 // Exact row order/labels of the incident-log email template. `get` pulls the
 // value straight from the incident/form object; `md` renders the value as
@@ -88,8 +128,8 @@ const STRUCTURED_FIELDS = {
 // screenshot as an inline <img> instead of text.
 const EMAIL_ROWS = [
   { tab:'Issue',       topic:'Incident summary',          get:f=>f.title },
-  { tab:'Issue',       topic:'Start time',                get:f=>f.startTime },
-  { tab:'Resolution',  topic:'End Time',                  get:f=>f.endTime },
+  { tab:'Issue',       topic:'Start time',                get:f=>fmtDateTimeLocal(f.startTime) },
+  { tab:'Resolution',  topic:'End Time',                  get:f=>fmtDateTimeLocal(f.endTime) },
   { tab:'Issue',       topic:'Who Called',                get:f=>f.whoCalled },
   { tab:'Resolution',  topic:'Service(s) back to normal', get:f=>f.servicesBackToNormal },
   { tab:'Diagnostics', topic:'Analysis',                  get:f=>f.diagnosticsContent, md:true },
@@ -103,14 +143,19 @@ const EMAIL_ROWS = [
   { tab:'Resolution',  topic:'Other',                     get:f=>f.other },
 ];
 
-const EMAIL_TD = 'border:1px solid #d0d0d0;padding:6px 10px;vertical-align:top;font-family:Calibri,Arial,sans-serif;font-size:13px;color:#000;';
-const EMAIL_TH = 'border:1px solid #d0d0d0;padding:6px 10px;background:#f2f2f2;text-align:left;font-family:Calibri,Arial,sans-serif;font-size:13px;color:#000;';
+// Fixed brand colour (not a CSS var — email clients strip external/root
+// styles, so values must be hard-coded inline to survive a paste into Outlook).
+const EMAIL_ACCENT = '#5b6af0';
+const EMAIL_TD      = 'border:1px solid #d7dbf5;padding:7px 11px;vertical-align:top;font-family:Calibri,Arial,sans-serif;font-size:13px;color:#1a1a2e;';
+const EMAIL_TD_ALT  = EMAIL_TD + 'background:#f3f4fd;';
+const EMAIL_TH       = `border:1px solid ${EMAIL_ACCENT};padding:8px 11px;background:${EMAIL_ACCENT};color:#fff;text-align:left;font-family:Calibri,Arial,sans-serif;font-size:13px;font-weight:bold;`;
 
 // Builds the pasteable Outlook table. Inline styles only (no classes/CSS
 // vars) since email clients strip <style> blocks and most external CSS.
 function buildEmailHtml(form){
-  const rows = EMAIL_ROWS.map(r=>{
+  const rows = EMAIL_ROWS.map((r,i)=>{
     const val = r.get(form) || '';
+    const td = i%2 ? EMAIL_TD_ALT : EMAIL_TD;
     let cell;
     if (r.image) {
       cell = val ? `<img src="${val}" style="max-width:420px;max-height:280px;display:block;border:1px solid #ccc;"/>` : '';
@@ -119,7 +164,7 @@ function buildEmailHtml(form){
     } else {
       cell = esc(val).replace(/\n/g,'<br/>');
     }
-    return `<tr><td style="${EMAIL_TD}"><b>${esc(r.topic)}</b></td><td style="${EMAIL_TD}">${cell}</td></tr>`;
+    return `<tr><td style="${td}"><b>${esc(r.topic)}</b></td><td style="${td}">${cell}</td></tr>`;
   }).join('');
   return `<table style="border-collapse:collapse;width:100%;max-width:760px;">`
     + `<thead><tr><th style="${EMAIL_TH}">Topic</th><th style="${EMAIL_TH}">Details</th></tr></thead>`
@@ -127,11 +172,7 @@ function buildEmailHtml(form){
 }
 
 function buildEmailPlainText(form){
-  return EMAIL_ROWS.map(r=>{
-    let val = r.get(form) || '';
-    if (r.image) val = val ? '[Screenshot attached]' : '';
-    return `${r.topic}: ${val}`;
-  }).join('\n');
+  return EMAIL_ROWS.map(r=>`${r.topic}: ${r.image ? (r.get(form)?'[Screenshot attached]':'') : (r.get(form)||'')}`).join('\n');
 }
 
 // Copies the summary as rich HTML (so pasting into Outlook keeps the table)
@@ -431,6 +472,12 @@ function StructuredFieldsBar({fields,form,setForm}){
             <select value={form[field.key]||''} onChange={e=>set(field.key,e.target.value)} style={structFieldSel}>
               {field.options.map(o=><option key={o} value={o}>{o||'—'}</option>)}
             </select>
+          ) : field.type==='datetime' ? (
+            <input type="datetime-local" value={form[field.key]||''} onChange={e=>set(field.key,e.target.value)} style={{...structFieldInput,colorScheme:'dark'}}/>
+          ) : field.type==='computed' ? (
+            <div style={{...structFieldInput,background:'transparent',border:'1px solid transparent',padding:'5px 0',color:'rgba(255,255,255,0.5)',fontStyle:'italic'}}>
+              {field.compute(form) || '—'}
+            </div>
           ) : field.type==='image' ? (
             <div style={{display:'flex',alignItems:'center',gap:6}}>
               {form[field.key] ? (
@@ -739,19 +786,19 @@ function DetailView({inc, users, isManager, currentUser, onClose, onEdit, onReso
             <EmailSummaryPanel form={inc}/>
           ) : (
             <div style={{flex:1, overflowY:'auto', padding:'24px 28px'}}>
-              {STRUCTURED_FIELDS[tab] && STRUCTURED_FIELDS[tab].some(f=>(inc[f.key]||'').toString().trim()) && (
+              {STRUCTURED_FIELDS[tab] && STRUCTURED_FIELDS[tab].some(f=>fieldDisplayValue(f,inc).toString().trim()) && (
                 <div style={{
                   display:'flex', flexWrap:'wrap', gap:'10px 28px',
                   marginBottom:20, paddingBottom:18,
                   borderBottom:'1px solid rgba(255,255,255,0.08)',
                 }}>
-                  {STRUCTURED_FIELDS[tab].filter(f=>(inc[f.key]||'').toString().trim()).map(f=>(
+                  {STRUCTURED_FIELDS[tab].filter(f=>fieldDisplayValue(f,inc).toString().trim()).map(f=>(
                     <div key={f.key} style={{minWidth:100}}>
                       <div style={{fontSize:9,color:'rgba(255,255,255,0.3)',textTransform:'uppercase',letterSpacing:'0.6px',fontWeight:600,marginBottom:3}}>{f.label}</div>
                       {f.type==='image' ? (
                         <img src={inc[f.key]} alt="Screenshot" style={{maxHeight:80,borderRadius:6,border:'1px solid rgba(255,255,255,0.12)'}}/>
                       ) : (
-                        <div style={{fontSize:13,color:'rgba(255,255,255,0.8)',fontWeight:500}}>{inc[f.key]}</div>
+                        <div style={{fontSize:13,color:'rgba(255,255,255,0.8)',fontWeight:500}}>{fieldDisplayValue(f,inc)}</div>
                       )}
                     </div>
                   ))}
@@ -1105,6 +1152,7 @@ export default function Incidents({
       assigned_to:isManager?(users[0]?.id||currentUser):currentUser,
       isDaily:view==='daily',
       date:new Date().toISOString().slice(0,10),
+      startTime:nowLocalDateTime(), // auto-stamped the moment the incident is logged
     });
     setEditId(null); setShowModal(true);
   };
@@ -1123,6 +1171,8 @@ export default function Incidents({
       title: `${inc.title} (Copy)`,
       status: 'Investigating',
       date: new Date().toISOString().slice(0,10),
+      startTime: nowLocalDateTime(), // this is a fresh incident being logged now
+      endTime: '',
       created_at: undefined,
       updated_at: undefined,
     });
