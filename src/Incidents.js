@@ -90,7 +90,7 @@ const STRUCTURED_FIELDS = {
 // 'computed' (never stored — derived live from other fields, e.g. Duration).
 function fieldDisplayValue(f, obj){
   if (f.type==='computed') return f.compute(obj) || '';
-  if (f.type==='datetime') return fmtDateTimeLocal(obj[f.key]);
+  if (f.type==='datetime') return fmtUTC(obj[f.key]);
   return obj[f.key] || '';
 }
 
@@ -102,16 +102,21 @@ function nowLocalDateTime(){
   return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-// Human-readable rendering of a datetime-local value for the email/detail view.
-function fmtDateTimeLocal(v){
+// Human-readable UTC rendering of a datetime-local value (which is picked in
+// the browser's local timezone) — this is what the email template and every
+// read-only display actually show, e.g. "14:32 UTC, 08 Sep 2026".
+function fmtUTC(v){
   if (!v) return '';
-  const d = new Date(v);
+  const d = new Date(v); // datetime-local strings parse as local time
   if (isNaN(d)) return v;
-  return d.toLocaleString('en-GB', {day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'});
+  const pad = n => String(n).padStart(2,'0');
+  const month = d.toLocaleString('en-GB', {month:'short', timeZone:'UTC'});
+  return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())} UTC, ${pad(d.getUTCDate())} ${month} ${d.getUTCFullYear()}`;
 }
 
 // "2h 15m" between two datetime-local values — blank if either is missing
-// or End is before Start.
+// or End is before Start. Timezone-agnostic: the offset cancels out as long
+// as both values were picked in the same local timezone (the normal case).
 function durationBetween(startV, endV){
   if (!startV || !endV) return '';
   const s = new Date(startV), e = new Date(endV);
@@ -128,8 +133,8 @@ function durationBetween(startV, endV){
 // screenshot as an inline <img> instead of text.
 const EMAIL_ROWS = [
   { tab:'Issue',       topic:'Incident summary',          get:f=>f.title },
-  { tab:'Issue',       topic:'Start time',                get:f=>fmtDateTimeLocal(f.startTime) },
-  { tab:'Resolution',  topic:'End Time',                  get:f=>fmtDateTimeLocal(f.endTime) },
+  { tab:'Issue',       topic:'Start time',                get:f=>fmtUTC(f.startTime) },
+  { tab:'Resolution',  topic:'End Time',                  get:f=>fmtUTC(f.endTime) },
   { tab:'Issue',       topic:'Who Called',                get:f=>f.whoCalled },
   { tab:'Resolution',  topic:'Service(s) back to normal', get:f=>f.servicesBackToNormal },
   { tab:'Diagnostics', topic:'Analysis',                  get:f=>f.diagnosticsContent, md:true },
@@ -473,7 +478,12 @@ function StructuredFieldsBar({fields,form,setForm}){
               {field.options.map(o=><option key={o} value={o}>{o||'—'}</option>)}
             </select>
           ) : field.type==='datetime' ? (
-            <input type="datetime-local" value={form[field.key]||''} onChange={e=>set(field.key,e.target.value)} style={{...structFieldInput,colorScheme:'dark'}}/>
+            <div style={{display:'flex',flexDirection:'column',gap:2}}>
+              <input type="datetime-local" value={form[field.key]||''} onChange={e=>set(field.key,e.target.value)} style={{...structFieldInput,colorScheme:'dark'}}/>
+              {form[field.key] && (
+                <span style={{fontSize:9.5,color:'rgba(255,255,255,0.35)'}}>→ {fmtUTC(form[field.key])}</span>
+              )}
+            </div>
           ) : field.type==='computed' ? (
             <div style={{...structFieldInput,background:'transparent',border:'1px solid transparent',padding:'5px 0',color:'rgba(255,255,255,0.5)',fontStyle:'italic'}}>
               {field.compute(form) || '—'}
