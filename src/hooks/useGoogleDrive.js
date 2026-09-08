@@ -62,6 +62,12 @@ const FILES = {
   // Managed by Settings.js (manager-only). Missing here caused every save to
   // throw "Unknown key: appSettings".
   appSettings:  'appSettings.json',
+  // ── OnCall Planning DS workbook (oncallplanning.js) — stored as a real
+  // .xlsx binary via driveReadBinary/driveWriteBinary below, NOT JSON, so
+  // exceljs can preserve the original formatting/colours on every write.
+  // NOTE: confirm this key name matches exactly what oncallplanning.js
+  // actually calls driveReadBinary/driveWriteBinary with — rename here if not.
+  oncallPlanning: 'OnCall Planning DS.xlsx',
 };
 
 let folderId = null;
@@ -249,7 +255,7 @@ export async function driveRead(token, key) {
     console.error('Drive read error:', e);
     return null;
   }
-}
+} 
 
 // Single retryable write attempt. Throws on failure/conflict instead of
 // swallowing the error, so callers (and the UI) know a save genuinely failed.
@@ -318,6 +324,102 @@ export async function driveWrite(token, key, data, opts = {}) {
         // conflict again. Surface immediately so the caller can merge.
         if (e instanceof DriveConflictError) throw e;
         if (attempt < maxAttempts) await sleep(500 * Math.pow(3, attempt - 1)); // 500ms, 1.5s
+      }
+    }
+    throw lastErr;
+  });
+}
+
+// ── Binary read/write ─────────────────────────────────────────────────────
+// For files that must stay real binary formats (e.g. the OnCall Planning DS
+// .xlsx workbook, read/written with exceljs to preserve styling/formatting)
+// rather than being parsed/serialised as JSON. Mirrors driveRead/driveWrite's
+// folder lookup, conflict detection, and retry-with-backoff behaviour —
+// the only difference is the payload is raw bytes, not JSON.
+
+export async function driveReadBinary(token, key) {
+  try {
+    if (!folderId) folderId = await getOrCreateFolder(token);
+    const filename = FILES[key];
+    if (!filename) throw new Error('Unknown key: ' + key);
+    let fileId = fileIds[key] || await getFileId(token, filename, folderId);
+    if (!fileId) return null; // File doesn't exist yet
+    fileIds[key] = fileId;
+    const res = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&_t=${Date.now()}`,
+      { headers: { Authorization: `Bearer ${token}`, 'Cache-Control': 'no-cache' } }
+    );
+    if (!res.ok) return null;
+    const buf = await res.arrayBuffer();
+    const meta = await getFileMeta(token, fileId).catch(() => null);
+    if (meta?.modifiedTime) fileMeta[key] = { modifiedTime: meta.modifiedTime };
+    return buf;
+  } catch (e) {
+    console.error('Drive binary read error:', e);
+    return null;
+  }
+}
+
+// Single retryable binary write attempt — same conflict-check logic as
+// writeOnce, but uploads a Blob built from an ArrayBuffer instead of
+// JSON.stringify'd text.
+async function writeOnceBinary(token, key, arrayBuffer, {
+  skipConflictCheck = false,
+  mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+} = {}) {
+  if (!folderId) folderId = await getOrCreateFolder(token);
+  const filename = FILES[key];
+  if (!filename) throw new Error('Unknown key: ' + key);
+  let fileId = fileIds[key] || await getFileId(token, filename, folderId);
+
+  if (fileId && !skipConflictCheck && fileMeta[key]?.modifiedTime) {
+    const liveMeta = await getFileMeta(token, fileId).catch(() => null);
+    if (liveMeta?.modifiedTime && liveMeta.modifiedTime !== fileMeta[key].modifiedTime) {
+      throw new DriveConflictError(key);
+    }
+  }
+
+  const blob = new Blob([arrayBuffer], { type: mimeType });
+  const form = new FormData();
+  form.append('metadata', new Blob([JSON.stringify(
+    fileId
+      ? { name: filename }
+      : { name: filename, parents: [folderId] }
+  )], { type: 'application/json' }));
+  form.append('file', blob);
+  const url = fileId
+    ? `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=multipart&fields=id,modifiedTime`
+    : 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,modifiedTime';
+  const method = fileId ? 'PATCH' : 'POST';
+  const res = await fetch(url, {
+    method,
+    headers: { Authorization: `Bearer ${token}` },
+    body: form,
+  });
+  const result = await res.json();
+  if (!res.ok) {
+    const msg = result?.error?.message || res.statusText;
+    console.error(`Drive: binary write failed for "${filename}":`, res.status, msg);
+    throw new Error(`Drive binary write failed for ${filename}: ${msg}`);
+  }
+  if (result.id) fileIds[key] = result.id;
+  if (result.modifiedTime) fileMeta[key] = { modifiedTime: result.modifiedTime };
+  return result;
+}
+
+// Public driveWriteBinary: same queueing + retry-with-backoff guarantees as
+// driveWrite, for binary payloads (ArrayBuffer/Uint8Array).
+export async function driveWriteBinary(token, key, arrayBuffer, opts = {}) {
+  return enqueue(key, async () => {
+    const maxAttempts = 3;
+    let lastErr;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        return await writeOnceBinary(token, key, arrayBuffer, opts);
+      } catch (e) {
+        lastErr = e;
+        if (e instanceof DriveConflictError) throw e;
+        if (attempt < maxAttempts) await sleep(500 * Math.pow(3, attempt - 1));
       }
     }
     throw lastErr;
