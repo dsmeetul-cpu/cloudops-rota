@@ -131,6 +131,45 @@ export async function initGoogleAuth(clientId) {
   });
 }
 
+// Silent token refresh — unlike initGoogleAuth() above, this NEVER shows an
+// account-picker/consent popup, so it's safe to call automatically in the
+// background while someone is mid-session. It only succeeds if the browser
+// still has an active Google session and this app's Drive scope was already
+// granted; otherwise it resolves to null (never throws/rejects) so the
+// caller can fall back to asking the person to reconnect manually rather
+// than crashing the app or interrupting their work with a surprise popup.
+//
+// Used to proactively refresh the access token every ~55 minutes — Google
+// Drive OAuth access tokens are only valid for ~60 minutes, and previously
+// nothing renewed it once the app was open: whatever token was issued at
+// login just sat there until it expired, at which point every save started
+// silently failing (surfaced only via the SyncErrorBanner) for the rest of
+// that browser session.
+export async function refreshGoogleAuthSilently(clientId) {
+  return new Promise((resolve) => {
+    const tryAuth = () => {
+      try {
+        window.google.accounts.oauth2.initTokenClient({
+          client_id: clientId,
+          scope: SCOPES,
+          prompt: '',
+          callback: (resp) => resolve(resp?.access_token || null),
+        }).requestAccessToken({ prompt: '' });
+      } catch (_) { resolve(null); }
+    };
+    if (window.google?.accounts) {
+      tryAuth();
+    } else {
+      const script = document.createElement('script');
+      script.src = 'https://accounts.google.com/gsi/client';
+      script.onload = tryAuth;
+      script.onerror = () => resolve(null);
+      document.head.appendChild(script);
+    }
+    setTimeout(() => resolve(null), 8000); // don't hang forever if GIS never responds
+  });
+}
+
 export async function gapiLoad() {
   return new Promise((resolve) => {
     const script = document.createElement('script');
