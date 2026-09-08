@@ -534,7 +534,6 @@ export default function OnCallPlanning({
     } finally {
       setDataLoading(false);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rotaProp, usersProp, appSettingsProp]);
 
   const workbookRef = useRef(null); // the live ExcelJS.Workbook — not React state (too heavy/non-serializable to re-render on)
