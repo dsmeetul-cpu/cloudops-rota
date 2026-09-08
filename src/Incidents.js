@@ -266,7 +266,7 @@ function RichEditor({value,onChange,placeholder}){
 }
 
 // ── Incident card (list view) ──────────────────────────────────────────────
-function IncCard({inc,users,isManager,currentUser,onEdit,onDelete,onResolve,onView}){
+function IncCard({inc,users,isManager,currentUser,onEdit,onDelete,onResolve,onView,onClone}){
   const assignee=users.find(u=>u.id===inc.assigned_to);
   const canEdit=isManager||inc.assigned_to===currentUser;
   const dailyT=DAILY_TYPES.find(t=>t.id===inc.dailyType);
@@ -343,6 +343,16 @@ function IncCard({inc,users,isManager,currentUser,onEdit,onDelete,onResolve,onVi
               onMouseLeave={e=>{e.currentTarget.style.color='rgba(255,255,255,0.55)';e.currentTarget.style.borderColor='rgba(255,255,255,0.1)';}}
             >✏ Edit</button>
           )}
+          {onClone&&(
+            <button onClick={()=>onClone(inc)} title="Clone incident" style={{
+              background:'rgba(255,255,255,0.05)',border:'1px solid rgba(255,255,255,0.1)',
+              borderRadius:7,padding:'5px 10px',cursor:'pointer',
+              color:'rgba(255,255,255,0.55)',fontSize:11,transition:'all .15s',
+            }}
+              onMouseEnter={e=>{e.currentTarget.style.color='white';e.currentTarget.style.borderColor='rgba(255,255,255,0.25)';}}
+              onMouseLeave={e=>{e.currentTarget.style.color='rgba(255,255,255,0.55)';e.currentTarget.style.borderColor='rgba(255,255,255,0.1)';}}
+            >📋 Clone</button>
+          )}
           {isManager&&(
             <button onClick={()=>onDelete(inc.id)} style={{
               background:'transparent',border:'1px solid transparent',
@@ -368,7 +378,7 @@ const DETAIL_TABS = [
   { id:'resolution',  label:'✅ Resolution',  field:'resolutionContent' },
 ];
 
-function DetailView({inc, users, isManager, currentUser, onClose, onEdit, onResolve}){
+function DetailView({inc, users, isManager, currentUser, onClose, onEdit, onResolve, onClone}){
   const [tab, setTab] = React.useState('issue');
   if (!inc) return null;
   const assignee = users.find(u => u.id === inc.assigned_to);
@@ -429,6 +439,13 @@ function DetailView({inc, users, isManager, currentUser, onClose, onEdit, onReso
                 borderRadius:8, padding:'7px 14px', cursor:'pointer',
                 color:'var(--accent)', fontSize:12, fontWeight:600,
               }}>✏ Edit</button>
+            )}
+            {onClone && (
+              <button onClick={()=>{onClose(); setTimeout(()=>onClone(inc),50);}} title="Clone incident" style={{
+                background:'rgba(255,255,255,0.06)', border:'1px solid rgba(255,255,255,0.1)',
+                borderRadius:8, padding:'7px 14px', cursor:'pointer',
+                color:'rgba(255,255,255,0.6)', fontSize:12, fontWeight:600,
+              }}>📋 Clone</button>
             )}
             <button onClick={onClose} style={{
               background:'rgba(255,255,255,0.06)', border:'1px solid rgba(255,255,255,0.1)',
@@ -746,6 +763,7 @@ export default function Incidents({
   initialFilter, onConsumeInitialFilter,
 }){
   const [view,setView]=useState('all');
+  const [groupBy,setGroupBy]=useState('none'); // 'none' | 'severity' | 'status' | 'assigned_to' | 'date' | 'dailyType'
   const [showModal,setShowModal]=useState(false);
   const [editId,setEditId]=useState(null);
   const [detailInc,setDetailInc]=useState(null);
@@ -838,6 +856,25 @@ export default function Incidents({
 
   const openEdit=(inc)=>{ setForm({...BLANK,...inc}); setEditId(inc.id); setShowModal(true); };
 
+  // ── Clone: pre-fill the add form from an existing incident so the user can
+  // tweak details (date, assignee, title…) before it's saved as a brand-new
+  // record. Resets identity/status/timestamps; keeps everything else
+  // (severity, dailyType, issue/diagnostics/resolution content, hours) so
+  // repeat incidents (e.g. a recurring deployment issue) are quick to log.
+  const openClone=(inc)=>{
+    setForm({
+      ...BLANK, ...inc,
+      id: undefined,
+      title: `${inc.title} (Copy)`,
+      status: 'Investigating',
+      date: new Date().toISOString().slice(0,10),
+      created_at: undefined,
+      updated_at: undefined,
+    });
+    setEditId(null);
+    setShowModal(true);
+  };
+
   const saveIncident=()=>{
     if(!form.title.trim()){toast('⚠ Title is required.');return;}
     if(!form.assigned_to){toast('⚠ Assignee is required.');return;}
@@ -895,6 +932,38 @@ export default function Incidents({
 
   const openC=safe.filter(i=>i.status==='Investigating').length;
   const todayS=new Date().toISOString().slice(0,10);
+
+  // ── Group the already-filtered/sorted list for display ──────────────────
+  const GROUP_LABELS = {
+    severity:'Severity', status:'Status', assigned_to:'Engineer',
+    date:'Date', dailyType:'Type',
+  };
+  const groupKeyOf=(inc)=>{
+    if(groupBy==='date') return (inc.date||'').slice(0,10)||'No date';
+    if(groupBy==='assigned_to') return inc.assigned_to||'__unassigned';
+    if(groupBy==='dailyType') return inc.isDaily?(inc.dailyType||'other'):'__oncall';
+    return inc[groupBy]||'—';
+  };
+  const groupLabelOf=(key)=>{
+    if(groupBy==='assigned_to') return key==='__unassigned'?'Unassigned':(users.find(u=>u.id===key)?.name||key);
+    if(groupBy==='dailyType') return key==='__oncall'?'On-Call':(DAILY_TYPES.find(t=>t.id===key)?.label||key);
+    return key;
+  };
+  let groups=null;
+  if(groupBy!=='none'){
+    const map=new Map();
+    sorted.forEach(inc=>{
+      const k=groupKeyOf(inc);
+      if(!map.has(k)) map.set(k,[]);
+      map.get(k).push(inc);
+    });
+    let keys=[...map.keys()];
+    if(groupBy==='severity') keys.sort((a,b)=>SEVERITIES.indexOf(a)-SEVERITIES.indexOf(b));
+    else if(groupBy==='status') keys.sort((a,b)=>STATUSES.indexOf(a)-STATUSES.indexOf(b));
+    else if(groupBy==='date') keys.sort((a,b)=>b.localeCompare(a));
+    else keys.sort((a,b)=>groupLabelOf(a).localeCompare(groupLabelOf(b)));
+    groups=keys.map(k=>({key:k,label:groupLabelOf(k),items:map.get(k)}));
+  }
 
   return (
     <div>
@@ -993,7 +1062,18 @@ export default function Incidents({
         {(filter.status!=='all'||filter.severity!=='all'||filter.uid!=='all'||filter.dateFrom||filter.dateTo||filter.hoursMin!==''||filter.hoursMax!=='')&&(
           <button className="btn btn-secondary btn-sm" onClick={()=>setFilter({status:'all',severity:'all',uid:'all',dateFrom:'',dateTo:'',hoursMin:'',hoursMax:''})}>✕ Clear</button>
         )}
-        <span style={{marginLeft:'auto',fontSize:11,color:'rgba(255,255,255,0.25)'}}>{sorted.length} incident{sorted.length!==1?'s':''}</span>
+        <div style={{display:'flex',alignItems:'center',gap:5}}>
+          <span style={{fontSize:11,color:'rgba(255,255,255,0.3)'}}>Group by</span>
+          <select className="form-input" style={{width:118,fontSize:12}} value={groupBy} onChange={e=>setGroupBy(e.target.value)}>
+            <option value="none">None</option>
+            <option value="severity">Severity</option>
+            <option value="status">Status</option>
+            <option value="assigned_to">Engineer</option>
+            <option value="date">Date</option>
+            <option value="dailyType">Type</option>
+          </select>
+        </div>
+        <span style={{marginLeft:groupBy==='none'?'auto':0,fontSize:11,color:'rgba(255,255,255,0.25)'}}>{sorted.length} incident{sorted.length!==1?'s':''}</span>
       </div>
 
       {/* List */}
@@ -1007,11 +1087,36 @@ export default function Incidents({
           <div style={{fontSize:15,fontWeight:600,color:'rgba(255,255,255,0.4)',marginBottom:4}}>No incidents match these filters</div>
           <div style={{fontSize:12,color:'rgba(255,255,255,0.2)'}}>All clear — use the button above to log one.</div>
         </div>
-      ):(
+      ):groupBy==='none'?(
         <div style={{display:'flex',flexDirection:'column',gap:8}}>
           {sorted.map(inc=>(
             <IncCard key={inc.id} inc={inc} users={users} isManager={isManager}
-              currentUser={currentUser} onEdit={openEdit} onDelete={deleteIncident} onResolve={resolveIncident} onView={setDetailInc}/>
+              currentUser={currentUser} onEdit={openEdit} onDelete={deleteIncident} onResolve={resolveIncident} onView={setDetailInc} onClone={openClone}/>
+          ))}
+        </div>
+      ):(
+        <div style={{display:'flex',flexDirection:'column',gap:22}}>
+          {groups.map(g=>(
+            <div key={g.key}>
+              <div style={{
+                display:'flex',alignItems:'center',gap:8,marginBottom:8,
+                paddingBottom:6,borderBottom:'1px solid rgba(255,255,255,0.08)',
+              }}>
+                <span style={{fontSize:12,fontWeight:700,color:'rgba(255,255,255,0.65)',textTransform:'uppercase',letterSpacing:'0.5px'}}>
+                  {GROUP_LABELS[groupBy]}: {g.label}
+                </span>
+                <span style={{
+                  fontSize:10,fontWeight:700,color:'rgba(255,255,255,0.4)',
+                  background:'rgba(255,255,255,0.06)',borderRadius:10,padding:'1px 8px',
+                }}>{g.items.length}</span>
+              </div>
+              <div style={{display:'flex',flexDirection:'column',gap:8}}>
+                {g.items.map(inc=>(
+                  <IncCard key={inc.id} inc={inc} users={users} isManager={isManager}
+                    currentUser={currentUser} onEdit={openEdit} onDelete={deleteIncident} onResolve={resolveIncident} onView={setDetailInc} onClone={openClone}/>
+                ))}
+              </div>
+            </div>
           ))}
         </div>
       )}
@@ -1030,6 +1135,7 @@ export default function Incidents({
           onClose={()=>setDetailInc(null)}
           onEdit={(inc)=>{ setDetailInc(null); openEdit(inc); }}
           onResolve={(id)=>{ resolveIncident(id); setDetailInc(prev=>prev&&prev.id===id?{...prev,status:'Resolved'}:prev); }}
+          onClone={(inc)=>{ setDetailInc(null); openClone(inc); }}
         />
       )}
     </div>
