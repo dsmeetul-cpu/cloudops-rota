@@ -39,6 +39,10 @@ const BLANK = {
   date: new Date().toISOString().slice(0,10),
   hours:1, isDaily:false, dailyType:'other',
   issueContent:'', diagnosticsContent:'', resolutionContent:'',
+  // Structured fields — feed the Email Summary table (see EMAIL_ROWS below).
+  startTime:'', endTime:'', whoCalled:'', env:'', supLink:'', screenshot:'',
+  kbUsed:'', sreContacted:'', sreResponse:'', escalated:'',
+  servicesBackToNormal:'', other:'',
 };
 
 const EDITOR_TABS = [
@@ -51,7 +55,140 @@ const EDITOR_TABS = [
   { id:'resolution',  label:'Resolution',  icon:'✅', field:'resolutionContent',
     hint:'Fix applied, follow-ups, and post-incident review',
     ph:'## Fix Applied\nWhat was done to resolve the incident.\n\n## Follow-up Actions\n- [ ] Action item 1\n- [ ] Action item 2\n\n## Post-Incident Review\nScheduled for: ' },
+  { id:'email',       label:'Email Summary', icon:'📧', field:null,
+    hint:'Auto-built from the fields on the other tabs — copy and paste straight into an Outlook email.' },
 ];
+
+// Small structured fields shown above the freeform editor on each tab —
+// these map onto the incident-log email template's per-tab columns.
+const STRUCTURED_FIELDS = {
+  issue: [
+    { key:'startTime', label:'Start Time (UTC)', type:'text',   placeholder:'e.g. 14:32 UTC, 08 Sep 2026', w:180 },
+    { key:'whoCalled',  label:'Who Called',        type:'text',   placeholder:'L1 or France', w:140 },
+    { key:'env',        label:'Env',                type:'text',   placeholder:'e.g. PRD', w:110 },
+    { key:'supLink',     label:'SUP Link',           type:'text',   placeholder:'https://…', w:220 },
+    { key:'screenshot',  label:'Screenshot',         type:'image',  w:200 },
+  ],
+  diagnostics: [
+    { key:'kbUsed',       label:'KB Used',                  type:'text',   placeholder:'KB article ID or link', w:200 },
+    { key:'sreContacted', label:'SRE Contacted?',           type:'select', options:['','No','Yes'], w:110 },
+    { key:'sreResponse',  label:'SRE Response',             type:'text',   placeholder:'What SRE said/did', w:220 },
+    { key:'escalated',    label:'Escalated? If so who?',    type:'text',   placeholder:'No, or name of escalation contact', w:220 },
+  ],
+  resolution: [
+    { key:'endTime',               label:'End Time (UTC)',              type:'text',   placeholder:'e.g. 15:10 UTC, 08 Sep 2026', w:180 },
+    { key:'servicesBackToNormal',  label:'Service(s) back to normal',   type:'select', options:['','Yes','No'], w:150 },
+    { key:'other',                 label:'Other',                        type:'text',   placeholder:'Anything else worth noting', w:220 },
+  ],
+};
+
+// Exact row order/labels of the incident-log email template. `get` pulls the
+// value straight from the incident/form object; `md` renders the value as
+// markdown (for the freeform Diagnostics notes); `image` renders a data-URL
+// screenshot as an inline <img> instead of text.
+const EMAIL_ROWS = [
+  { tab:'Issue',       topic:'Incident summary',          get:f=>f.title },
+  { tab:'Issue',       topic:'Start time',                get:f=>f.startTime },
+  { tab:'Resolution',  topic:'End Time',                  get:f=>f.endTime },
+  { tab:'Issue',       topic:'Who Called',                get:f=>f.whoCalled },
+  { tab:'Resolution',  topic:'Service(s) back to normal', get:f=>f.servicesBackToNormal },
+  { tab:'Diagnostics', topic:'Analysis',                  get:f=>f.diagnosticsContent, md:true },
+  { tab:'Issue',       topic:'Env',                       get:f=>f.env },
+  { tab:'Issue',       topic:'Screenshot',                get:f=>f.screenshot, image:true },
+  { tab:'Diagnostics', topic:'KB used',                   get:f=>f.kbUsed },
+  { tab:'Issue',       topic:'SUP Link',                  get:f=>f.supLink },
+  { tab:'Diagnostics', topic:'SRE Contacted?',            get:f=>f.sreContacted },
+  { tab:'Diagnostics', topic:'SRE Response',              get:f=>f.sreResponse },
+  { tab:'Diagnostics', topic:'Escalated? If so who?',     get:f=>f.escalated },
+  { tab:'Resolution',  topic:'Other',                     get:f=>f.other },
+];
+
+const EMAIL_TD = 'border:1px solid #d0d0d0;padding:6px 10px;vertical-align:top;font-family:Calibri,Arial,sans-serif;font-size:13px;color:#000;';
+const EMAIL_TH = 'border:1px solid #d0d0d0;padding:6px 10px;background:#f2f2f2;text-align:left;font-family:Calibri,Arial,sans-serif;font-size:13px;color:#000;';
+
+// Builds the pasteable Outlook table. Inline styles only (no classes/CSS
+// vars) since email clients strip <style> blocks and most external CSS.
+function buildEmailHtml(form){
+  const rows = EMAIL_ROWS.map(r=>{
+    const val = r.get(form) || '';
+    let cell;
+    if (r.image) {
+      cell = val ? `<img src="${val}" style="max-width:420px;max-height:280px;display:block;border:1px solid #ccc;"/>` : '';
+    } else if (r.md) {
+      cell = val ? renderMd(val).replace(/ class="[^"]*"/g,'') : '';
+    } else {
+      cell = esc(val).replace(/\n/g,'<br/>');
+    }
+    return `<tr><td style="${EMAIL_TD}"><b>${esc(r.tab)}</b></td><td style="${EMAIL_TD}"><b>${esc(r.topic)}</b></td><td style="${EMAIL_TD}">${cell}</td></tr>`;
+  }).join('');
+  return `<table style="border-collapse:collapse;width:100%;max-width:760px;">`
+    + `<thead><tr><th style="${EMAIL_TH}">Tab</th><th style="${EMAIL_TH}">Topic</th><th style="${EMAIL_TH}">Details</th></tr></thead>`
+    + `<tbody>${rows}</tbody></table>`;
+}
+
+function buildEmailPlainText(form){
+  return EMAIL_ROWS.map(r=>{
+    let val = r.get(form) || '';
+    if (r.image) val = val ? '[Screenshot attached]' : '';
+    return `${r.tab} — ${r.topic}: ${val}`;
+  }).join('\n');
+}
+
+// Copies the summary as rich HTML (so pasting into Outlook keeps the table)
+// with a plain-text fallback alongside it. Falls back to the older
+// execCommand technique for browsers without full Clipboard API support.
+async function copyEmailSummary(form){
+  const html = buildEmailHtml(form), plain = buildEmailPlainText(form);
+  try {
+    if (navigator.clipboard && window.ClipboardItem) {
+      await navigator.clipboard.write([new ClipboardItem({
+        'text/html':  new Blob([html],  {type:'text/html'}),
+        'text/plain': new Blob([plain], {type:'text/plain'}),
+      })]);
+      return true;
+    }
+  } catch(e) { /* fall through to legacy method */ }
+  try {
+    const container = document.createElement('div');
+    container.innerHTML = html;
+    container.style.cssText = 'position:fixed;top:0;left:0;opacity:0;pointer-events:none;';
+    document.body.appendChild(container);
+    const range = document.createRange();
+    range.selectNodeContents(container);
+    const sel = window.getSelection();
+    sel.removeAllRanges(); sel.addRange(range);
+    const ok = document.execCommand('copy');
+    sel.removeAllRanges();
+    document.body.removeChild(container);
+    return ok;
+  } catch(e) { return false; }
+}
+
+// Downscales/compresses a screenshot before it's stored as a base64 data URL
+// in the incident record — otherwise a raw phone/desktop screenshot can blow
+// up the incidents.json file synced to Drive.
+function compressScreenshot(file){
+  return new Promise((resolve,reject)=>{
+    const reader = new FileReader();
+    reader.onerror = ()=>reject(new Error('Could not read file'));
+    reader.onload = ()=>{
+      const img = new Image();
+      img.onerror = ()=>reject(new Error('Not a valid image'));
+      img.onload = ()=>{
+        const maxW = 1000;
+        const scale = img.width > maxW ? maxW/img.width : 1;
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(img.width*scale);
+        canvas.height = Math.round(img.height*scale);
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img,0,0,canvas.width,canvas.height);
+        resolve(canvas.toDataURL('image/jpeg',0.82));
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
 
 const TOOLBAR_ITEMS = [
   { label:'B',   title:'Bold',          md:['**','**'],      s:{fontWeight:800} },
@@ -265,6 +402,93 @@ function RichEditor({value,onChange,placeholder}){
   );
 }
 
+// ── Structured fields bar (shown above the editor on Issue/Diagnostics/Resolution) ──
+function StructuredFieldsBar({fields,form,setForm}){
+  const fi = useRef(null);
+  const [busy,setBusy] = useState(false);
+  const set = (key,v)=>setForm(f=>({...f,[key]:v}));
+
+  const handleScreenshot = async(e)=>{
+    const f = e.target.files?.[0]; if(!f) return; e.target.value='';
+    if(!f.type.startsWith('image/')){ alert('Please choose an image file.'); return; }
+    setBusy(true);
+    try{ set('screenshot', await compressScreenshot(f)); }
+    catch(err){ alert('Could not read that image.\n'+err.message); }
+    finally{ setBusy(false); }
+  };
+
+  return (
+    <div style={{
+      display:'flex', flexWrap:'wrap', gap:12, alignItems:'flex-end',
+      padding:'10px 14px', flexShrink:0,
+      borderBottom:'1px solid rgba(255,255,255,0.06)',
+      background:'rgba(255,255,255,0.015)',
+    }}>
+      {fields.map(field=>(
+        <div key={field.key} style={{display:'flex',flexDirection:'column',gap:3,width:field.w}}>
+          <span style={{fontSize:9,color:'rgba(255,255,255,0.3)',textTransform:'uppercase',letterSpacing:'0.6px',fontWeight:600}}>{field.label}</span>
+          {field.type==='select' ? (
+            <select value={form[field.key]||''} onChange={e=>set(field.key,e.target.value)} style={structFieldSel}>
+              {field.options.map(o=><option key={o} value={o}>{o||'—'}</option>)}
+            </select>
+          ) : field.type==='image' ? (
+            <div style={{display:'flex',alignItems:'center',gap:6}}>
+              {form[field.key] ? (
+                <>
+                  <img src={form[field.key]} alt="Screenshot" style={{height:26,borderRadius:4,border:'1px solid rgba(255,255,255,0.15)'}}/>
+                  <button onClick={()=>set(field.key,'')} title="Remove screenshot" style={{...structFieldBtn,color:'#fca5a5'}}>✕</button>
+                </>
+              ) : (
+                <button onClick={()=>fi.current?.click()} disabled={busy} style={structFieldBtn}>{busy?'…':'⬆ Upload'}</button>
+              )}
+              <input ref={fi} type="file" accept="image/*" style={{display:'none'}} onChange={handleScreenshot}/>
+            </div>
+          ) : (
+            <input value={form[field.key]||''} onChange={e=>set(field.key,e.target.value)} placeholder={field.placeholder} style={structFieldInput}/>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+const structFieldInput={background:'rgba(255,255,255,0.05)',border:'1px solid rgba(255,255,255,0.1)',borderRadius:6,padding:'5px 8px',color:'#fff',fontSize:12,outline:'none',width:'100%'};
+const structFieldSel={...structFieldInput,cursor:'pointer'};
+const structFieldBtn={background:'rgba(255,255,255,0.06)',border:'1px solid rgba(255,255,255,0.12)',borderRadius:6,padding:'5px 10px',color:'rgba(255,255,255,0.6)',fontSize:11,cursor:'pointer',fontWeight:600};
+
+// ── Email Summary panel — auto-built table + copy-for-Outlook button ────────
+function EmailSummaryPanel({form}){
+  const [copied,setCopied] = useState(false);
+  const html = buildEmailHtml(form);
+
+  const handleCopy = async()=>{
+    const ok = await copyEmailSummary(form);
+    setCopied(ok);
+    setTimeout(()=>setCopied(false),2200);
+  };
+
+  return (
+    <div style={{flex:1,display:'flex',flexDirection:'column',minHeight:0}}>
+      <div style={{
+        display:'flex',alignItems:'center',justifyContent:'space-between',
+        padding:'10px 16px',flexShrink:0,
+        borderBottom:'1px solid rgba(255,255,255,0.07)',
+      }}>
+        <span style={{fontSize:11,color:'rgba(255,255,255,0.35)'}}>Built from the fields on the Issue / Diagnostics / Resolution tabs</span>
+        <button onClick={handleCopy} style={{
+          background: copied?'rgba(34,197,94,0.15)':'rgba(255,255,255,0.06)',
+          border:`1px solid ${copied?'#22c55e':'rgba(255,255,255,0.15)'}`,
+          borderRadius:8,padding:'7px 14px',cursor:'pointer',
+          color: copied?'#86efac':'#fff',fontSize:12,fontWeight:700,
+          transition:'all .15s',
+        }}>{copied?'✓ Copied!':'📋 Copy for Outlook'}</button>
+      </div>
+      <div style={{flex:1,overflow:'auto',padding:20,background:'rgba(255,255,255,0.02)'}}>
+        <div style={{background:'#fff',borderRadius:6,padding:16}} dangerouslySetInnerHTML={{__html: html}}/>
+      </div>
+    </div>
+  );
+}
+
 // ── Incident card (list view) ──────────────────────────────────────────────
 function IncCard({inc,users,isManager,currentUser,onEdit,onDelete,onResolve,onView,onClone}){
   const assignee=users.find(u=>u.id===inc.assigned_to);
@@ -376,6 +600,7 @@ const DETAIL_TABS = [
   { id:'issue',       label:'🚨 Issue',       field:'issueContent' },
   { id:'diagnostics', label:'🔍 Diagnostics', field:'diagnosticsContent' },
   { id:'resolution',  label:'✅ Resolution',  field:'resolutionContent' },
+  { id:'email',       label:'📧 Email Summary', field:null },
 ];
 
 function DetailView({inc, users, isManager, currentUser, onClose, onEdit, onResolve, onClone}){
@@ -509,26 +734,50 @@ function DetailView({inc, users, isManager, currentUser, onClose, onEdit, onReso
         </div>
 
         {/* Content */}
-        <div style={{flex:1, overflowY:'auto', padding:'24px 28px', minHeight:0}}>
-          {activeTab && (inc[activeTab.field]||'').trim() ? (
-            <div className="inc-pv" style={{fontSize:14, lineHeight:1.8, color:'rgba(255,255,255,0.75)'}}
-              dangerouslySetInnerHTML={{__html: renderMd(inc[activeTab.field])}}
-            />
+        <div style={{flex:1, overflowY:'auto', minHeight:0, display:'flex', flexDirection:'column'}}>
+          {tab==='email' ? (
+            <EmailSummaryPanel form={inc}/>
           ) : (
-            <div style={{
-              display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center',
-              height:'100%', gap:10, color:'rgba(255,255,255,0.2)',
-            }}>
-              <div style={{fontSize:36}}>
-                {tab==='issue'?'📋':tab==='diagnostics'?'🔍':'✅'}
-              </div>
-              <div style={{fontSize:14, fontWeight:600}}>No {tab} notes yet</div>
-              {canEdit && (
-                <button onClick={()=>{onClose(); setTimeout(()=>onEdit(inc),50);}} style={{
-                  marginTop:8, background:'rgba(0,194,255,0.1)', border:'1px solid rgba(0,194,255,0.25)',
-                  borderRadius:8, padding:'7px 16px', cursor:'pointer',
-                  color:'var(--accent)', fontSize:12, fontWeight:600,
-                }}>✏ Add notes in editor</button>
+            <div style={{flex:1, overflowY:'auto', padding:'24px 28px'}}>
+              {STRUCTURED_FIELDS[tab] && STRUCTURED_FIELDS[tab].some(f=>(inc[f.key]||'').toString().trim()) && (
+                <div style={{
+                  display:'flex', flexWrap:'wrap', gap:'10px 28px',
+                  marginBottom:20, paddingBottom:18,
+                  borderBottom:'1px solid rgba(255,255,255,0.08)',
+                }}>
+                  {STRUCTURED_FIELDS[tab].filter(f=>(inc[f.key]||'').toString().trim()).map(f=>(
+                    <div key={f.key} style={{minWidth:100}}>
+                      <div style={{fontSize:9,color:'rgba(255,255,255,0.3)',textTransform:'uppercase',letterSpacing:'0.6px',fontWeight:600,marginBottom:3}}>{f.label}</div>
+                      {f.type==='image' ? (
+                        <img src={inc[f.key]} alt="Screenshot" style={{maxHeight:80,borderRadius:6,border:'1px solid rgba(255,255,255,0.12)'}}/>
+                      ) : (
+                        <div style={{fontSize:13,color:'rgba(255,255,255,0.8)',fontWeight:500}}>{inc[f.key]}</div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {activeTab && (inc[activeTab.field]||'').trim() ? (
+                <div className="inc-pv" style={{fontSize:14, lineHeight:1.8, color:'rgba(255,255,255,0.75)'}}
+                  dangerouslySetInnerHTML={{__html: renderMd(inc[activeTab.field])}}
+                />
+              ) : (
+                <div style={{
+                  display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center',
+                  height:'100%', gap:10, color:'rgba(255,255,255,0.2)',
+                }}>
+                  <div style={{fontSize:36}}>
+                    {tab==='issue'?'📋':tab==='diagnostics'?'🔍':'✅'}
+                  </div>
+                  <div style={{fontSize:14, fontWeight:600}}>No {tab} notes yet</div>
+                  {canEdit && (
+                    <button onClick={()=>{onClose(); setTimeout(()=>onEdit(inc),50);}} style={{
+                      marginTop:8, background:'rgba(0,194,255,0.1)', border:'1px solid rgba(0,194,255,0.25)',
+                      borderRadius:8, padding:'7px 16px', cursor:'pointer',
+                      color:'var(--accent)', fontSize:12, fontWeight:600,
+                    }}>✏ Add notes in editor</button>
+                  )}
+                </div>
               )}
             </div>
           )}
@@ -700,7 +949,13 @@ function Modal({editId,form,setForm,onSave,onClose,users,currentUser,isManager})
 
           {/* Right: editor */}
           <div style={{flex:1,display:'flex',flexDirection:'column',minHeight:0}}>
-            {active&&<RichEditor key={tab} value={form[active.field]||''} onChange={v=>setForm(f=>({...f,[active.field]:v}))} placeholder={active.ph}/>}
+            {active && active.id!=='email' && STRUCTURED_FIELDS[active.id] && (
+              <StructuredFieldsBar fields={STRUCTURED_FIELDS[active.id]} form={form} setForm={setForm}/>
+            )}
+            {active && active.id!=='email' && (
+              <RichEditor key={tab} value={form[active.field]||''} onChange={v=>setForm(f=>({...f,[active.field]:v}))} placeholder={active.ph}/>
+            )}
+            {active && active.id==='email' && <EmailSummaryPanel form={form}/>}
           </div>
         </div>
 
