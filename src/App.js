@@ -6,7 +6,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
 import {
   initGoogleAuth, gapiLoad, loadAllFromDrive, driveWrite, driveRead,
-  generateICalFeed, downloadIcal, DriveConflictError
+  generateICalFeed, downloadIcal, DriveConflictError, refreshGoogleAuthSilently
 } from './hooks/useGoogleDrive';
 import {
   DEFAULT_USERS, DEFAULT_HOLIDAYS, DEFAULT_INCIDENTS, DEFAULT_TIMESHEETS,
@@ -4694,6 +4694,48 @@ export default function App() {
     saveTimers.current = {};
     await Promise.all(pending.map(key => performSave(key, latestData.current[key])));
   }, [performSave]);
+
+  // ── Proactive silent token refresh ───────────────────────────────────────
+  // Google Drive OAuth access tokens are only valid for ~60 minutes. Before
+  // this, nothing renewed the token once the app was open — whatever was
+  // issued at login just sat in `driveToken` until it genuinely expired,
+  // at which point every save started failing (401s from Drive), surfaced
+  // only reactively via the SyncErrorBanner asking the person to reconnect.
+  // A tab left open across a long shift, or one where the laptop was put to
+  // sleep for a while, would silently stop syncing anything the moment that
+  // ~60-minute window closed — however far into a work session that fell.
+  //
+  // This refreshes silently (no popup — see refreshGoogleAuthSilently) 5
+  // minutes before that expiry, and updates `driveToken` in state. Since
+  // `save`/`performSave` read driveToken from their own useCallback closure
+  // (dependency array includes driveToken), every subsequent save
+  // automatically uses the refreshed token with no other plumbing needed.
+  // Re-schedules itself for the next cycle each time driveToken changes.
+  useEffect(() => {
+    if (!driveToken) return;
+    const REFRESH_AFTER_MS = 55 * 60 * 1000; // 55 min — 5 min safety margin before ~60 min expiry
+    const timer = setTimeout(async () => {
+      const fresh = await refreshGoogleAuthSilently(GOOGLE_CLIENT_ID);
+      if (fresh) {
+        try {
+          sessionStorage.setItem('gdrive_token', fresh);
+          sessionStorage.setItem('gdrive_token_ts', String(Date.now()));
+        } catch (_) {}
+        setDriveToken(fresh); // triggers this effect again, scheduling the next refresh
+        markSyncOk('session');
+        console.log('Drive: token silently refreshed');
+      } else {
+        // Silent refresh failed (session/consent no longer valid, offline,
+        // etc). Don't clear driveToken or force a popup — just surface it
+        // the same way a genuine save failure would, via the existing
+        // SyncErrorBanner, so the person sees the Reconnect button instead
+        // of edits quietly failing with no explanation.
+        console.warn('Drive: silent token refresh failed — will surface as a save error if/when a write is attempted');
+        markSyncError('session', "Your Google Drive session may have expired — click Reconnect to keep saving changes.");
+      }
+    }, REFRESH_AFTER_MS);
+    return () => clearTimeout(timer);
+  }, [driveToken]);
 
   // Save all data to Drive whenever it changes (only when token present)
   // IMPORTANT: driveToken is intentionally NOT in the dependency arrays.
