@@ -119,10 +119,10 @@ function buildEmailHtml(form){
     } else {
       cell = esc(val).replace(/\n/g,'<br/>');
     }
-    return `<tr><td style="${EMAIL_TD}"><b>${esc(r.tab)}</b></td><td style="${EMAIL_TD}"><b>${esc(r.topic)}</b></td><td style="${EMAIL_TD}">${cell}</td></tr>`;
+    return `<tr><td style="${EMAIL_TD}"><b>${esc(r.topic)}</b></td><td style="${EMAIL_TD}">${cell}</td></tr>`;
   }).join('');
   return `<table style="border-collapse:collapse;width:100%;max-width:760px;">`
-    + `<thead><tr><th style="${EMAIL_TH}">Tab</th><th style="${EMAIL_TH}">Topic</th><th style="${EMAIL_TH}">Details</th></tr></thead>`
+    + `<thead><tr><th style="${EMAIL_TH}">Topic</th><th style="${EMAIL_TH}">Details</th></tr></thead>`
     + `<tbody>${rows}</tbody></table>`;
 }
 
@@ -130,7 +130,7 @@ function buildEmailPlainText(form){
   return EMAIL_ROWS.map(r=>{
     let val = r.get(form) || '';
     if (r.image) val = val ? '[Screenshot attached]' : '';
-    return `${r.tab} — ${r.topic}: ${val}`;
+    return `${r.topic}: ${val}`;
   }).join('\n');
 }
 
