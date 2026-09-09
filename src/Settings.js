@@ -17,7 +17,7 @@
 // 10. Notifications      — triggers, advance times, channels
 // 11. Stress Score       — weighting per shift type
 // 12. Shift Reminders    — lead times
-// 13. Team               — engineer list summary (read-only here, edit in Settings>Users)
+// 13. Team               — add/edit/remove engineer accounts, reset passwords
 
 import React, { useState, useCallback, useEffect } from 'react';
 
@@ -357,12 +357,131 @@ function ScheduleVersionCard({ schedule, onChange, onDelete, canDelete }) {
   );
 }
 
+// ── Team: one editable engineer row ──────────────────────────────────────────
+function TeamRow({ user, setUsers, onResetPassword, canRemove, onRemove }) {
+  const upd = (field, val) => setUsers(prev => prev.map(u => u.id === user.id ? { ...u, [field]: val } : u));
+  return (
+    <tr style={{ borderBottom: '1px solid var(--border)' }}>
+      <td style={{ padding: '6px 10px' }}>
+        <div style={{
+          width: 28, height: 28, borderRadius: '50%', background: user.color || '#64748b',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontSize: 11, fontWeight: 700, color: '#fff', flexShrink: 0,
+        }}>{user.avatar || user.id.slice(0, 2)}</div>
+      </td>
+      <td style={{ padding: '4px 8px' }}>
+        <input className="input" value={user.name} onChange={e => upd('name', e.target.value)}
+          style={{ width: 150, padding: '4px 8px', fontSize: 12 }}/>
+      </td>
+      <td style={{ padding: '6px 10px', fontFamily: 'DM Mono', color: 'var(--accent)', fontSize: 12, fontWeight: 600 }}>{user.id}</td>
+      <td style={{ padding: '4px 8px' }}>
+        <select className="select" value={user.role || 'Engineer'} onChange={e => upd('role', e.target.value)}
+          disabled={!canRemove} title={!canRemove ? "Can't demote the last manager" : ''}
+          style={{ width: 110, padding: '4px 8px', fontSize: 12, opacity: canRemove ? 1 : 0.5 }}>
+          <option value="Engineer">Engineer</option>
+          <option value="Manager">Manager</option>
+        </select>
+      </td>
+      <td style={{ padding: '4px 8px' }}>
+        <input className="input" type="email" value={user.google_email || ''} placeholder="email@…"
+          onChange={e => upd('google_email', e.target.value)} style={{ width: 170, padding: '4px 8px', fontSize: 12 }}/>
+      </td>
+      <td style={{ padding: '4px 8px' }}>
+        <input className="input" value={user.mobile_number || ''} placeholder="+44…"
+          onChange={e => upd('mobile_number', e.target.value)} style={{ width: 130, padding: '4px 8px', fontSize: 12 }}/>
+      </td>
+      <td style={{ padding: '4px 8px', whiteSpace: 'nowrap' }}>
+        <button className="btn btn-secondary btn-sm" onClick={onResetPassword} title="Reset password to username">🔑</button>
+        <button className="btn btn-danger btn-sm" onClick={onRemove} disabled={!canRemove}
+          title={canRemove ? 'Remove account' : "Can't remove the last manager"}
+          style={{ marginLeft: 6, opacity: canRemove ? 1 : 0.4 }}>🗑</button>
+      </td>
+    </tr>
+  );
+}
+
+// ── Team: add-engineer form ───────────────────────────────────────────────────
+// Auto-generates a unique trigram ID via generateTrigramId (retrying with a
+// padded user-count if the deterministic id would collide with an existing
+// one — generateTrigramId itself doesn't check for collisions) and cycles
+// through TRICOLORS for the avatar colour, mirroring how DEFAULT_USERS was
+// seeded. Sets an initial password (their id in lowercase) via the same
+// registry mechanism LoginScreen's "Forgot Password" already uses.
+function AddEngineerForm({ users, generateTrigramId, TRICOLORS, onAdd }) {
+  const [name, setName]     = useState('');
+  const [role, setRole]     = useState('Engineer');
+  const [email, setEmail]   = useState('');
+  const [mobile, setMobile] = useState('');
+  const [lastAdded, setLastAdded] = useState(null);
+
+  const submit = () => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    let id = generateTrigramId(trimmed, users);
+    let pad = 0;
+    while (users.some(u => u.id === id)) {
+      pad++;
+      id = generateTrigramId(trimmed, [...users, ...Array(pad).fill({})]);
+    }
+    const words  = trimmed.split(/\s+/).filter(Boolean);
+    const avatar = (words.length > 1 ? words[0][0] + words[1][0] : trimmed.slice(0, 2)).toUpperCase();
+    const color  = TRICOLORS[users.length % TRICOLORS.length];
+    const newUser = {
+      id, name: trimmed, role, tri: id.slice(0, 3), avatar, color,
+      google_email: email.trim(), mobile_number: mobile.trim(),
+    };
+    onAdd(newUser, id.toLowerCase());
+    setLastAdded({ id, password: id.toLowerCase(), name: trimmed });
+    setName(''); setEmail(''); setMobile(''); setRole('Engineer');
+  };
+
+  return (
+    <div style={{ border: '1px dashed var(--border)', borderRadius: 10, padding: 14 }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-muted)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: '0.05em' }}>➕ Add engineer</div>
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+        <div>
+          <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 3 }}>Full name</div>
+          <input className="input" value={name} onChange={e => setName(e.target.value)}
+            placeholder="e.g. Priya Nair" style={{ width: 170 }}
+            onKeyDown={e => e.key === 'Enter' && submit()}/>
+        </div>
+        <div>
+          <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 3 }}>Role</div>
+          <select className="select" value={role} onChange={e => setRole(e.target.value)} style={{ width: 110 }}>
+            <option value="Engineer">Engineer</option>
+            <option value="Manager">Manager</option>
+          </select>
+        </div>
+        <div>
+          <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 3 }}>Email (optional)</div>
+          <input className="input" type="email" value={email} onChange={e => setEmail(e.target.value)}
+            placeholder="email@…" style={{ width: 180 }}/>
+        </div>
+        <div>
+          <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 3 }}>Mobile (optional)</div>
+          <input className="input" value={mobile} onChange={e => setMobile(e.target.value)}
+            placeholder="+44…" style={{ width: 130 }}/>
+        </div>
+        <button className="btn btn-primary btn-sm" onClick={submit} disabled={!name.trim()}>Add engineer</button>
+      </div>
+      {lastAdded && (
+        <div style={{ marginTop: 12, padding: '10px 12px', background: 'rgba(110,231,183,0.08)', border: '1px solid rgba(110,231,183,0.25)', borderRadius: 8, fontSize: 12, color: '#6ee7b7' }}>
+          ✅ {lastAdded.name} added as <b style={{ fontFamily: 'DM Mono' }}>{lastAdded.id}</b>. Initial password: <b style={{ fontFamily: 'DM Mono' }}>{lastAdded.password}</b> — share this with them directly; they should change it after first sign-in.
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main Settings component ────────────────────────────────────────────────────
 export default function SettingsPage({
   settings, setSettings,
   users, setUsers,
   payconfig, setPayconfig,
   isManager, driveToken,
+  generateTrigramId, TRICOLORS,
+  updatePasswordInRegistry, syncRegistryToDrive, getRegistry,
+  syncUsersToSheet, syncUsersFromSheet,
   // legacy props still passed from App.js
   permissions, setPermissions,
   driveWriteJson,
@@ -371,6 +490,8 @@ export default function SettingsPage({
   const [saved,  setSaved]  = useState(false);
   const [error,  setError]  = useState(null);
   const [activeSection, setActiveSection] = useState('schedule');
+  const [sheetBusy, setSheetBusy] = useState(false);
+  const [sheetMsg,  setSheetMsg]  = useState(null);
 
   const S = settings || DEFAULT_SETTINGS;
   const upd = useCallback((path, value) => {
@@ -393,6 +514,52 @@ export default function SettingsPage({
       setSaved(true); setTimeout(() => setSaved(false), 3000);
     } catch(e) { setError('Could not save to Drive: ' + e.message); }
     setSaving(false);
+  };
+
+  // ── Team helpers ────────────────────────────────────────────────────────
+  const managerCount = (users || []).filter(u => u.role === 'Manager').length;
+
+  const addEngineer = (newUser, initialPassword) => {
+    setUsers(prev => [...prev, newUser]);
+    if (updatePasswordInRegistry) {
+      const reg = updatePasswordInRegistry(newUser.id, initialPassword);
+      if (driveToken && syncRegistryToDrive) syncRegistryToDrive(driveToken, reg, [...users, newUser]).catch(() => {});
+    }
+  };
+
+  const removeEngineer = (u) => {
+    if (!window.confirm(`Remove ${u.name} (${u.id})? Their historical rota/incident/timesheet records are kept, but they will no longer be able to sign in.`)) return;
+    setUsers(prev => prev.filter(x => x.id !== u.id));
+  };
+
+  const resetPassword = (u) => {
+    if (!updatePasswordInRegistry) return;
+    const newPw = u.id.toLowerCase();
+    if (!window.confirm(`Reset ${u.name}'s password to "${newPw}"?`)) return;
+    const reg = updatePasswordInRegistry(u.id, newPw);
+    if (driveToken && syncRegistryToDrive) syncRegistryToDrive(driveToken, reg, users).catch(() => {});
+    window.alert(`Password reset. Tell ${u.name} their new password is: ${newPw}`);
+  };
+
+  const syncToSheet = async () => {
+    if (!driveToken || !syncUsersToSheet || !getRegistry) return;
+    setSheetBusy(true); setSheetMsg(null);
+    try {
+      await syncUsersToSheet(driveToken, getRegistry(), users);
+      setSheetMsg({ ok: true, text: 'Synced to Google Sheet.' });
+    } catch (e) { setSheetMsg({ ok: false, text: 'Sync failed: ' + e.message }); }
+    setSheetBusy(false);
+  };
+
+  const loadFromSheet = async () => {
+    if (!driveToken || !syncUsersFromSheet || !getRegistry) return;
+    if (!window.confirm('Load engineer list from the Google Sheet? This will overwrite names/roles/contact details currently shown here with whatever is in the sheet.')) return;
+    setSheetBusy(true); setSheetMsg(null);
+    try {
+      await syncUsersFromSheet(driveToken, getRegistry(), users, setUsers);
+      setSheetMsg({ ok: true, text: 'Loaded from Google Sheet.' });
+    } catch (e) { setSheetMsg({ ok: false, text: 'Load failed: ' + e.message }); }
+    setSheetBusy(false);
   };
 
   if (!isManager) return (
@@ -731,6 +898,61 @@ export default function SettingsPage({
               label="OS desktop"/>
           </div>
         </Row>
+      </SectionCard>
+
+      {/* ── 13. Team ─────────────────────────────────────────────────────── */}
+      <SectionCard title="Team — Engineer Accounts" icon="🧑‍💻">
+        <div style={{ marginBottom: 14, padding: '10px 14px', background: 'rgba(79,195,247,0.08)', border: '1px solid rgba(79,195,247,0.25)', borderRadius: 8, fontSize: 12, color: '#7dd3fc', lineHeight: 1.6 }}>
+          Add, edit, or remove engineer accounts. New accounts get an auto-generated username and a default password (their username in lowercase) — share that with them directly; they should change it after first sign-in.
+        </div>
+
+        <div style={{ border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden', marginBottom: 16 }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead>
+              <tr style={{ background: 'var(--bg-card2)' }}>
+                {['', 'Name', 'Username', 'Role', 'Email', 'Mobile', ''].map((h, i) => (
+                  <th key={i} style={{ padding: '8px 10px', textAlign: 'left', fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-muted)', borderBottom: '1px solid var(--border)', letterSpacing: '0.05em' }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {(users || []).map(u => (
+                <TeamRow key={u.id} user={u} setUsers={setUsers}
+                  canRemove={!(u.role === 'Manager' && managerCount <= 1)}
+                  onRemove={() => removeEngineer(u)}
+                  onResetPassword={() => resetPassword(u)}
+                />
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {generateTrigramId && TRICOLORS ? (
+          <AddEngineerForm users={users} generateTrigramId={generateTrigramId} TRICOLORS={TRICOLORS} onAdd={addEngineer}/>
+        ) : (
+          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Adding new engineers isn't available — missing trigram/colour configuration.</div>
+        )}
+
+        {(syncUsersToSheet || syncUsersFromSheet) && (
+          <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid var(--border)' }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-muted)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Google Sheet sync</div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+              {syncUsersToSheet && (
+                <button className="btn btn-secondary btn-sm" onClick={syncToSheet} disabled={sheetBusy || !driveToken}>
+                  {sheetBusy ? '⏳ Working…' : '📤 Sync to Sheet'}
+                </button>
+              )}
+              {syncUsersFromSheet && (
+                <button className="btn btn-secondary btn-sm" onClick={loadFromSheet} disabled={sheetBusy || !driveToken}>
+                  {sheetBusy ? '⏳ Working…' : '📥 Load from Sheet'}
+                </button>
+              )}
+              {sheetMsg && (
+                <span style={{ fontSize: 12, color: sheetMsg.ok ? '#6ee7b7' : '#fca5a5' }}>{sheetMsg.ok ? '✅' : '⚠️'} {sheetMsg.text}</span>
+              )}
+            </div>
+          </div>
+        )}
       </SectionCard>
 
       {/* Bottom save */}
