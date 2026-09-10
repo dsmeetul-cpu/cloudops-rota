@@ -1,25 +1,24 @@
 // src/Settings.js
 // ─────────────────────────────────────────────────────────────────────────────
 // Universal Settings Page — manager only.
-// Controls every configurable aspect of the CloudOps application.
-// Persisted to Google Drive as cloudops_settings.json
+// Merged from two divergent copies:
+//   - the Configuration page (schedule/pay/timekeeping/etc, persisted as
+//     cloudops_settings.json)
+//   - the Team page (Active Directory-style engineer account management,
+//     permissions, Drive/registry sync — previously a separate Settings.js
+//     that had drifted apart from this one)
+// Persisted to Google Drive as cloudops_settings.json (config) and via the
+// user registry (team/permissions) — see each tab for specifics.
 //
-// Sections:
-//  1. Schedule Config    — shift hours, WD/WE times, cutover dates
-//  2. Pay & Rates        — standby rate, worked multiplier, pay cycle
-//  3. Pay Config         — per-engineer rates (replaces standalone Pay Config page)
-//  4. Access Control     — page visibility per role, manager PIN
-//  5. Timekeeping        — late thresholds, grace period, clock-in reminders
-//  6. Holidays           — entitlement, carry-over, approval rules
-//  7. TOIL               — auto-accrual, cap, expiry
-//  8. Overtime           — threshold, multiplier
-//  9. Incidents          — severity levels, TOIL for callouts
-// 10. Notifications      — triggers, advance times, channels
-// 11. Stress Score       — weighting per shift type
-// 12. Shift Reminders    — lead times
-// 13. Team               — add/edit/remove engineer accounts, reset passwords
+// Tabs:
+//  👥 Team          — engineer accounts, AD-style search/filter/detail view
+//  🔐 Permissions   — per-user page access overrides
+//  📁 Drive         — registry/sheet sync, secure share links
+//  ⚙️ Configuration — Schedule, Pay & Rates, Pay Config, Access Control,
+//                     Timekeeping, Holidays, TOIL, Overtime, Incidents,
+//                     Notifications, Stress Score, Shift Reminders
 
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback } from 'react';
 
 // ── Default schedule configs ─────────────────────────────────────────────────
 export const DEFAULT_SCHEDULE_V1 = {
@@ -357,141 +356,324 @@ function ScheduleVersionCard({ schedule, onChange, onDelete, canDelete }) {
   );
 }
 
-// ── Team: one editable engineer row ──────────────────────────────────────────
-function TeamRow({ user, setUsers, onResetPassword, canRemove, onRemove }) {
-  const upd = (field, val) => setUsers(prev => prev.map(u => u.id === user.id ? { ...u, [field]: val } : u));
+
+// ── Team/AD constants ──────────────────────────────────────────────────────
+const BLANK_FORM = {
+  name: '', trigram: '', role: 'Engineer', employment_id: '',
+  mobile_number: '', google_email: '', profile_picture: '',
+  avatar: '', color: '', start_date: '', oncall_start_date: '', termination_date: '',
+};
+
+const TRICOLORS = ['#1d4ed8','#0e7490','#065f46','#7c3aed','#b45309','#be123c','#0369a1','#4338ca'];
+
+// ── Shared page list (Access Control tab + per-user Permissions tab) ────────
+// Single source of truth for every page id App.js actually routes to.
+// ALL_PAGES and MANAGER_ONLY below are both derived from this — previously
+// the Permissions tab had its own separate, drifted list (wrong ids like
+// "whocall"/"absences"/"documents"/"chat" instead of "oncall"/"absence"/
+// "docs"/"whatsapp", and missing announcements/shiftreminders/insights/
+// capacity/settings/logs/myaccount entirely). Fixed by deriving both from
+// this one list, so they can't drift apart again.
+const PAGE_LABELS = {
+  dashboard:'Dashboard', oncall:"Who's On Call", myshift:'My Shift',
+  calendar:'Calendar', rota:'Rota', incidents:'Incidents',
+  timesheets:'Timesheets', timekeeping:'Time Keeping', holidays:'Holidays',
+  swaps:'Shift Swaps', upgrades:'Upgrade Days', stress:'Stress Score',
+  toil:'TOIL', absence:'Absence/Sick', overtime:'Overtime', logbook:'Logbook',
+  wiki:'Wiki', glossary:'Glossary', contacts:'Contacts', notes:'Notes',
+  docs:'Documents', whatsapp:'Team Chat', announcements:'Announcements',
+  shiftreminders:'Shift Reminders', insights:'Insights', capacity:'Capacity',
+  reports:'Weekly Reports', payroll:'Payroll', payconfig:'Pay Config',
+  settings:'Settings', logs:'Activity Logs', myaccount:'My Account',
+};
+const ALL_PAGES = Object.entries(PAGE_LABELS).map(([id, label]) => ({ id, label }));
+// Pages that default to hidden-from-engineers in DEFAULT_SETTINGS.access.pageAccess
+// below are treated as manager-only for the per-user Permissions tab's defaults too.
+const MANAGER_ONLY = new Set(
+  Object.entries(DEFAULT_SETTINGS.access.pageAccess).filter(([, v]) => v === false).map(([id]) => id)
+);
+
+// ── Stable UserFields component (defined OUTSIDE Settings to preserve focus) ─
+// Previously defined inside Settings, causing React to treat it as a new
+// component type on every keystroke re-render — unmounting inputs and losing focus.
+function UserFields({ fv, setFv, uid, isEdit, picUploading, onPicUpload, driveToken }) {
   return (
-    <tr style={{ borderBottom: '1px solid var(--border)' }}>
-      <td style={{ padding: '6px 10px' }}>
-        <div style={{
-          width: 28, height: 28, borderRadius: '50%', background: user.color || '#64748b',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: 11, fontWeight: 700, color: '#fff', flexShrink: 0,
-        }}>{user.avatar || user.id.slice(0, 2)}</div>
-      </td>
-      <td style={{ padding: '4px 8px' }}>
-        <input className="input" value={user.name} onChange={e => upd('name', e.target.value)}
-          style={{ width: 150, padding: '4px 8px', fontSize: 12 }}/>
-      </td>
-      <td style={{ padding: '6px 10px', fontFamily: 'DM Mono', color: 'var(--accent)', fontSize: 12, fontWeight: 600 }}>{user.id}</td>
-      <td style={{ padding: '4px 8px' }}>
-        <select className="select" value={user.role || 'Engineer'} onChange={e => upd('role', e.target.value)}
-          disabled={!canRemove} title={!canRemove ? "Can't demote the last manager" : ''}
-          style={{ width: 110, padding: '4px 8px', fontSize: 12, opacity: canRemove ? 1 : 0.5 }}>
-          <option value="Engineer">Engineer</option>
-          <option value="Manager">Manager</option>
-        </select>
-      </td>
-      <td style={{ padding: '4px 8px' }}>
-        <input className="input" type="email" value={user.google_email || ''} placeholder="email@…"
-          onChange={e => upd('google_email', e.target.value)} style={{ width: 170, padding: '4px 8px', fontSize: 12 }}/>
-      </td>
-      <td style={{ padding: '4px 8px' }}>
-        <input className="input" value={user.mobile_number || ''} placeholder="+44…"
-          onChange={e => upd('mobile_number', e.target.value)} style={{ width: 130, padding: '4px 8px', fontSize: 12 }}/>
-      </td>
-      <td style={{ padding: '4px 8px', whiteSpace: 'nowrap' }}>
-        <button className="btn btn-secondary btn-sm" onClick={onResetPassword} title="Reset password to username">🔑</button>
-        <button className="btn btn-danger btn-sm" onClick={onRemove} disabled={!canRemove}
-          title={canRemove ? 'Remove account' : "Can't remove the last manager"}
-          style={{ marginLeft: 6, opacity: canRemove ? 1 : 0.4 }}>🗑</button>
-      </td>
-    </tr>
-  );
-}
+    <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
 
-// ── Team: add-engineer form ───────────────────────────────────────────────────
-// Auto-generates a unique trigram ID via generateTrigramId (retrying with a
-// padded user-count if the deterministic id would collide with an existing
-// one — generateTrigramId itself doesn't check for collisions) and cycles
-// through TRICOLORS for the avatar colour, mirroring how DEFAULT_USERS was
-// seeded. Sets an initial password (their id in lowercase) via the same
-// registry mechanism LoginScreen's "Forgot Password" already uses.
-function AddEngineerForm({ users, generateTrigramId, TRICOLORS, onAdd }) {
-  const [name, setName]     = useState('');
-  const [role, setRole]     = useState('Engineer');
-  const [email, setEmail]   = useState('');
-  const [mobile, setMobile] = useState('');
-  const [lastAdded, setLastAdded] = useState(null);
-
-  const submit = () => {
-    const trimmed = name.trim();
-    if (!trimmed) return;
-    let id = generateTrigramId(trimmed, users);
-    let pad = 0;
-    while (users.some(u => u.id === id)) {
-      pad++;
-      id = generateTrigramId(trimmed, [...users, ...Array(pad).fill({})]);
-    }
-    const words  = trimmed.split(/\s+/).filter(Boolean);
-    const avatar = (words.length > 1 ? words[0][0] + words[1][0] : trimmed.slice(0, 2)).toUpperCase();
-    const color  = TRICOLORS[users.length % TRICOLORS.length];
-    const newUser = {
-      id, name: trimmed, role, tri: id.slice(0, 3), avatar, color,
-      google_email: email.trim(), mobile_number: mobile.trim(),
-    };
-    onAdd(newUser, id.toLowerCase());
-    setLastAdded({ id, password: id.toLowerCase(), name: trimmed });
-    setName(''); setEmail(''); setMobile(''); setRole('Engineer');
-  };
-
-  return (
-    <div style={{ border: '1px dashed var(--border)', borderRadius: 10, padding: 14 }}>
-      <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-muted)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: '0.05em' }}>➕ Add engineer</div>
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+      {/* ── Identity ──────────────────────────────────────────────────────── */}
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
         <div>
-          <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 3 }}>Full name</div>
-          <input className="input" value={name} onChange={e => setName(e.target.value)}
-            placeholder="e.g. Priya Nair" style={{ width: 170 }}
-            onKeyDown={e => e.key === 'Enter' && submit()}/>
+          <label style={LBL}>Full Name *</label>
+          <input className="input" placeholder="e.g. Mahir Osman"
+            value={fv.name||''} onChange={e => setFv(f => ({...f, name: e.target.value}))} />
         </div>
         <div>
-          <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 3 }}>Role</div>
-          <select className="select" value={role} onChange={e => setRole(e.target.value)} style={{ width: 110 }}>
-            <option value="Engineer">Engineer</option>
-            <option value="Manager">Manager</option>
+          <label style={LBL}>
+            Trigram / ID&nbsp;
+            {isEdit
+              ? <span style={{ color:'#fcd34d', fontWeight:400 }}>⚠ Changing remaps all data</span>
+              : <span style={{ color:'#475569', fontWeight:400 }}>Auto-generated if blank</span>}
+          </label>
+          <input className="input" placeholder={isEdit ? 'e.g. MAH01' : 'Auto-generated'} maxLength={8}
+            value={fv.trigram||''} onChange={e => setFv(f => ({...f, trigram: e.target.value.toUpperCase()}))}
+            style={{ fontFamily:'DM Mono', letterSpacing:1 }} />
+        </div>
+      </div>
+
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
+        <div>
+          <label style={LBL}>Role</label>
+          <select className="select" value={fv.role||'Engineer'}
+            onChange={e => setFv(f => ({...f, role: e.target.value}))}>
+            <option>Engineer</option><option>Manager</option>
           </select>
         </div>
         <div>
-          <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 3 }}>Email (optional)</div>
-          <input className="input" type="email" value={email} onChange={e => setEmail(e.target.value)}
-            placeholder="email@…" style={{ width: 180 }}/>
+          <label style={LBL}>Avatar Initials</label>
+          <input className="input" placeholder="e.g. MB" maxLength={3}
+            value={fv.avatar||''} onChange={e => setFv(f => ({...f, avatar: e.target.value.toUpperCase()}))} />
+        </div>
+      </div>
+
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
+        <div>
+          <label style={LBL}>Google Email</label>
+          <input className="input" type="email" placeholder="user@gmail.com"
+            value={fv.google_email||''} onChange={e => setFv(f => ({...f, google_email: e.target.value}))} />
         </div>
         <div>
-          <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 3 }}>Mobile (optional)</div>
-          <input className="input" value={mobile} onChange={e => setMobile(e.target.value)}
-            placeholder="+44…" style={{ width: 130 }}/>
+          <label style={LBL}>Mobile Number</label>
+          <input className="input" type="tel" placeholder="+44 7700 000000"
+            value={fv.mobile_number||''} onChange={e => setFv(f => ({...f, mobile_number: e.target.value}))} />
         </div>
-        <button className="btn btn-primary btn-sm" onClick={submit} disabled={!name.trim()}>Add engineer</button>
       </div>
-      {lastAdded && (
-        <div style={{ marginTop: 12, padding: '10px 12px', background: 'rgba(110,231,183,0.08)', border: '1px solid rgba(110,231,183,0.25)', borderRadius: 8, fontSize: 12, color: '#6ee7b7' }}>
-          ✅ {lastAdded.name} added as <b style={{ fontFamily: 'DM Mono' }}>{lastAdded.id}</b>. Initial password: <b style={{ fontFamily: 'DM Mono' }}>{lastAdded.password}</b> — share this with them directly; they should change it after first sign-in.
+
+      {/* ── Payroll ───────────────────────────────────────────────────────── */}
+      <div>
+        <label style={LBL}>Employment ID <span style={{ color:'#475569', fontWeight:400 }}>(Payroll / HR reference)</span></label>
+        <input className="input" placeholder="e.g. EMP-00123"
+          value={fv.employment_id||''} onChange={e => setFv(f => ({...f, employment_id: e.target.value}))}
+          style={{ fontFamily:'DM Mono', letterSpacing:1 }} />
+      </div>
+
+      {/* ── Dates ─────────────────────────────────────────────────────────── */}
+      <div style={{ background:'rgba(0,194,255,0.05)', border:'1px solid rgba(0,194,255,0.15)', borderRadius:8, padding:'12px 14px' }}>
+        <div style={{ fontSize:11, color:'#00c2ff', fontWeight:700, marginBottom:10, textTransform:'uppercase', letterSpacing:'0.5px' }}>
+          📅 Employment & On-Call Dates
+        </div>
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:10 }}>
+          <div>
+            <label style={LBL}>Start Date</label>
+            <input className="input" type="date"
+              value={fv.start_date||''} onChange={e => setFv(f => ({...f, start_date: e.target.value}))} />
+            <div style={{ fontSize:10, color:'#475569', marginTop:2 }}>When they join</div>
+          </div>
+          <div>
+            <label style={LBL}>On-Call Start Date</label>
+            <input className="input" type="date"
+              value={fv.oncall_start_date||''} onChange={e => setFv(f => ({...f, oncall_start_date: e.target.value}))} />
+            <div style={{ fontSize:10, color:'#f59e0b', marginTop:2 }}>⚠ Not in rota until this date</div>
+          </div>
+          <div>
+            <label style={LBL}>Termination Date</label>
+            <input className="input" type="date"
+              value={fv.termination_date||''} onChange={e => setFv(f => ({...f, termination_date: e.target.value}))} />
+            <div style={{ fontSize:10, color:'#ef4444', marginTop:2 }}>Removed from rota after</div>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Appearance ────────────────────────────────────────────────────── */}
+      <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+        <label style={{ ...LBL, marginBottom:0 }}>Avatar Colour</label>
+        <input type="color" value={fv.color||'#1d4ed8'}
+          onChange={e => setFv(f => ({...f, color: e.target.value}))}
+          style={{ width:36, height:28, border:'none', borderRadius:4, cursor:'pointer', padding:0 }} />
+        <span style={{ fontSize:11, color:'#475569' }}>Background colour for avatar initials</span>
+      </div>
+
+      {/* ── Profile picture ───────────────────────────────────────────────── */}
+      <div>
+        <label style={LBL}>Profile Picture</label>
+        {fv.profile_picture && (
+          <img src={fv.profile_picture} alt="" style={{ width:48, height:48, borderRadius:8, objectFit:'cover', marginBottom:6, display:'block' }} />
+        )}
+        <label className="btn btn-secondary btn-sm" style={{ cursor:'pointer', display:'inline-flex', alignItems:'center', gap:4 }}>
+          {picUploading ? '⏳ Uploading…' : '📷 Upload Photo'}
+          <input type="file" accept="image/*" style={{ display:'none' }}
+            onChange={e => onPicUpload && onPicUpload(e.target.files[0], uid || 'new_' + Date.now(), isEdit)} />
+        </label>
+        {driveToken && <span style={{ fontSize:11, color:'#475569', marginLeft:8 }}>Saved to Drive</span>}
+      </div>
+    </div>
+  );
+}
+
+// ── AD-style user card ─────────────────────────────────────────────────────────
+function UserCard({ user, profilePic, isSelected, onClick }) {
+  const today = new Date().toISOString().slice(0,10);
+  const isTerminated = user.termination_date && today > user.termination_date;
+  const notStarted   = user.start_date && today < user.start_date;
+  const notOnCall    = user.oncall_start_date && today < user.oncall_start_date;
+  const status = isTerminated ? { label:'Left', color:'#ef4444', bg:'rgba(239,68,68,0.12)' }
+               : notStarted   ? { label:'Joining', color:'#94a3b8', bg:'rgba(148,163,184,0.1)' }
+               : notOnCall    ? { label:'Onboarding', color:'#f59e0b', bg:'rgba(245,158,11,0.1)' }
+               : { label:'Active', color:'#22c55e', bg:'rgba(34,197,94,0.1)' };
+
+  return (
+    <div onClick={onClick} style={{
+      background: isSelected ? 'rgba(0,194,255,0.08)' : 'rgba(255,255,255,0.03)',
+      border: `1.5px solid ${isSelected ? 'rgba(0,194,255,0.4)' : 'rgba(255,255,255,0.07)'}`,
+      borderRadius:10, padding:'12px 14px', cursor:'pointer',
+      transition:'all 0.15s', display:'flex', alignItems:'center', gap:12,
+    }}>
+      {/* Avatar */}
+      <div style={{ position:'relative', flexShrink:0 }}>
+        {profilePic
+          ? <img src={profilePic} alt="" style={{ width:44, height:44, borderRadius:'50%', objectFit:'cover', border:'2px solid rgba(255,255,255,0.1)' }} />
+          : <div style={{ width:44, height:44, borderRadius:'50%', background:user.color||'#1d4ed8', display:'flex', alignItems:'center', justifyContent:'center', fontSize:16, fontWeight:700, color:'#fff', border:'2px solid rgba(255,255,255,0.1)' }}>
+              {user.avatar||user.name?.charAt(0)||'?'}
+            </div>
+        }
+        {/* Status dot */}
+        <div style={{ position:'absolute', bottom:0, right:0, width:12, height:12, borderRadius:'50%', background:status.color, border:'2px solid #0f172a', boxShadow:`0 0 6px ${status.color}` }} />
+      </div>
+
+      {/* Info */}
+      <div style={{ flex:1, minWidth:0 }}>
+        <div style={{ fontSize:13, fontWeight:700, color:'#e2e8f0', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+          {user.name}
+        </div>
+        <div style={{ fontSize:11, color:'#64748b', fontFamily:'DM Mono', marginTop:1 }}>
+          {user.id} · {user.role||'Engineer'}
+        </div>
+        {user.employment_id && (
+          <div style={{ fontSize:10, color:'#475569', fontFamily:'DM Mono', marginTop:1 }}>EMP: {user.employment_id}</div>
+        )}
+      </div>
+
+      {/* Status badge */}
+      <div style={{ flexShrink:0 }}>
+        <span style={{ fontSize:10, fontWeight:700, color:status.color, background:status.bg, padding:'2px 8px', borderRadius:10, border:`1px solid ${status.color}33` }}>
+          {status.label}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// ── AD-style detail panel ──────────────────────────────────────────────────────
+function UserDetail({ user, profilePic, onEdit, onDelete, onResetPw, resetPwDone, isManager }) {
+  if (!user) return (
+    <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', height:300, color:'#334155', gap:10 }}>
+      <div style={{ fontSize:40 }}>👤</div>
+      <div style={{ fontSize:14, fontWeight:600 }}>Select a user to view details</div>
+      <div style={{ fontSize:12 }}>Click any card on the left</div>
+    </div>
+  );
+
+  const today = new Date().toISOString().slice(0,10);
+  const isTerminated = user.termination_date && today > user.termination_date;
+  const notStarted   = user.start_date && today < user.start_date;
+  const notOnCall    = user.oncall_start_date && today < user.oncall_start_date;
+  const statusLabel  = isTerminated ? 'Left' : notStarted ? 'Joining' : notOnCall ? 'Onboarding' : 'Active';
+  const statusColor  = isTerminated ? '#ef4444' : notStarted ? '#94a3b8' : notOnCall ? '#f59e0b' : '#22c55e';
+
+  const Field = ({ icon, label, value, mono }) => value ? (
+    <div style={{ display:'flex', gap:10, padding:'8px 0', borderBottom:'1px solid rgba(255,255,255,0.04)' }}>
+      <span style={{ fontSize:16, flexShrink:0, width:22 }}>{icon}</span>
+      <div style={{ flex:1 }}>
+        <div style={{ fontSize:10, color:'#475569', marginBottom:1, textTransform:'uppercase', letterSpacing:'0.4px' }}>{label}</div>
+        <div style={{ fontSize:12, color:mono?'#93c5fd':'#e2e8f0', fontFamily:mono?'DM Mono':'inherit' }}>{value}</div>
+      </div>
+    </div>
+  ) : null;
+
+  return (
+    <div style={{ padding:'0 4px' }}>
+      {/* Header */}
+      <div style={{ display:'flex', alignItems:'center', gap:14, marginBottom:20, paddingBottom:16, borderBottom:'1px solid rgba(255,255,255,0.07)' }}>
+        <div style={{ position:'relative' }}>
+          {profilePic
+            ? <img src={profilePic} alt="" style={{ width:64, height:64, borderRadius:'50%', objectFit:'cover', border:'2px solid rgba(255,255,255,0.12)' }} />
+            : <div style={{ width:64, height:64, borderRadius:'50%', background:user.color||'#1d4ed8', display:'flex', alignItems:'center', justifyContent:'center', fontSize:24, fontWeight:700, color:'#fff', border:'2px solid rgba(255,255,255,0.12)' }}>
+                {user.avatar||user.name?.charAt(0)||'?'}
+              </div>
+          }
+          <div style={{ position:'absolute', bottom:2, right:2, width:14, height:14, borderRadius:'50%', background:statusColor, border:'2px solid #0f172a', boxShadow:`0 0 8px ${statusColor}` }} />
+        </div>
+        <div style={{ flex:1 }}>
+          <div style={{ fontSize:18, fontWeight:700 }}>{user.name}</div>
+          <div style={{ fontSize:12, color:'#64748b', fontFamily:'DM Mono', marginTop:2 }}>{user.id}</div>
+          <div style={{ marginTop:4 }}>
+            <span style={{ fontSize:11, fontWeight:700, color:statusColor, background:`${statusColor}18`, padding:'2px 10px', borderRadius:10, border:`1px solid ${statusColor}33` }}>
+              {statusLabel}
+            </span>
+            <span style={{ marginLeft:8, fontSize:11, color:'#64748b', background:'rgba(255,255,255,0.05)', padding:'2px 10px', borderRadius:10, border:'1px solid rgba(255,255,255,0.08)' }}>
+              {user.role||'Engineer'}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* Fields */}
+      <div style={{ marginBottom:16 }}>
+        <Field icon="🪪" label="Trigram / ID"         value={user.id}             mono />
+        <Field icon="💼" label="Employment ID"         value={user.employment_id}  mono />
+        <Field icon="✉️" label="Google Email"           value={user.google_email}       />
+        <Field icon="📱" label="Mobile"                value={user.mobile_number}      />
+        <Field icon="📅" label="Start Date"            value={user.start_date}    mono />
+        <Field icon="📡" label="On-Call Start"         value={user.oncall_start_date} mono />
+        <Field icon="🚪" label="Termination Date"      value={user.termination_date}  mono />
+      </div>
+
+      {resetPwDone && (
+        <div style={{ background:'rgba(34,197,94,0.1)', border:'1px solid rgba(34,197,94,0.25)', borderRadius:7, padding:'7px 12px', fontSize:12, color:'#22c55e', marginBottom:10 }}>
+          ✅ Password reset to "{user.id.toLowerCase()}"
+        </div>
+      )}
+
+      {/* Actions */}
+      {isManager && (
+        <div style={{ display:'flex', flexDirection:'column', gap:7 }}>
+          <button onClick={onEdit} style={{ ...ABTN, background:'rgba(0,194,255,0.1)', color:'#00c2ff', borderColor:'rgba(0,194,255,0.3)' }}>
+            ✎ Edit Profile
+          </button>
+          <button onClick={onResetPw} style={{ ...ABTN, background:'rgba(245,158,11,0.08)', color:'#fcd34d', borderColor:'rgba(245,158,11,0.25)' }}>
+            🔑 Reset Password
+          </button>
+          <button onClick={onDelete} style={{ ...ABTN, background:'rgba(239,68,68,0.08)', color:'#fca5a5', borderColor:'rgba(239,68,68,0.25)' }}>
+            🗑 Delete User
+          </button>
         </div>
       )}
     </div>
   );
 }
 
+// ── Inline styles ─────────────────────────────────────────────────────────────
+const LBL = { display:'block', fontSize:11, color:'#64748b', marginBottom:4, fontWeight:600, textTransform:'uppercase', letterSpacing:'0.4px' };
+const ABTN = { width:'100%', padding:'9px 14px', border:'1px solid', borderRadius:8, fontSize:13, fontWeight:600, cursor:'pointer', textAlign:'left' };
+
 // ── Main Settings component ────────────────────────────────────────────────────
 export default function SettingsPage({
+  // Configuration props
   settings, setSettings,
-  users, setUsers,
   payconfig, setPayconfig,
-  isManager, driveToken,
-  generateTrigramId, TRICOLORS,
+  // Team/AD + shared props
+  users, setUsers, isManager, driveToken,
+  secureLinks, setSecureLinks,
+  profilePics, setProfilePicsState, getProfilePics, setProfilePics,
+  rota, setRota, permissions, setPermissions,
+  uploadProfilePicture, generateTrigramId, TRICOLORS: triColors,
   updatePasswordInRegistry, syncRegistryToDrive, getRegistry,
-  syncUsersToSheet, syncUsersFromSheet,
-  // legacy props still passed from App.js
-  permissions, setPermissions,
+  setTimesheets, setToil, syncUsersFromSheet, syncUsersToSheet,
   driveWriteJson,
 }) {
+  // ── Configuration state ──────────────────────────────────────────────────
   const [saving, setSaving] = useState(false);
   const [saved,  setSaved]  = useState(false);
   const [error,  setError]  = useState(null);
-  const [activeSection, setActiveSection] = useState('schedule');
-  const [sheetBusy, setSheetBusy] = useState(false);
-  const [sheetMsg,  setSheetMsg]  = useState(null);
 
   const S = settings || DEFAULT_SETTINGS;
   const upd = useCallback((path, value) => {
@@ -516,90 +698,466 @@ export default function SettingsPage({
     setSaving(false);
   };
 
-  // ── Team helpers ────────────────────────────────────────────────────────
-  const managerCount = (users || []).filter(u => u.role === 'Manager').length;
+  // ── Team/AD + Permissions + Drive state ──────────────────────────────────
+  const [showAdd,        setShowAdd]        = useState(false);
+  const [showLink,       setShowLink]       = useState(false);
+  const [editingUserId,  setEditingUserId]  = useState(null);
+  const [form,           setForm]           = useState(BLANK_FORM);
+  const [editForm,       setEditForm]       = useState(BLANK_FORM);
+  const [linkForm,       setLinkForm]       = useState({ label:'', expiry:'', password:'' });
+  const [picUploading,   setPicUploading]   = useState(false);
+  const [sheetSyncing,   setSheetSyncing]   = useState(false);
+  const [sheetMsg,       setSheetMsg]       = useState('');
+  const [sheetOpenMsg,   setSheetOpenMsg]   = useState('');
+  const [pushMsg,        setPushMsg]        = useState('');
+  const [resetPwUid,     setResetPwUid]     = useState('');
+  const [settingsTab,    setSettingsTab]    = useState('team');
+  // AD view state
+  const [selectedUserId, setSelectedUserId] = useState(null);
+  const [search,         setSearch]         = useState('');
+  const [filterRole,     setFilterRole]     = useState('all');
+  const [filterStatus,   setFilterStatus]   = useState('all');
 
-  const addEngineer = (newUser, initialPassword) => {
-    setUsers(prev => [...prev, newUser]);
-    if (updatePasswordInRegistry) {
-      const reg = updatePasswordInRegistry(newUser.id, initialPassword);
-      if (driveToken && syncRegistryToDrive) syncRegistryToDrive(driveToken, reg, [...users, newUser]).catch(() => {});
-    }
+
+  // ── Permissions helpers ───────────────────────────────────────────────────
+  const safePerms  = permissions || {};
+  const defaultPerms = useCallback((role) => {
+    const p = {};
+    ALL_PAGES.forEach(pg => { p[pg.id] = role === 'Manager' ? true : !MANAGER_ONLY.has(pg.id); });
+    return p;
+  }, []);
+  const getPerms     = useCallback((uid) => safePerms[uid] || defaultPerms(users.find(u=>u.id===uid)?.role||'Engineer'), [safePerms, users, defaultPerms]);
+  const setUserPerm  = (uid, pageId, val) => {
+    const updated = { ...safePerms, [uid]: { ...getPerms(uid), [pageId]: val } };
+    setPermissions(updated);
+    if (driveToken && driveWriteJson) driveWriteJson(driveToken, 'permissions.json', updated).catch(()=>{});
+  };
+  const setAllPerms  = (uid, val) => {
+    const p = {}; ALL_PAGES.forEach(pg => { p[pg.id] = val; });
+    const updated = { ...safePerms, [uid]: p };
+    setPermissions(updated);
+    if (driveToken && driveWriteJson) driveWriteJson(driveToken, 'permissions.json', updated).catch(()=>{});
+  };
+  const applyTemplate = (uid) => {
+    const role = users.find(u=>u.id===uid)?.role||'Engineer';
+    const updated = { ...safePerms, [uid]: defaultPerms(role) };
+    setPermissions(updated);
+    if (driveToken && driveWriteJson) driveWriteJson(driveToken, 'permissions.json', updated).catch(()=>{});
   };
 
-  const removeEngineer = (u) => {
-    if (!window.confirm(`Remove ${u.name} (${u.id})? Their historical rota/incident/timesheet records are kept, but they will no longer be able to sign in.`)) return;
-    setUsers(prev => prev.filter(x => x.id !== u.id));
-  };
-
-  const resetPassword = (u) => {
-    if (!updatePasswordInRegistry) return;
-    const newPw = u.id.toLowerCase();
-    if (!window.confirm(`Reset ${u.name}'s password to "${newPw}"?`)) return;
-    const reg = updatePasswordInRegistry(u.id, newPw);
-    if (driveToken && syncRegistryToDrive) syncRegistryToDrive(driveToken, reg, users).catch(() => {});
-    window.alert(`Password reset. Tell ${u.name} their new password is: ${newPw}`);
-  };
-
-  const syncToSheet = async () => {
-    if (!driveToken || !syncUsersToSheet || !getRegistry) return;
-    setSheetBusy(true); setSheetMsg(null);
-    try {
-      await syncUsersToSheet(driveToken, getRegistry(), users);
-      setSheetMsg({ ok: true, text: 'Synced to Google Sheet.' });
-    } catch (e) { setSheetMsg({ ok: false, text: 'Sync failed: ' + e.message }); }
-    setSheetBusy(false);
-  };
-
-  const loadFromSheet = async () => {
-    if (!driveToken || !syncUsersFromSheet || !getRegistry) return;
-    if (!window.confirm('Load engineer list from the Google Sheet? This will overwrite names/roles/contact details currently shown here with whatever is in the sheet.')) return;
-    setSheetBusy(true); setSheetMsg(null);
-    try {
-      await syncUsersFromSheet(driveToken, getRegistry(), users, setUsers);
-      setSheetMsg({ ok: true, text: 'Loaded from Google Sheet.' });
-    } catch (e) { setSheetMsg({ ok: false, text: 'Load failed: ' + e.message }); }
-    setSheetBusy(false);
-  };
 
   if (!isManager) return (
-    <div style={{ padding: 48, textAlign: 'center', color: 'var(--text-muted)' }}>
-      🔒 Settings are only accessible to managers.
+    <div style={{ padding:32, color:'#94a3b8', textAlign:'center' }}>
+      <div style={{ fontSize:48, marginBottom:12 }}>🔒</div>
+      <div style={{ fontSize:16, fontWeight:600 }}>Settings are restricted to managers.</div>
     </div>
   );
 
-  const PAGE_LABELS = {
-    dashboard:'Dashboard', oncall:"Who's On Call", myshift:'My Shift',
-    calendar:'Calendar', rota:'Rota', incidents:'Incidents',
-    timesheets:'Timesheets', timekeeping:'Time Keeping', holidays:'Holidays',
-    swaps:'Shift Swaps', upgrades:'Upgrade Days', stress:'Stress Score',
-    toil:'TOIL', absence:'Absence/Sick', overtime:'Overtime', logbook:'Logbook',
-    wiki:'Wiki', glossary:'Glossary', contacts:'Contacts', notes:'Notes',
-    docs:'Documents', whatsapp:'Team Chat', announcements:'Announcements',
-    shiftreminders:'Shift Reminders', insights:'Insights', capacity:'Capacity',
-    reports:'Weekly Reports', payroll:'Payroll', payconfig:'Pay Config',
-    settings:'Settings', logs:'Activity Logs', myaccount:'My Account',
+  // ── Profile picture upload ─────────────────────────────────────────────────
+  const handlePicUpload = async (file, uid, isEdit) => {
+    if (!file) return;
+    setPicUploading(true);
+    try {
+      const dataUri = (driveToken && uploadProfilePicture)
+        ? await uploadProfilePicture(driveToken, uid, file)
+        : await new Promise(res => { const r = new FileReader(); r.onload = e => res(e.target.result); r.readAsDataURL(file); });
+      if (isEdit) setEditForm(f => ({...f, profile_picture: dataUri}));
+      else        setForm(f => ({...f, profile_picture: dataUri}));
+    } finally { setPicUploading(false); }
   };
+
+  // ── Add engineer ───────────────────────────────────────────────────────────
+  const add = async () => {
+    if (!form.name) return;
+    let id;
+    if (form.trigram && form.trigram.trim().length >= 2) {
+      const cand = form.trigram.trim().toUpperCase();
+      id = users.find(u=>u.id===cand) ? generateTrigramId(form.name, users) : cand;
+    } else {
+      id = generateTrigramId(form.name, users);
+    }
+    const colors = triColors || TRICOLORS;
+    const color  = form.color || colors[users.length % colors.length];
+    const avatar = form.avatar || form.name.split(' ').map(x=>x[0]).join('').slice(0,2).toUpperCase();
+    const newUser = {
+      id, name:form.name, role:form.role, tri:id.slice(0,3), avatar, color,
+      mobile_number:form.mobile_number||'', google_email:form.google_email||'',
+      employment_id:form.employment_id||'', start_date:form.start_date||'',
+      oncall_start_date:form.oncall_start_date||'', termination_date:form.termination_date||'',
+      profile_picture:form.profile_picture||'',
+    };
+    const updatedUsers = [...users, newUser];
+    setUsers(updatedUsers);
+    if (updatePasswordInRegistry && syncRegistryToDrive && getRegistry) {
+      const reg = updatePasswordInRegistry(id, id.toLowerCase());
+      if (driveToken) await syncRegistryToDrive(driveToken, reg, updatedUsers);
+    }
+    setShowAdd(false); setForm(BLANK_FORM);
+    setSelectedUserId(id); // auto-select newly added user
+  };
+
+  // ── Save edit ──────────────────────────────────────────────────────────────
+  const saveEdit = async (userId) => {
+    const newId = (editForm.trigram || userId).toUpperCase().trim();
+    const idChanged = newId !== userId && newId.length >= 3;
+    const updatedUser = { ...users.find(u=>u.id===userId), ...editForm, id: idChanged ? newId : userId };
+    delete updatedUser.trigram;
+    const updatedUsers = users.map(u => u.id===userId ? updatedUser : u);
+    setUsers(updatedUsers);
+
+    if (idChanged) {
+      setRota(prev => { const n={...prev}; if(n[userId]){n[newId]=n[userId];delete n[userId];} return n; });
+      if (setTimesheets) setTimesheets(prev => { const n={...prev}; if(n[userId]){n[newId]=n[userId];delete n[userId];} return n; });
+      if (setToil) setToil(prev => { const a=Array.isArray(prev)?prev:Object.values(prev); return a.map(t=>t.userId===userId?{...t,userId:newId}:t); });
+      if (setProfilePics) setProfilePics(prev => { const n={...prev}; if(n[userId]){n[newId]=n[userId];delete n[userId];} return n; });
+      if (setProfilePicsState) setProfilePicsState(prev => { const n={...prev}; if(n[userId]){n[newId]=n[userId];delete n[userId];} return n; });
+    }
+
+    if (driveToken && syncRegistryToDrive && getRegistry) {
+      await syncRegistryToDrive(driveToken, getRegistry(), updatedUsers);
+      if (editForm.profile_picture?.startsWith('data:')) {
+        const targetId = idChanged ? newId : userId;
+        const pics = { ...(getProfilePics?.() || {}), [targetId]: editForm.profile_picture };
+        if (setProfilePics) setProfilePics(pics);
+        if (setProfilePicsState) setProfilePicsState(pics);
+        if (driveWriteJson) await driveWriteJson(driveToken, 'profile_pictures.json', pics);
+      }
+    }
+    setEditingUserId(null); setEditForm(BLANK_FORM);
+    setSelectedUserId(idChanged ? newId : userId);
+  };
+
+  const deleteUser = (userId) => {
+    if (!window.confirm('⚠️ Delete this user? Cannot be undone.')) return;
+    setUsers(users.filter(u => u.id !== userId));
+    if (driveToken && syncRegistryToDrive && getRegistry) syncRegistryToDrive(driveToken, getRegistry(), users.filter(u=>u.id!==userId));
+    setSelectedUserId(null);
+  };
+
+  const resetPassword = async (uid) => {
+    if (!updatePasswordInRegistry || !syncRegistryToDrive || !getRegistry) return;
+    const reg = updatePasswordInRegistry(uid, uid.toLowerCase());
+    if (driveToken) await syncRegistryToDrive(driveToken, reg, users);
+    setResetPwUid(uid);
+    setTimeout(()=>setResetPwUid(''), 4000);
+  };
+
+  const addLink = () => {
+    if (!linkForm.label) return;
+    const link = { id:'lnk-'+Date.now(), ...linkForm, url:`https://dsmeetul-cpu.github.io/cloudops-rota?ref=${Date.now()}`, created:new Date().toISOString().slice(0,10) };
+    setSecureLinks([...(secureLinks||[]), link]);
+    setShowLink(false); setLinkForm({label:'',expiry:'',password:''});
+  };
+
+  const syncFromSheet = async () => {
+    if (!driveToken) { setSheetMsg('⚠ Connect Google Drive first.'); return; }
+    setSheetSyncing(true); setSheetMsg('⏳ Syncing from Google Sheet…');
+    try {
+      if (syncUsersFromSheet) await syncUsersFromSheet(driveToken, getRegistry(), users, setUsers);
+      setSheetMsg('✅ Synced from Google Sheet.');
+    } catch(e) { setSheetMsg('❌ Sync failed: '+(e.message||e)); }
+    setSheetSyncing(false);
+    setTimeout(()=>setSheetMsg(''), 6000);
+  };
+
+  const openSheet = async () => {
+    const reg = getRegistry?.() || {};
+    if (reg.sheets_id) {
+      window.open(`https://docs.google.com/spreadsheets/d/${reg.sheets_id}`,'_blank');
+      setSheetOpenMsg('✅ Opened in new tab.');
+    } else if (driveToken && syncUsersToSheet) {
+      setSheetOpenMsg('⏳ Creating sheet…');
+      try {
+        const sid = await syncUsersToSheet(driveToken, reg, users);
+        if (sid) { window.open(`https://docs.google.com/spreadsheets/d/${sid}`,'_blank'); setSheetOpenMsg('✅ Sheet created.'); }
+      } catch(e) { setSheetOpenMsg('❌ '+e.message); }
+    } else { setSheetOpenMsg('⚠ Connect Google Drive first.'); }
+    setTimeout(()=>setSheetOpenMsg(''),6000);
+  };
+
+  const pushToSheet = async () => {
+    if (!driveToken) { setPushMsg('⚠ Connect Google Drive first.'); return; }
+    setPushMsg('⏳ Pushing…');
+    try {
+      if (syncRegistryToDrive && getRegistry) await syncRegistryToDrive(driveToken, getRegistry(), users);
+      setPushMsg('✅ Pushed to Google Sheet.');
+    } catch(e) { setPushMsg('❌ '+e.message); }
+    setTimeout(()=>setPushMsg(''),6000);
+  };
+
+  // ── AD view filtering ──────────────────────────────────────────────────────
+  const today = new Date().toISOString().slice(0,10);
+  const filteredUsers = users.filter(u => {
+    const q = search.toLowerCase();
+    const matchSearch = !q || u.name.toLowerCase().includes(q) || u.id.toLowerCase().includes(q) || (u.employment_id||'').toLowerCase().includes(q) || (u.google_email||'').toLowerCase().includes(q);
+    const matchRole = filterRole === 'all' || (u.role||'Engineer') === filterRole;
+    const isTerminated = u.termination_date && today > u.termination_date;
+    const notStarted   = u.start_date && today < u.start_date;
+    const notOnCall    = u.oncall_start_date && today < u.oncall_start_date;
+    const statusKey    = isTerminated ? 'left' : notStarted ? 'joining' : notOnCall ? 'onboarding' : 'active';
+    const matchStatus  = filterStatus === 'all' || filterStatus === statusKey;
+    return matchSearch && matchRole && matchStatus;
+  });
+
+  const selectedUser = users.find(u => u.id === selectedUserId);
+  const isEditingSelected = editingUserId === selectedUserId;
 
   return (
     <div>
       {/* Header */}
-      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:20, flexWrap:'wrap', gap:10 }}>
+      <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', marginBottom:16, flexWrap:'wrap', gap:10 }}>
         <div>
-          <h1 style={{ fontSize:21, fontWeight:800, fontFamily:'Syne,sans-serif', margin:0 }}>⚙️ Settings</h1>
-          <div style={{ fontSize:12, color:'var(--text-muted)', fontFamily:'DM Mono', marginTop:3 }}>
-            Manager only · changes take effect immediately · saved to Google Drive
-          </div>
+          <h1 style={{ margin:0, fontSize:22, fontWeight:700, letterSpacing:'-0.5px' }}>⚙️ Settings</h1>
+          <div style={{ fontSize:12, color:'#64748b', marginTop:3 }}>Manager only · {users.length} team members</div>
         </div>
         <div style={{ display:'flex', gap:8 }}>
-          <button className="btn btn-primary" onClick={save} disabled={saving}>
-            {saving ? '⏳ Saving…' : saved ? '✅ Saved' : '💾 Save to Drive'}
-          </button>
+          {settingsTab==='team' && (<>
+            <button style={HDR_BTN_SEC} onClick={()=>setShowLink(true)}>🔗 Secure Link</button>
+            <button style={HDR_BTN_PRI} onClick={()=>{ setForm(BLANK_FORM); setShowAdd(true); }}>+ Add User</button>
+          </>)}
+          {settingsTab==='config' && (
+            <button className="btn btn-primary" onClick={save} disabled={saving}>
+              {saving ? '⏳ Saving…' : saved ? '✅ Saved' : '💾 Save to Drive'}
+            </button>
+          )}
         </div>
       </div>
 
-      {error && <div style={{ marginBottom:14, padding:'10px 14px', background:'rgba(239,68,68,0.10)', border:'1px solid rgba(239,68,68,0.30)', borderRadius:8, fontSize:12, color:'#fca5a5' }}>⚠️ {error}</div>}
+      {/* Tab bar */}
+      <div style={{ display:'flex', gap:4, marginBottom:18, background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.07)', borderRadius:10, padding:4, width:'fit-content', flexWrap:'wrap' }}>
+        {[['team','👥 Team'],['permissions','🔐 Permissions'],['drive','📁 Drive'],['config','⚙️ Configuration']].map(([id,label])=>(
+          <div key={id} onClick={()=>setSettingsTab(id)} style={{
+            padding:'7px 18px', borderRadius:7, cursor:'pointer', fontSize:12.5, fontWeight:600,
+            background:settingsTab===id?'rgba(0,194,255,0.1)':'transparent',
+            color:settingsTab===id?'#00c2ff':'#64748b',
+            border:settingsTab===id?'1px solid rgba(0,194,255,0.3)':'1px solid transparent',
+            transition:'all 0.15s',
+          }}>{label}</div>
+        ))}
+      </div>
 
+      {settingsTab==='config' && error && (
+        <div style={{ marginBottom:14, padding:'10px 14px', background:'rgba(239,68,68,0.10)', border:'1px solid rgba(239,68,68,0.30)', borderRadius:8, fontSize:12, color:'#fca5a5' }}>⚠️ {error}</div>
+      )}
+
+      {/* TAB: TEAM — Active Directory style                                   */}
+      {/* ══════════════════════════════════════════════════════════════════════ */}
+      {settingsTab==='team' && (
+        <div style={{ display:'grid', gridTemplateColumns:'minmax(300px,420px) 1fr', gap:16, alignItems:'start' }}>
+
+          {/* Left: user list */}
+          <div>
+            {/* Search + filters */}
+            <div style={{ display:'flex', gap:6, marginBottom:10, flexWrap:'wrap' }}>
+              <input placeholder="🔍 Search name, ID, email…"
+                value={search} onChange={e=>setSearch(e.target.value)}
+                style={{ flex:1, minWidth:140, padding:'7px 12px', background:'rgba(255,255,255,0.05)', border:'1px solid rgba(255,255,255,0.1)', borderRadius:7, color:'#e2e8f0', fontSize:12, outline:'none' }} />
+              <select value={filterRole} onChange={e=>setFilterRole(e.target.value)}
+                style={SEL}>
+                <option value="all">All Roles</option>
+                <option value="Engineer">Engineer</option>
+                <option value="Manager">Manager</option>
+              </select>
+              <select value={filterStatus} onChange={e=>setFilterStatus(e.target.value)}
+                style={SEL}>
+                <option value="all">All Status</option>
+                <option value="active">Active</option>
+                <option value="onboarding">Onboarding</option>
+                <option value="joining">Joining</option>
+                <option value="left">Left</option>
+              </select>
+            </div>
+
+            {/* Stats bar */}
+            <div style={{ display:'flex', gap:8, marginBottom:10, fontSize:11 }}>
+              {[
+                { label:`${users.filter(u=>!(u.termination_date&&today>u.termination_date)&&!(u.oncall_start_date&&today<u.oncall_start_date)&&!(u.start_date&&today<u.start_date)).length} Active`, color:'#22c55e' },
+                { label:`${users.filter(u=>u.oncall_start_date&&today<u.oncall_start_date).length} Onboarding`, color:'#f59e0b' },
+                { label:`${users.filter(u=>u.termination_date&&today>u.termination_date).length} Left`, color:'#ef4444' },
+              ].map(s=>(
+                <span key={s.label} style={{ color:s.color, background:`${s.color}12`, padding:'2px 9px', borderRadius:10, border:`1px solid ${s.color}25` }}>{s.label}</span>
+              ))}
+            </div>
+
+            {/* User cards */}
+            <div style={{ display:'flex', flexDirection:'column', gap:6, maxHeight:'calc(100vh - 300px)', overflowY:'auto', paddingRight:4 }}>
+              {filteredUsers.length === 0 && (
+                <div style={{ textAlign:'center', padding:'32px 0', color:'#334155' }}>
+                  <div style={{ fontSize:28, marginBottom:6 }}>🔍</div>
+                  <div style={{ fontSize:13 }}>No users match your filters</div>
+                </div>
+              )}
+              {filteredUsers.map(u => (
+                <UserCard key={u.id} user={u} profilePic={profilePics?.[u.id]||u.profile_picture}
+                  isSelected={selectedUserId===u.id}
+                  onClick={()=>{ setSelectedUserId(u.id); setEditingUserId(null); setEditForm(BLANK_FORM); }} />
+              ))}
+            </div>
+          </div>
+
+          {/* Right: detail / edit panel */}
+          <div style={{ background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.07)', borderRadius:12, padding:20, minHeight:320, position:'sticky', top:20 }}>
+            {isEditingSelected && selectedUser ? (
+              <>
+                <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:16 }}>
+                  <div style={{ fontSize:14, fontWeight:700 }}>✎ Editing: {editForm.name||selectedUser.name}</div>
+                  <button onClick={()=>{setEditingUserId(null);setEditForm(BLANK_FORM);}}
+                    style={{ background:'none', border:'none', color:'#64748b', fontSize:20, cursor:'pointer' }}>✕</button>
+                </div>
+                <UserFields
+                  fv={editForm} setFv={setEditForm}
+                  uid={selectedUser.id} isEdit
+                  picUploading={picUploading}
+                  onPicUpload={handlePicUpload}
+                  driveToken={driveToken}
+                />
+                <div style={{ display:'flex', gap:8, marginTop:14 }}>
+                  <button onClick={()=>saveEdit(selectedUser.id)}
+                    style={{ flex:1, padding:'10px', background:'#00c2ff', color:'#000', border:'none', borderRadius:8, fontWeight:700, fontSize:13, cursor:'pointer' }}>
+                    ✓ Save Changes
+                  </button>
+                  <button onClick={()=>{setEditingUserId(null);setEditForm(BLANK_FORM);}}
+                    style={{ padding:'10px 16px', background:'rgba(255,255,255,0.05)', border:'1px solid rgba(255,255,255,0.1)', borderRadius:8, color:'#64748b', fontSize:13, cursor:'pointer' }}>
+                    Cancel
+                  </button>
+                </div>
+              </>
+            ) : (
+              <UserDetail
+                user={selectedUser}
+                profilePic={selectedUser ? (profilePics?.[selectedUser.id]||selectedUser.profile_picture) : null}
+                isManager={isManager}
+                resetPwDone={resetPwUid===selectedUserId}
+                onEdit={()=>{
+                  if (!selectedUser) return;
+                  setEditForm({ name:selectedUser.name, trigram:selectedUser.id, role:selectedUser.role||'Engineer',
+                    employment_id:selectedUser.employment_id||'', start_date:selectedUser.start_date||'',
+                    oncall_start_date:selectedUser.oncall_start_date||'', termination_date:selectedUser.termination_date||'',
+                    mobile_number:selectedUser.mobile_number||'', google_email:selectedUser.google_email||'',
+                    profile_picture:selectedUser.profile_picture||'', avatar:selectedUser.avatar||'', color:selectedUser.color||'' });
+                  setEditingUserId(selectedUser.id);
+                }}
+                onDelete={()=>selectedUser && deleteUser(selectedUser.id)}
+                onResetPw={()=>selectedUser && resetPassword(selectedUser.id)}
+              />
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ══════════════════════════════════════════════════════════════════════ */}
+      {/* TAB: PERMISSIONS                                                      */}
+      {/* ══════════════════════════════════════════════════════════════════════ */}
+      {settingsTab==='permissions' && (
+        <>
+          <div style={{ display:'flex', justifyContent:'flex-end', marginBottom:12 }}>
+            <button onClick={()=>{ const u={}; users.forEach(x=>{u[x.id]=defaultPerms(x.role||'Engineer');}); setPermissions(u); if(driveToken&&driveWriteJson)driveWriteJson(driveToken,'permissions.json',u).catch(()=>{}); }}
+              style={{ padding:'6px 14px', background:'rgba(255,255,255,0.05)', border:'1px solid rgba(255,255,255,0.1)', borderRadius:7, color:'#94a3b8', fontSize:12, cursor:'pointer' }}>
+              ↺ Reset All to Defaults
+            </button>
+          </div>
+          {users.map(u => {
+            const perms = getPerms(u.id);
+            const enabledCount = ALL_PAGES.filter(pg=>perms[pg.id]).length;
+            const isAllOn  = enabledCount===ALL_PAGES.length;
+            const isAllOff = enabledCount===0;
+            return (
+              <div key={u.id} style={{ background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.07)', borderRadius:10, padding:'14px 16px', marginBottom:10 }}>
+                <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:12, flexWrap:'wrap', gap:8 }}>
+                  <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+                    {profilePics?.[u.id]||u.profile_picture
+                      ? <img src={profilePics?.[u.id]||u.profile_picture} alt="" style={{ width:32, height:32, borderRadius:'50%', objectFit:'cover' }} />
+                      : <div style={{ width:32, height:32, borderRadius:'50%', background:u.color||'#1d4ed8', display:'flex', alignItems:'center', justifyContent:'center', fontSize:12, fontWeight:700, color:'#fff' }}>{u.avatar||u.name?.charAt(0)}</div>
+                    }
+                    <div>
+                      <div style={{ fontWeight:700, fontSize:13 }}>{u.name}</div>
+                      <div style={{ fontSize:11, color:'#64748b', fontFamily:'DM Mono' }}>{u.id} · {u.role||'Engineer'} · {enabledCount}/{ALL_PAGES.length} pages</div>
+                    </div>
+                  </div>
+                  <div style={{ display:'flex', gap:6 }}>
+                    <button style={PBTN} disabled={isAllOn}  onClick={()=>setAllPerms(u.id,true)}>All On</button>
+                    <button style={PBTN} disabled={isAllOff} onClick={()=>setAllPerms(u.id,false)}>All Off</button>
+                    <button style={PBTN} onClick={()=>applyTemplate(u.id)}>↺ Default</button>
+                  </div>
+                </div>
+                <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(165px,1fr))', gap:5 }}>
+                  {ALL_PAGES.map(pg => {
+                    const enabled = perms[pg.id] !== false;
+                    return (
+                      <label key={pg.id} onClick={()=>setUserPerm(u.id,pg.id,!enabled)}
+                        style={{ display:'flex', alignItems:'center', gap:7, padding:'5px 8px', borderRadius:6, cursor:'pointer',
+                          background:enabled?'rgba(0,194,255,0.06)':'rgba(255,255,255,0.02)',
+                          border:`1px solid ${enabled?'rgba(0,194,255,0.2)':'rgba(255,255,255,0.06)'}`,
+                          fontSize:12, transition:'all 0.12s', userSelect:'none' }}>
+                        <div style={{ width:14, height:14, borderRadius:4, flexShrink:0, border:'1.5px solid', borderColor:enabled?'#00c2ff':'#334155',
+                          background:enabled?'#00c2ff':'transparent', display:'flex', alignItems:'center', justifyContent:'center' }}>
+                          {enabled&&<span style={{ fontSize:9, color:'#000', fontWeight:800 }}>✓</span>}
+                        </div>
+                        <span style={{ color:enabled?'#e2e8f0':'#475569', flex:1 }}>{pg.label}</span>
+                        {MANAGER_ONLY.has(pg.id)&&<span style={{ fontSize:9, color:'#f59e0b' }}>mgr</span>}
+                      </label>
+                    );
+                  })}
+                </div>
+                {/* Coverage bar */}
+                <div style={{ height:3, background:'rgba(255,255,255,0.06)', borderRadius:3, overflow:'hidden', marginTop:10 }}>
+                  <div style={{ height:'100%', width:`${(enabledCount/ALL_PAGES.length)*100}%`, background:'#00c2ff', borderRadius:3, transition:'width 0.3s' }} />
+                </div>
+              </div>
+            );
+          })}
+        </>
+      )}
+
+      {/* ══════════════════════════════════════════════════════════════════════ */}
+      {/* TAB: DRIVE                                                           */}
+      {/* ══════════════════════════════════════════════════════════════════════ */}
+      {settingsTab==='drive' && (
+        <div style={{ background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.07)', borderRadius:10, padding:'18px 20px', maxWidth:640 }}>
+          <div style={{ fontSize:14, fontWeight:700, marginBottom:4 }}>📁 Google Drive & User Registry</div>
+          <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:12 }}>
+            <div style={{ width:8, height:8, borderRadius:'50%', background:driveToken?'#22c55e':'#ef4444', boxShadow:`0 0 6px ${driveToken?'#22c55e':'#ef4444'}` }} />
+            <span style={{ fontSize:12, color:driveToken?'#22c55e':'#ef4444' }}>{driveToken?'Google Drive connected':'Not connected'}</span>
+          </div>
+          <p style={{ fontSize:12, color:'#64748b', marginBottom:14, lineHeight:1.6 }}>
+            All app data is stored in Google Drive as JSON files. A Google Sheet <strong>"CloudOps-UserRegistry"</strong> is auto-created as the single source of truth for users.
+          </p>
+          <div style={{ display:'flex', gap:8, flexWrap:'wrap', marginBottom:12 }}>
+            <button style={DRIVE_BTN} onClick={openSheet}>📊 Open Sheet</button>
+            <button style={DRIVE_BTN} onClick={syncFromSheet} disabled={sheetSyncing}>{sheetSyncing?'⏳ Syncing…':'⬇ Sync from Sheet'}</button>
+            <button style={DRIVE_BTN} onClick={pushToSheet}>⬆ Push to Sheet</button>
+          </div>
+          {[sheetOpenMsg, sheetMsg, pushMsg].filter(Boolean).map((m,i) => (
+            <div key={i} style={{ padding:'7px 12px', borderRadius:7, fontSize:12, marginBottom:6, color:m.startsWith('✅')?'#22c55e':m.startsWith('❌')?'#ef4444':'#f59e0b', background:m.startsWith('✅')?'rgba(34,197,94,0.08)':'rgba(245,158,11,0.08)', border:`1px solid ${m.startsWith('✅')?'rgba(34,197,94,0.2)':'rgba(245,158,11,0.2)'}` }}>{m}</div>
+          ))}
+
+          {/* Secure links */}
+          {(secureLinks||[]).length>0 && (
+            <div style={{ marginTop:16 }}>
+              <div style={{ fontSize:13, fontWeight:700, marginBottom:8 }}>🔗 Secure Share Links</div>
+              {secureLinks.map(l => (
+                <div key={l.id} style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'8px 0', borderBottom:'1px solid rgba(255,255,255,0.05)', gap:10, flexWrap:'wrap' }}>
+                  <div>
+                    <div style={{ fontSize:12, fontWeight:600 }}>{l.label}</div>
+                    <div style={{ fontSize:10, color:'#64748b', fontFamily:'DM Mono' }}>{l.url}</div>
+                    {l.expiry&&<div style={{ fontSize:10, color:'#f59e0b' }}>Expires {l.expiry}</div>}
+                  </div>
+                  <div style={{ display:'flex', gap:6 }}>
+                    <button onClick={()=>navigator.clipboard?.writeText(l.url)} style={DRIVE_BTN}>📋 Copy</button>
+                    <button onClick={()=>setSecureLinks((secureLinks||[]).filter(x=>x.id!==l.id))} style={{ ...DRIVE_BTN, color:'#ef4444', borderColor:'rgba(239,68,68,0.25)' }}>🗑</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ══════════════════════════════════════════════════════════════════════ */}
+      {/* TAB: CONFIGURATION                                                    */}
+      {/* ══════════════════════════════════════════════════════════════════════ */}
+      {settingsTab==='config' && (
+        <div>
       {/* ── 1. Schedule Config ─────────────────────────────────────────────── */}
       <SectionCard title="Schedule Configuration" icon="📅" defaultOpen={true}>
         <div style={{ marginBottom:14, padding:'10px 14px', background:'rgba(79,195,247,0.08)', border:'1px solid rgba(79,195,247,0.25)', borderRadius:8, fontSize:12, color:'#7dd3fc', lineHeight:1.6 }}>
@@ -900,67 +1458,70 @@ export default function SettingsPage({
         </Row>
       </SectionCard>
 
-      {/* ── 13. Team ─────────────────────────────────────────────────────── */}
-      <SectionCard title="Team — Engineer Accounts" icon="🧑‍💻">
-        <div style={{ marginBottom: 14, padding: '10px 14px', background: 'rgba(79,195,247,0.08)', border: '1px solid rgba(79,195,247,0.25)', borderRadius: 8, fontSize: 12, color: '#7dd3fc', lineHeight: 1.6 }}>
-          Add, edit, or remove engineer accounts. New accounts get an auto-generated username and a default password (their username in lowercase) — share that with them directly; they should change it after first sign-in.
-        </div>
-
-        <div style={{ border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden', marginBottom: 16 }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-            <thead>
-              <tr style={{ background: 'var(--bg-card2)' }}>
-                {['', 'Name', 'Username', 'Role', 'Email', 'Mobile', ''].map((h, i) => (
-                  <th key={i} style={{ padding: '8px 10px', textAlign: 'left', fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-muted)', borderBottom: '1px solid var(--border)', letterSpacing: '0.05em' }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {(users || []).map(u => (
-                <TeamRow key={u.id} user={u} setUsers={setUsers}
-                  canRemove={!(u.role === 'Manager' && managerCount <= 1)}
-                  onRemove={() => removeEngineer(u)}
-                  onResetPassword={() => resetPassword(u)}
-                />
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        {generateTrigramId && TRICOLORS ? (
-          <AddEngineerForm users={users} generateTrigramId={generateTrigramId} TRICOLORS={TRICOLORS} onAdd={addEngineer}/>
-        ) : (
-          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Adding new engineers isn't available — missing trigram/colour configuration.</div>
-        )}
-
-        {(syncUsersToSheet || syncUsersFromSheet) && (
-          <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid var(--border)' }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-muted)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Google Sheet sync</div>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-              {syncUsersToSheet && (
-                <button className="btn btn-secondary btn-sm" onClick={syncToSheet} disabled={sheetBusy || !driveToken}>
-                  {sheetBusy ? '⏳ Working…' : '📤 Sync to Sheet'}
-                </button>
-              )}
-              {syncUsersFromSheet && (
-                <button className="btn btn-secondary btn-sm" onClick={loadFromSheet} disabled={sheetBusy || !driveToken}>
-                  {sheetBusy ? '⏳ Working…' : '📥 Load from Sheet'}
-                </button>
-              )}
-              {sheetMsg && (
-                <span style={{ fontSize: 12, color: sheetMsg.ok ? '#6ee7b7' : '#fca5a5' }}>{sheetMsg.ok ? '✅' : '⚠️'} {sheetMsg.text}</span>
-              )}
-            </div>
-          </div>
-        )}
-      </SectionCard>
-
       {/* Bottom save */}
       <div style={{ marginTop:20, display:'flex', justifyContent:'flex-end', gap:8 }}>
         <button className="btn btn-primary" onClick={save} disabled={saving}>
           {saving ? '⏳ Saving…' : saved ? '✅ Saved to Drive' : '💾 Save all settings'}
         </button>
       </div>
+        </div>
+      )}
+
+      {/* ── Add user slide-in modal ─────────────────────────────────────────── */}
+      {showAdd && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.65)', zIndex:9999, display:'flex', alignItems:'center', justifyContent:'center', padding:16 }}
+          onClick={e=>{if(e.target===e.currentTarget)setShowAdd(false);}}>
+          <div style={{ background:'#0f172a', border:'1px solid rgba(255,255,255,0.1)', borderRadius:14, padding:28, width:'100%', maxWidth:560, maxHeight:'90vh', overflowY:'auto', boxShadow:'0 25px 60px rgba(0,0,0,0.6)' }}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 }}>
+              <div style={{ fontSize:16, fontWeight:700 }}>+ Add Team Member</div>
+              <button onClick={()=>setShowAdd(false)} style={{ background:'none', border:'none', color:'#64748b', fontSize:20, cursor:'pointer' }}>✕</button>
+            </div>
+            <UserFields fv={form} setFv={setForm} uid={null} isEdit={false}
+              picUploading={picUploading} onPicUpload={handlePicUpload} driveToken={driveToken} />
+            <div style={{ display:'flex', gap:8, marginTop:16 }}>
+              <button onClick={add} disabled={!form.name}
+                style={{ flex:1, padding:'10px', background:'#00c2ff', color:'#000', border:'none', borderRadius:8, fontWeight:700, fontSize:13, cursor:'pointer', opacity:form.name?1:0.5 }}>
+                ✓ Create User
+              </button>
+              <button onClick={()=>setShowAdd(false)}
+                style={{ padding:'10px 18px', background:'rgba(255,255,255,0.05)', border:'1px solid rgba(255,255,255,0.1)', borderRadius:8, color:'#64748b', fontSize:13, cursor:'pointer' }}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Secure link modal ───────────────────────────────────────────────── */}
+      {showLink && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.65)', zIndex:9999, display:'flex', alignItems:'center', justifyContent:'center', padding:16 }}
+          onClick={e=>{if(e.target===e.currentTarget)setShowLink(false);}}>
+          <div style={{ background:'#0f172a', border:'1px solid rgba(255,255,255,0.1)', borderRadius:14, padding:28, width:'100%', maxWidth:400, boxShadow:'0 25px 60px rgba(0,0,0,0.6)' }}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 }}>
+              <div style={{ fontSize:16, fontWeight:700 }}>🔗 Create Secure Share Link</div>
+              <button onClick={()=>setShowLink(false)} style={{ background:'none', border:'none', color:'#64748b', fontSize:20, cursor:'pointer' }}>✕</button>
+            </div>
+            {[['Label','text','label','e.g. External Rota View'],['Expiry Date','date','expiry',''],['Password (optional)','password','password','']].map(([lbl,type,key,ph])=>(
+              <div key={key} style={{ marginBottom:12 }}>
+                <label style={LBL}>{lbl}</label>
+                <input className="input" type={type} placeholder={ph} value={linkForm[key]}
+                  onChange={e=>setLinkForm({...linkForm,[key]:e.target.value})} />
+              </div>
+            ))}
+            <div style={{ display:'flex', gap:8, justifyContent:'flex-end', marginTop:8 }}>
+              <button onClick={()=>setShowLink(false)} style={{ padding:'8px 18px', background:'transparent', border:'1px solid rgba(255,255,255,0.1)', borderRadius:7, color:'#64748b', cursor:'pointer', fontSize:13 }}>Cancel</button>
+              <button onClick={addLink} style={{ padding:'8px 22px', background:'#00c2ff', color:'#000', border:'none', borderRadius:7, fontWeight:700, fontSize:13, cursor:'pointer' }}>Create</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
+
+// ── Button style constants ────────────────────────────────────────────────────
+const HDR_BTN_PRI = { padding:'9px 20px', background:'#00c2ff', color:'#000', border:'none', borderRadius:8, fontWeight:700, fontSize:13, cursor:'pointer', boxShadow:'0 0 14px rgba(0,194,255,0.3)' };
+const HDR_BTN_SEC = { padding:'8px 16px', background:'rgba(255,255,255,0.05)', border:'1px solid rgba(255,255,255,0.1)', borderRadius:8, color:'#94a3b8', fontWeight:600, fontSize:13, cursor:'pointer' };
+const SEL  = { background:'rgba(255,255,255,0.05)', border:'1px solid rgba(255,255,255,0.1)', borderRadius:6, color:'#e2e8f0', padding:'6px 10px', fontSize:11 };
+const PBTN = { padding:'4px 10px', background:'rgba(255,255,255,0.05)', border:'1px solid rgba(255,255,255,0.1)', borderRadius:6, color:'#94a3b8', fontSize:11, cursor:'pointer' };
+const DRIVE_BTN = { padding:'6px 12px', background:'rgba(255,255,255,0.05)', border:'1px solid rgba(255,255,255,0.1)', borderRadius:6, color:'#94a3b8', fontSize:12, cursor:'pointer' };
