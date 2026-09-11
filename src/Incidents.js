@@ -43,7 +43,42 @@ const BLANK = {
   startTime:'', endTime:'', whoCalled:'', env:'', supLink:'', screenshot:'',
   kbUsed:'', sreContacted:'', sreResponse:'', escalated:'',
   servicesBackToNormal:'', other:'',
+  // ITSM triage fields — purely additive, never read by payroll/timesheet
+  // logic. impact/urgency feed a suggested severity (see IMPACT_URGENCY_MATRIX)
+  // but never force-overwrite severity, since severity/hours/assigned_to/date
+  // are what Payroll.js and the timesheet-sync effect below depend on.
+  impact:'', urgency:'',
+  // Major Incident Management fields — only meaningful when isMajor is true.
+  isMajor:false, majorDeclaredAt:'', majorBridgeLink:'', majorCommsLog:[],
+  majorNextUpdateDue:'',
 };
+
+// ServiceNow-style Impact × Urgency → suggested severity. This only ever
+// SUGGESTS a value in the UI — it never silently overwrites an incident's
+// actual `severity` field, since severity is what payroll/sort/analytics
+// already depend on throughout this file.
+const IMPACT_URGENCY_MATRIX = {
+  'High|High':'Disaster', 'High|Medium':'Critical', 'High|Low':'High',
+  'Medium|High':'Critical', 'Medium|Medium':'High', 'Medium|Low':'Medium',
+  'Low|High':'High', 'Low|Medium':'Medium', 'Low|Low':'Low',
+};
+// Hours an incident can sit open, per severity, before it's flagged as an
+// SLA risk in the Workspace/Insights view. Purely a display flag — never
+// changes stored data or touches payroll.
+const SLA_HOURS = { Disaster:1, Critical:4, High:8, Medium:24, Low:72 };
+function slaRisk(inc){
+  if(inc.status==='Resolved') return null;
+  const threshold = SLA_HOURS[inc.severity];
+  if(!threshold || !inc.date) return null;
+  const started = inc.startTime ? new Date(inc.startTime) : new Date(inc.date+'T12:00:00');
+  if(isNaN(started)) return null;
+  const hoursOpen = (Date.now()-started.getTime())/3600000;
+  if(hoursOpen<0) return null;
+  const pct = hoursOpen/threshold;
+  if(pct>=1) return {level:'breached', hoursOpen, threshold};
+  if(pct>=0.7) return {level:'at-risk', hoursOpen, threshold};
+  return null;
+}
 
 const EDITOR_TABS = [
   { id:'issue',       label:'Issue',       icon:'🚨', field:'issueContent',
@@ -66,6 +101,8 @@ const STRUCTURED_FIELDS = {
     { key:'startTime', label:'Start Time', type:'datetime', w:190 },
     { key:'whoCalled',  label:'Who Called',        type:'text',   placeholder:'L1 or France', w:140 },
     { key:'env',        label:'Env',                type:'text',   placeholder:'e.g. PRD', w:110 },
+    { key:'impact',      label:'Impact',             type:'select', options:['','High','Medium','Low'], w:100 },
+    { key:'urgency',     label:'Urgency',            type:'select', options:['','High','Medium','Low'], w:100 },
     { key:'supLink',     label:'SUP Link',           type:'text',   placeholder:'https://…', w:220 },
     { key:'screenshot',  label:'Screenshot',         type:'image',  w:200 },
   ],
@@ -300,6 +337,18 @@ function representativeTitle(items){
   let best=null, bestN=0;
   counts.forEach((n,t)=>{ if(n>bestN){ bestN=n; best=t; } });
   return bestN>1 ? best : [...items].sort((a,b)=>(b.date||'').localeCompare(a.date||''))[0]?.title;
+}
+// Past incidents (excluding itself) sharing the same title signature —
+// used by the Workspace Insights panel as a lightweight "similar incidents"
+// recommendation, and to suggest a KB article if one was used before on a
+// matching past incident. Rule-based on existing data, not a real model.
+function findSimilarIncidents(inc, allIncidents, limit=5){
+  const sig = titleSignature(inc.title);
+  if(!sig) return [];
+  return allIncidents
+    .filter(o=>o.id!==inc.id && titleSignature(o.title)===sig)
+    .sort((a,b)=>(b.date||'').localeCompare(a.date||''))
+    .slice(0,limit);
 }
 
 // ── CSV export ────────────────────────────────────────────────────────────
@@ -609,6 +658,131 @@ function EmailSummaryPanel({form}){
   );
 }
 
+// ── War Room panel (Major Incident Management) ───────────────────────────────
+// A running, timestamped stakeholder-update log plus bridge link and next-
+// update reminder — matching ServiceNow's Major Incident workbench pattern.
+// Posts write directly via onQuickUpdate (no full edit-modal round trip),
+// since these should be quick, frequent actions during a live incident.
+function WarRoomPanel({inc, onQuickUpdate}){
+  const [msg,setMsg] = useState('');
+  const [bridge,setBridge] = useState(inc.majorBridgeLink||'');
+  const [nextUpdate,setNextUpdate] = useState(inc.majorNextUpdateDue||'');
+  const log = inc.majorCommsLog||[];
+
+  const post = ()=>{
+    if(!msg.trim()) return;
+    const entry = { time:new Date().toISOString(), message:msg.trim() };
+    onQuickUpdate(inc.id, { majorCommsLog:[...log, entry] });
+    setMsg('');
+  };
+
+  if(!onQuickUpdate) return <div style={{padding:20}}><Muted>War Room actions aren't available from this view.</Muted></div>;
+
+  return (
+    <div style={{flex:1,overflow:'auto',padding:'20px 24px',display:'flex',flexDirection:'column',gap:16}}>
+      <div style={{display:'flex',gap:12,flexWrap:'wrap'}}>
+        <div style={{flex:1,minWidth:200}}>
+          <div style={{fontSize:9,color:'rgba(255,255,255,0.3)',textTransform:'uppercase',letterSpacing:'0.6px',fontWeight:600,marginBottom:4}}>Bridge / War Room Link</div>
+          <div style={{display:'flex',gap:6}}>
+            <input value={bridge} onChange={e=>setBridge(e.target.value)} placeholder="https://meet…"
+              style={{flex:1,background:'rgba(255,255,255,0.05)',border:'1px solid rgba(255,255,255,0.12)',borderRadius:6,padding:'6px 10px',color:'#fff',fontSize:12}}/>
+            <button onClick={()=>onQuickUpdate(inc.id,{majorBridgeLink:bridge})} style={{...structFieldBtn}}>Save</button>
+            {inc.majorBridgeLink && <a href={inc.majorBridgeLink} target="_blank" rel="noreferrer" style={{...structFieldBtn,textDecoration:'none',display:'flex',alignItems:'center'}}>Open ↗</a>}
+          </div>
+        </div>
+        <div style={{minWidth:200}}>
+          <div style={{fontSize:9,color:'rgba(255,255,255,0.3)',textTransform:'uppercase',letterSpacing:'0.6px',fontWeight:600,marginBottom:4}}>Next Update Due</div>
+          <div style={{display:'flex',gap:6}}>
+            <input type="datetime-local" value={nextUpdate} onChange={e=>setNextUpdate(e.target.value)}
+              style={{background:'rgba(255,255,255,0.05)',border:'1px solid rgba(255,255,255,0.12)',borderRadius:6,padding:'6px 10px',color:'#fff',fontSize:12,colorScheme:'dark'}}/>
+            <button onClick={()=>onQuickUpdate(inc.id,{majorNextUpdateDue:nextUpdate})} style={{...structFieldBtn}}>Save</button>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <div style={{fontSize:9,color:'rgba(255,255,255,0.3)',textTransform:'uppercase',letterSpacing:'0.6px',fontWeight:600,marginBottom:8}}>Stakeholder Update Log</div>
+        <div style={{display:'flex',gap:8,marginBottom:14}}>
+          <input value={msg} onChange={e=>setMsg(e.target.value)} onKeyDown={e=>e.key==='Enter'&&post()}
+            placeholder="Post an update for stakeholders…"
+            style={{flex:1,background:'rgba(255,255,255,0.05)',border:'1px solid rgba(255,255,255,0.12)',borderRadius:6,padding:'8px 12px',color:'#fff',fontSize:12}}/>
+          <button onClick={post} disabled={!msg.trim()} className="btn btn-primary btn-sm">Post</button>
+        </div>
+        {log.length===0 ? <Muted>No updates posted yet.</Muted> : (
+          <div style={{display:'flex',flexDirection:'column',gap:10}}>
+            {[...log].reverse().map((e,i)=>(
+              <div key={i} style={{display:'flex',gap:10,paddingBottom:10,borderBottom:'1px solid rgba(255,255,255,0.05)'}}>
+                <div style={{width:6,height:6,borderRadius:'50%',background:'#ef4444',marginTop:6,flexShrink:0}}/>
+                <div>
+                  <div style={{fontSize:10,color:'rgba(255,255,255,0.3)',fontFamily:'DM Mono'}}>{new Date(e.time).toLocaleString('en-GB',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</div>
+                  <div style={{fontSize:13,color:'rgba(255,255,255,0.8)'}}>{e.message}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Insights panel ────────────────────────────────────────────────────────
+// Rule-based recommendations — NOT a real AI/ML model — built entirely from
+// data already in this incident list: title-similarity for "similar past
+// incidents" (reusing the Recurring tab's own signature logic), an Impact ×
+// Urgency severity suggestion, and an SLA-risk flag based on severity + age.
+function InsightsPanel({inc, allIncidents, onQuickUpdate}){
+  const similar = useMemo(()=>findSimilarIncidents(inc, allIncidents||[]), [inc, allIncidents]);
+  const sla = slaRisk(inc);
+  const suggestedSeverity = (inc.impact && inc.urgency) ? IMPACT_URGENCY_MATRIX[`${inc.impact}|${inc.urgency}`] : null;
+  const suggestedKb = similar.find(s=>s.kbUsed?.trim())?.kbUsed;
+
+  return (
+    <div style={{flex:1,overflow:'auto',padding:'20px 24px',display:'flex',flexDirection:'column',gap:16}}>
+      <div style={{fontSize:11,color:'rgba(255,255,255,0.3)'}}>Rule-based suggestions from your incident history — not a predictive model, worth a sanity check before acting.</div>
+
+      {sla && (
+        <Card title={sla.level==='breached' ? '⏰ SLA breached' : '⏰ SLA at risk'}>
+          <div style={{fontSize:13,color:'rgba(255,255,255,0.7)'}}>
+            Open {sla.hoursOpen.toFixed(1)}h against a {sla.threshold}h target for {inc.severity} severity.
+          </div>
+        </Card>
+      )}
+
+      {suggestedSeverity && suggestedSeverity!==inc.severity && (
+        <Card title="💡 Suggested severity">
+          <div style={{fontSize:13,color:'rgba(255,255,255,0.7)',marginBottom:10}}>
+            Impact <b>{inc.impact}</b> × Urgency <b>{inc.urgency}</b> usually maps to <b>{suggestedSeverity}</b> (currently {inc.severity}).
+          </div>
+          {onQuickUpdate && (
+            <button onClick={()=>onQuickUpdate(inc.id,{severity:suggestedSeverity})} className="btn btn-secondary btn-sm">Apply {suggestedSeverity}</button>
+          )}
+        </Card>
+      )}
+
+      <Card title="🔁 Similar past incidents" sub={similar.length===0?undefined:`${similar.length} found by title similarity`}>
+        {similar.length===0 ? <Muted>No similarly-titled incidents found.</Muted> : (
+          <div style={{display:'flex',flexDirection:'column',gap:8}}>
+            {similar.map(s=>(
+              <div key={s.id} style={{padding:'8px 0',borderBottom:'1px solid rgba(255,255,255,0.05)'}}>
+                <div style={{fontSize:12,color:'rgba(255,255,255,0.75)',fontWeight:500}}>{s.title}</div>
+                <div style={{fontSize:10,color:'rgba(255,255,255,0.3)',marginTop:2}}>{s.date} · {s.status}{s.kbUsed?` · KB: ${s.kbUsed}`:''}</div>
+                {s.resolutionContent && <div style={{fontSize:11,color:'rgba(255,255,255,0.45)',marginTop:3,fontStyle:'italic'}}>{s.resolutionContent.replace(/[#*`>_\-]/g,'').trim().slice(0,140)}</div>}
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      {suggestedKb && (
+        <Card title="📚 Suggested KB article">
+          <div style={{fontSize:13,color:'rgba(255,255,255,0.7)'}}>{suggestedKb}</div>
+        </Card>
+      )}
+    </div>
+  );
+}
+
 // ── Small reusable bar row (used by Analytics) ───────────────────────────────
 function BarRow({label,count,max,color='#00c2ff',sub}){
   const pct = max>0 ? Math.max(2,(count/max)*100) : 0;
@@ -865,6 +1039,104 @@ function RecurringPanel({incidents,users,onView}){
   );
 }
 
+// ── Major Incident banner ─────────────────────────────────────────────────
+// Persistent across every page-view tab whenever at least one Major Incident
+// is still open — mirrors ServiceNow's major-incident visibility pattern.
+function MajorIncidentBanner({incidents,onView}){
+  const active = incidents.filter(i=>i.isMajor && i.status!=='Resolved');
+  if(active.length===0) return null;
+  return (
+    <div style={{
+      display:'flex',alignItems:'center',gap:12,flexWrap:'wrap',
+      background:'rgba(239,68,68,0.1)',border:'1px solid rgba(239,68,68,0.35)',
+      borderRadius:10,padding:'10px 16px',marginBottom:16,
+    }}>
+      <span style={{fontSize:13,fontWeight:800,color:'#fca5a5',flexShrink:0}}>🔴 {active.length} Active Major Incident{active.length!==1?'s':''}</span>
+      <div style={{display:'flex',gap:8,flexWrap:'wrap',flex:1}}>
+        {active.map(inc=>(
+          <button key={inc.id} onClick={()=>onView(inc)} style={{
+            background:'rgba(255,255,255,0.06)',border:'1px solid rgba(255,255,255,0.15)',
+            borderRadius:20,padding:'4px 12px',cursor:'pointer',color:'#fff',fontSize:11,fontWeight:600,
+            whiteSpace:'nowrap',maxWidth:260,overflow:'hidden',textOverflow:'ellipsis',
+          }}>{inc.title}</button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Workspace (single-pane agent view) ────────────────────────────────────
+// ServiceNow-style split layout: a compact triage list on the left, full
+// incident detail inline on the right — no modal round-trip between
+// incidents, so an agent can work through a queue quickly.
+function WorkspacePanel({incidents,allIncidents,users,isManager,currentUser,onEdit,onDelete,onResolve,onClone,onQuickUpdate}){
+  const [selectedId,setSelectedId] = useState(incidents[0]?.id||null);
+  const [tab,setTab] = useState('issue');
+  const selected = incidents.find(i=>i.id===selectedId) || incidents[0] || null;
+
+  useEffect(()=>{ if(!incidents.find(i=>i.id===selectedId)) setSelectedId(incidents[0]?.id||null); },[incidents]); // eslint-disable-line
+
+  if(incidents.length===0) return <EmptyState icon="🖥️" title="Nothing in the queue" sub="Incidents matching the current filters will appear here for triage."/>;
+
+  const canEdit = selected && (isManager || selected.assigned_to===currentUser);
+
+  return (
+    <div style={{display:'flex',gap:16,height:'70vh',minHeight:520}}>
+      {/* Triage list */}
+      <div style={{width:320,flexShrink:0,overflowY:'auto',display:'flex',flexDirection:'column',gap:6,paddingRight:4}}>
+        {incidents.map(inc=>{
+          const sevC = SEV[inc.severity]||SEV.Low;
+          const sla = slaRisk(inc);
+          const assignee = users.find(u=>u.id===inc.assigned_to);
+          return (
+            <div key={inc.id} onClick={()=>setSelectedId(inc.id)} style={{
+              padding:'10px 12px',borderRadius:8,cursor:'pointer',
+              background:selectedId===inc.id?'rgba(0,194,255,0.08)':'rgba(255,255,255,0.02)',
+              border:`1px solid ${selectedId===inc.id?'rgba(0,194,255,0.35)':'rgba(255,255,255,0.06)'}`,
+              borderLeft:`3px solid ${inc.isMajor?'#ef4444':sevC.border}`,
+            }}>
+              <div style={{display:'flex',gap:5,alignItems:'center',marginBottom:3,flexWrap:'wrap'}}>
+                {inc.isMajor && <span style={{fontSize:9,fontWeight:800,color:'#fca5a5'}}>🔴 MAJOR</span>}
+                <SevPill s={inc.severity}/>
+                {sla && <span style={{fontSize:9,fontWeight:700,color:sla.level==='breached'?'#fca5a5':'#fcd34d'}}>⏰</span>}
+              </div>
+              <div style={{fontSize:12.5,fontWeight:600,color:'#fff',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{inc.title}</div>
+              <div style={{fontSize:10,color:'rgba(255,255,255,0.35)',marginTop:2}}>{assignee?.name||inc.assigned_to||'Unassigned'} · {inc.status}</div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Work pane */}
+      <div style={{flex:1,minWidth:0,display:'flex',flexDirection:'column',background:'#0d1117',border:'1px solid rgba(255,255,255,0.1)',borderRadius:12,overflow:'hidden'}}>
+        {!selected ? (
+          <EmptyState icon="👈" title="Select an incident" sub="Pick something from the queue on the left."/>
+        ) : (
+          <>
+            <div style={{padding:'14px 18px',borderBottom:'1px solid rgba(255,255,255,0.07)',background:'rgba(255,255,255,0.02)'}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:10}}>
+                <div style={{minWidth:0,flex:1}}>
+                  <div style={{fontSize:16,fontWeight:700,color:'#fff',marginBottom:6}}>{selected.title}</div>
+                  <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                    <SevPill s={selected.severity}/><StaPill s={selected.status}/>
+                  </div>
+                </div>
+                <div style={{display:'flex',gap:6,flexShrink:0}}>
+                  {canEdit && selected.status!=='Resolved' && <button onClick={()=>onResolve(selected.id)} className="btn btn-secondary btn-sm">✓ Resolve</button>}
+                  {canEdit && <button onClick={()=>onEdit(selected)} className="btn btn-secondary btn-sm">✏ Edit</button>}
+                  {onClone && <button onClick={()=>onClone(selected)} className="btn btn-secondary btn-sm">📋 Clone</button>}
+                </div>
+              </div>
+            </div>
+            <IncidentDetailBody inc={selected} tab={tab} setTab={setTab} canEdit={canEdit}
+              onEditRequest={()=>onEdit(selected)} allIncidents={allIncidents} onQuickUpdate={onQuickUpdate}/>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Shared tiny layout helpers ───────────────────────────────────────────────
 function Card({title,sub,children}){
   return (
@@ -903,13 +1175,14 @@ function IncCard({inc,users,isManager,currentUser,onEdit,onDelete,onResolve,onVi
   const snippet=(inc.issueContent||inc.description||'').replace(/[#*`>_\-]/g,'').trim().slice(0,140);
   const sevC=SEV[inc.severity]||SEV.Low;
   const staC=STA[inc.status]||STA.Investigating;
+  const sla=slaRisk(inc);
 
   return (
     <div
       onClick={()=>onView(inc)}
       style={{
-        background:'var(--bg-card)',border:`1px solid var(--border)`,
-        borderLeft:`3px solid ${sevC.border}`,borderRadius:10,
+        background:'var(--bg-card)',border:`1px solid ${inc.isMajor?'rgba(239,68,68,0.35)':'var(--border)'}`,
+        borderLeft:`3px solid ${inc.isMajor?'#ef4444':sevC.border}`,borderRadius:10,
         padding:'14px 16px', cursor:'pointer',
         transition:'transform .18s cubic-bezier(.34,1.56,.64,1),box-shadow .2s,border-color .2s',
       }}
@@ -923,9 +1196,16 @@ function IncCard({inc,users,isManager,currentUser,onEdit,onDelete,onResolve,onVi
         <div style={{flex:1,minWidth:0}}>
           {/* Title row */}
           <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginBottom:5}}>
+            {inc.isMajor&&<span style={{fontSize:10,background:'rgba(239,68,68,0.18)',border:'1px solid rgba(239,68,68,0.5)',color:'#fca5a5',borderRadius:20,padding:'1px 8px',fontWeight:800,letterSpacing:'0.3px'}}>🔴 MAJOR</span>}
             {inc.isDaily&&<span style={{fontSize:10,background:'rgba(99,102,241,0.12)',border:'1px solid rgba(99,102,241,0.3)',color:'#a5b4fc',borderRadius:20,padding:'1px 8px',fontWeight:600}}>{dailyT?.icon||'📋'} Daily</span>}
             <SevPill s={inc.severity}/>
             <StaPill s={inc.status}/>
+            {sla&&<span title={`Open ${sla.hoursOpen.toFixed(1)}h of a ${sla.threshold}h target`} style={{
+              fontSize:10,fontWeight:700,borderRadius:20,padding:'1px 8px',
+              background:sla.level==='breached'?'rgba(239,68,68,0.14)':'rgba(245,158,11,0.12)',
+              border:`1px solid ${sla.level==='breached'?'rgba(239,68,68,0.4)':'rgba(245,158,11,0.3)'}`,
+              color:sla.level==='breached'?'#fca5a5':'#fcd34d',
+            }}>⏰ {sla.level==='breached'?'SLA breached':'SLA at risk'}</span>}
             {!inc.isDaily&&inc.hours>0&&<span style={{fontSize:10,background:'rgba(245,158,11,0.1)',border:'1px solid rgba(245,158,11,0.25)',color:'#fcd34d',borderRadius:20,padding:'1px 8px'}}>⏱ {inc.hours}h</span>}
             {inc.diagnosticsContent&&<span style={{fontSize:10,color:'rgba(255,255,255,0.3)'}}>🔍 Diag</span>}
             {inc.resolutionContent&&<span style={{fontSize:10,color:'#4ade80'}}>✓ Fixed</span>}
@@ -1002,14 +1282,108 @@ function IncCard({inc,users,isManager,currentUser,onEdit,onDelete,onResolve,onVi
 
 
 // ── Detail View (read-only) ────────────────────────────────────────────────
-const DETAIL_TABS = [
-  { id:'issue',       label:'🚨 Issue',       field:'issueContent' },
-  { id:'diagnostics', label:'🔍 Diagnostics', field:'diagnosticsContent' },
-  { id:'resolution',  label:'✅ Resolution',  field:'resolutionContent' },
-  { id:'email',       label:'📧 Email Summary', field:null },
-];
+function getDetailTabs(inc){
+  const tabs = [
+    { id:'issue',       label:'🚨 Issue',       field:'issueContent' },
+    { id:'diagnostics', label:'🔍 Diagnostics', field:'diagnosticsContent' },
+    { id:'resolution',  label:'✅ Resolution',  field:'resolutionContent' },
+  ];
+  if(inc.isMajor) tabs.push({ id:'warroom', label:'🔴 War Room', field:null });
+  tabs.push({ id:'insights', label:'💡 Insights', field:null });
+  tabs.push({ id:'email', label:'📧 Email Summary', field:null });
+  return tabs;
+}
 
-function DetailView({inc, users, isManager, currentUser, onClose, onEdit, onResolve, onClone}){
+// Shared tab-bar + content body, used by both the modal DetailView and the
+// inline Workspace pane (see WorkspacePanel) so the two never drift apart.
+function IncidentDetailBody({inc, tab, setTab, canEdit, onEditRequest, allIncidents, onQuickUpdate}){
+  const tabs = getDetailTabs(inc);
+  const activeTab = tabs.find(t => t.id === tab) || tabs[0];
+  return (
+    <>
+      {/* Tab bar */}
+      <div style={{
+        display:'flex', borderBottom:'1px solid rgba(255,255,255,0.07)',
+        background:'rgba(255,255,255,0.015)', flexShrink:0, overflowX:'auto',
+      }}>
+        {tabs.map(t => {
+          const hasContent = t.field
+            ? !!(inc[t.field]||'').trim()
+            : t.id==='warroom' ? (inc.majorCommsLog||[]).length>0 : false;
+          return (
+            <button key={t.id} onClick={()=>setTab(t.id)} style={{
+              padding:'10px 22px', border:'none', cursor:'pointer', whiteSpace:'nowrap',
+              background:tab===t.id?'rgba(255,255,255,0.05)':'transparent',
+              color:tab===t.id?'#fff':'rgba(255,255,255,0.35)',
+              borderBottom:`2px solid ${tab===t.id?(t.id==='warroom'?'#ef4444':'var(--accent)'):'transparent'}`,
+              fontSize:13, fontWeight:tab===t.id?700:400,
+              display:'flex', alignItems:'center', gap:7, transition:'all .15s',
+            }}>
+              {t.label}
+              {hasContent && <span style={{width:6,height:6,borderRadius:'50%',background:t.id==='resolution'?'#22c55e':t.id==='warroom'?'#ef4444':'var(--accent)',flexShrink:0}}/>}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Content */}
+      <div style={{flex:1, overflowY:'auto', minHeight:0, display:'flex', flexDirection:'column'}}>
+        {tab==='email' ? (
+          <EmailSummaryPanel form={inc}/>
+        ) : tab==='warroom' ? (
+          <WarRoomPanel inc={inc} onQuickUpdate={onQuickUpdate}/>
+        ) : tab==='insights' ? (
+          <InsightsPanel inc={inc} allIncidents={allIncidents} onQuickUpdate={onQuickUpdate}/>
+        ) : (
+          <div style={{flex:1, overflowY:'auto', padding:'24px 28px'}}>
+            {STRUCTURED_FIELDS[tab] && STRUCTURED_FIELDS[tab].some(f=>fieldDisplayValue(f,inc).toString().trim()) && (
+              <div style={{
+                display:'flex', flexWrap:'wrap', gap:'10px 28px',
+                marginBottom:20, paddingBottom:18,
+                borderBottom:'1px solid rgba(255,255,255,0.08)',
+              }}>
+                {STRUCTURED_FIELDS[tab].filter(f=>fieldDisplayValue(f,inc).toString().trim()).map(f=>(
+                  <div key={f.key} style={{minWidth:100}}>
+                    <div style={{fontSize:9,color:'rgba(255,255,255,0.3)',textTransform:'uppercase',letterSpacing:'0.6px',fontWeight:600,marginBottom:3}}>{f.label}</div>
+                    {f.type==='image' ? (
+                      <img src={inc[f.key]} alt="Screenshot" style={{maxHeight:80,borderRadius:6,border:'1px solid rgba(255,255,255,0.12)'}}/>
+                    ) : (
+                      <div style={{fontSize:13,color:'rgba(255,255,255,0.8)',fontWeight:500}}>{fieldDisplayValue(f,inc)}</div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+            {activeTab && (inc[activeTab.field]||'').trim() ? (
+              <div className="inc-pv" style={{fontSize:14, lineHeight:1.8, color:'rgba(255,255,255,0.75)'}}
+                dangerouslySetInnerHTML={{__html: renderMd(inc[activeTab.field])}}
+              />
+            ) : (
+              <div style={{
+                display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center',
+                height:'100%', gap:10, color:'rgba(255,255,255,0.2)',
+              }}>
+                <div style={{fontSize:36}}>
+                  {tab==='issue'?'📋':tab==='diagnostics'?'🔍':'✅'}
+                </div>
+                <div style={{fontSize:14, fontWeight:600}}>No {tab} notes yet</div>
+                {canEdit && (
+                  <button onClick={onEditRequest} style={{
+                    marginTop:8, background:'rgba(0,194,255,0.1)', border:'1px solid rgba(0,194,255,0.25)',
+                    borderRadius:8, padding:'7px 16px', cursor:'pointer',
+                    color:'var(--accent)', fontSize:12, fontWeight:600,
+                  }}>✏ Add notes in editor</button>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+function DetailView({inc, users, isManager, currentUser, onClose, onEdit, onResolve, onClone, allIncidents, onQuickUpdate}){
   const [tab, setTab] = React.useState('issue');
   if (!inc) return null;
   const assignee = users.find(u => u.id === inc.assigned_to);
@@ -1017,7 +1391,6 @@ function DetailView({inc, users, isManager, currentUser, onClose, onEdit, onReso
   const sevC     = SEV[inc.severity] || SEV.Low;
   const staC     = STA[inc.status]   || STA.Investigating;
   const dailyT   = DAILY_TYPES.find(t => t.id === inc.dailyType);
-  const activeTab = DETAIL_TABS.find(t => t.id === tab);
 
   return (
     <div style={{
@@ -1078,6 +1451,27 @@ function DetailView({inc, users, isManager, currentUser, onClose, onEdit, onReso
                 color:'rgba(255,255,255,0.6)', fontSize:12, fontWeight:600,
               }}>📋 Clone</button>
             )}
+            {canEdit && onQuickUpdate && (
+              inc.isMajor ? (
+                <button onClick={()=>{ if(window.confirm('Stand down this Major Incident? It will move out of the active Major Incidents banner.')) onQuickUpdate(inc.id,{isMajor:false}); }} style={{
+                  background:'rgba(255,255,255,0.06)', border:'1px solid rgba(255,255,255,0.1)',
+                  borderRadius:8, padding:'7px 14px', cursor:'pointer',
+                  color:'rgba(255,255,255,0.6)', fontSize:12, fontWeight:600,
+                }}>🔓 Stand Down</button>
+              ) : (
+                <button onClick={()=>{
+                  if(!window.confirm('Declare this a Major Incident?\n\nThis opens a War Room tab for coordinated stakeholder updates, and raises severity to Critical if it isn\'t already Critical or Disaster.')) return;
+                  onQuickUpdate(inc.id,{
+                    isMajor:true, majorDeclaredAt:new Date().toISOString(),
+                    severity: (inc.severity==='Disaster'||inc.severity==='Critical') ? inc.severity : 'Critical',
+                  });
+                }} style={{
+                  background:'rgba(239,68,68,0.12)', border:'1px solid rgba(239,68,68,0.35)',
+                  borderRadius:8, padding:'7px 14px', cursor:'pointer',
+                  color:'#fca5a5', fontSize:12, fontWeight:700,
+                }}>🔴 Declare Major</button>
+              )
+            )}
             <button onClick={onClose} style={{
               background:'rgba(255,255,255,0.06)', border:'1px solid rgba(255,255,255,0.1)',
               borderRadius:8, width:34, height:34, cursor:'pointer',
@@ -1116,78 +1510,9 @@ function DetailView({inc, users, isManager, currentUser, onClose, onEdit, onReso
           ))}
         </div>
 
-        {/* Tab bar */}
-        <div style={{
-          display:'flex', borderBottom:'1px solid rgba(255,255,255,0.07)',
-          background:'rgba(255,255,255,0.015)', flexShrink:0,
-        }}>
-          {DETAIL_TABS.map(t => {
-            const hasContent = !!(inc[t.field]||'').trim();
-            return (
-              <button key={t.id} onClick={()=>setTab(t.id)} style={{
-                padding:'10px 22px', border:'none', cursor:'pointer',
-                background:tab===t.id?'rgba(255,255,255,0.05)':'transparent',
-                color:tab===t.id?'#fff':'rgba(255,255,255,0.35)',
-                borderBottom:`2px solid ${tab===t.id?'var(--accent)':'transparent'}`,
-                fontSize:13, fontWeight:tab===t.id?700:400,
-                display:'flex', alignItems:'center', gap:7, transition:'all .15s',
-              }}>
-                {t.label}
-                {hasContent && <span style={{width:6,height:6,borderRadius:'50%',background:t.id==='resolution'?'#22c55e':'var(--accent)',flexShrink:0}}/>}
-              </button>
-            );
-          })}
-        </div>
-
-        {/* Content */}
-        <div style={{flex:1, overflowY:'auto', minHeight:0, display:'flex', flexDirection:'column'}}>
-          {tab==='email' ? (
-            <EmailSummaryPanel form={inc}/>
-          ) : (
-            <div style={{flex:1, overflowY:'auto', padding:'24px 28px'}}>
-              {STRUCTURED_FIELDS[tab] && STRUCTURED_FIELDS[tab].some(f=>fieldDisplayValue(f,inc).toString().trim()) && (
-                <div style={{
-                  display:'flex', flexWrap:'wrap', gap:'10px 28px',
-                  marginBottom:20, paddingBottom:18,
-                  borderBottom:'1px solid rgba(255,255,255,0.08)',
-                }}>
-                  {STRUCTURED_FIELDS[tab].filter(f=>fieldDisplayValue(f,inc).toString().trim()).map(f=>(
-                    <div key={f.key} style={{minWidth:100}}>
-                      <div style={{fontSize:9,color:'rgba(255,255,255,0.3)',textTransform:'uppercase',letterSpacing:'0.6px',fontWeight:600,marginBottom:3}}>{f.label}</div>
-                      {f.type==='image' ? (
-                        <img src={inc[f.key]} alt="Screenshot" style={{maxHeight:80,borderRadius:6,border:'1px solid rgba(255,255,255,0.12)'}}/>
-                      ) : (
-                        <div style={{fontSize:13,color:'rgba(255,255,255,0.8)',fontWeight:500}}>{fieldDisplayValue(f,inc)}</div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-              {activeTab && (inc[activeTab.field]||'').trim() ? (
-                <div className="inc-pv" style={{fontSize:14, lineHeight:1.8, color:'rgba(255,255,255,0.75)'}}
-                  dangerouslySetInnerHTML={{__html: renderMd(inc[activeTab.field])}}
-                />
-              ) : (
-                <div style={{
-                  display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center',
-                  height:'100%', gap:10, color:'rgba(255,255,255,0.2)',
-                }}>
-                  <div style={{fontSize:36}}>
-                    {tab==='issue'?'📋':tab==='diagnostics'?'🔍':'✅'}
-                  </div>
-                  <div style={{fontSize:14, fontWeight:600}}>No {tab} notes yet</div>
-                  {canEdit && (
-                    <button onClick={()=>{onClose(); setTimeout(()=>onEdit(inc),50);}} style={{
-                      marginTop:8, background:'rgba(0,194,255,0.1)', border:'1px solid rgba(0,194,255,0.25)',
-                      borderRadius:8, padding:'7px 16px', cursor:'pointer',
-                      color:'var(--accent)', fontSize:12, fontWeight:600,
-                    }}>✏ Add notes in editor</button>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
+        <IncidentDetailBody inc={inc} tab={tab} setTab={setTab} canEdit={canEdit}
+          onEditRequest={()=>{onClose(); setTimeout(()=>onEdit(inc),50);}}
+          allIncidents={allIncidents} onQuickUpdate={onQuickUpdate}/>
       </div>
     </div>
   );
@@ -1425,7 +1750,7 @@ export default function Incidents({
 }){
   const [view,setView]=useState('all');
   const [groupBy,setGroupBy]=useState('none'); // 'none' | 'severity' | 'status' | 'assigned_to' | 'date' | 'dailyType'
-  const [pageView,setPageView]=useState('list'); // 'list' | 'analytics' | 'reports' | 'recurring'
+  const [pageView,setPageView]=useState('workspace'); // 'workspace' | 'list' | 'analytics' | 'reports' | 'recurring'
   const [search,setSearch]=useState('');
   const [showModal,setShowModal]=useState(false);
   const [editId,setEditId]=useState(null);
@@ -1573,6 +1898,16 @@ export default function Incidents({
     toast('✅ Resolved.');
   };
 
+  // Lightweight patch path for Major Incident actions (Declare/Stand Down,
+  // War Room posts, accepting a suggested severity) — bypasses the full
+  // Log Incident modal since these should be quick, frequent actions.
+  // Never touches hours/assigned_to/date/isDaily, so payroll/timesheet sync
+  // (the useEffect below) is unaffected by anything this can do.
+  const quickUpdateIncident=(id,patch)=>{
+    setIncidents(safe.map(i=>i.id===id?{...i,...patch,updated_at:new Date().toISOString()}:i));
+    setDetailInc(prev=>prev&&prev.id===id?{...prev,...patch,updated_at:new Date().toISOString()}:prev);
+  };
+
   // Filter + sort
   const vf=safe.filter(i=>{
     if(view==='daily') return i.isDaily===true;
@@ -1680,9 +2015,12 @@ export default function Incidents({
         ))}
       </div>
 
+      {/* Major Incident banner — persistent across every tab */}
+      <MajorIncidentBanner incidents={safe} onView={setDetailInc}/>
+
       {/* View tabs */}
       <div style={{display:'flex',gap:4,marginBottom:16,background:'rgba(255,255,255,0.03)',border:'1px solid rgba(255,255,255,0.07)',borderRadius:10,padding:4,width:'fit-content',flexWrap:'wrap'}}>
-        {[['list','📋 List'],['analytics','📊 Analytics'],['reports','📄 Reports'],['recurring','🔁 Recurring']].map(([id,label])=>(
+        {[['workspace','🖥️ Workspace'],['list','📋 List'],['analytics','📊 Analytics'],['reports','📄 Reports'],['recurring','🔁 Recurring']].map(([id,label])=>(
           <button key={id} onClick={()=>setPageView(id)} style={{
             padding:'7px 16px',borderRadius:7,border:'none',cursor:'pointer',fontSize:12.5,fontWeight:600,
             background:pageView===id?'rgba(0,194,255,0.1)':'transparent',
@@ -1814,6 +2152,7 @@ export default function Incidents({
         </div>
       ))}
 
+      {pageView==='workspace' && <WorkspacePanel incidents={sorted} allIncidents={safe} users={users} isManager={isManager} currentUser={currentUser} onEdit={openEdit} onDelete={deleteIncident} onResolve={resolveIncident} onClone={openClone} onQuickUpdate={quickUpdateIncident}/>}
       {pageView==='analytics' && <AnalyticsPanel incidents={sorted} users={users}/>}
       {pageView==='reports'   && <ReportsPanel incidents={sorted} users={users}/>}
       {pageView==='recurring' && <RecurringPanel incidents={sorted} users={users} onView={setDetailInc}/>}
@@ -1834,6 +2173,8 @@ export default function Incidents({
           onEdit={(inc)=>{ setDetailInc(null); openEdit(inc); }}
           onResolve={(id)=>{ resolveIncident(id); setDetailInc(prev=>prev&&prev.id===id?{...prev,status:'Resolved'}:prev); }}
           onClone={(inc)=>{ setDetailInc(null); openClone(inc); }}
+          allIncidents={safe}
+          onQuickUpdate={quickUpdateIncident}
         />
       )}
     </div>
