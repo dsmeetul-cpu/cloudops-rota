@@ -2,7 +2,7 @@
 // CloudOps Rota — Incidents
 // Meetul Bhundia (MBA47) · Cloud Run Operations · September 2026
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 
 // ── Constants ──────────────────────────────────────────────────────────────
 const SEVERITIES    = ['Disaster', 'Critical', 'High', 'Medium', 'Low'];
@@ -255,6 +255,69 @@ const TOOLBAR_ITEMS = [
 
 // ── Markdown renderer ──────────────────────────────────────────────────────
 function esc(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+// ── Keyword search ────────────────────────────────────────────────────────
+// Searches across every free-text field an incident has, plus the assigned
+// engineer's name (so "search for Priya" works without knowing her trigram).
+const SEARCH_FIELDS = [
+  'title','issueContent','diagnosticsContent','resolutionContent',
+  'env','whoCalled','supLink','kbUsed','sreResponse','escalated','other',
+];
+function incidentMatchesSearch(inc, query, userName){
+  if(!query) return true;
+  const hay = (SEARCH_FIELDS.map(k=>inc[k]||'').join(' ') + ' ' + (userName||'')).toLowerCase();
+  // Support multi-word queries as AND — every word must appear somewhere.
+  return query.toLowerCase().trim().split(/\s+/).every(word=>hay.includes(word));
+}
+
+// ── Recurrence detection ─────────────────────────────────────────────────
+// Incident titles are free text (often "Oncall :: PRD : <alert> on <hostname>"
+// style), so exact-match grouping rarely catches repeats. Instead we build a
+// normalized "signature" per title — lowercase, strip punctuation/numbers,
+// drop short/common words, sort what's left — and group incidents whose
+// signatures match. This is a heuristic (title-similarity, not a true
+// classification), so it's presented as such in the UI.
+const RECUR_STOPWORDS = new Set([
+  'a','an','the','on','in','at','to','of','for','and','or','is','was','are',
+  'with','by','from','this','that','has','have','had','been','be','it','its',
+  'oncall','disaster','alert','issue','incident','service','health',
+]);
+function titleSignature(title){
+  return (title||'')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g,' ')
+    .split(/\s+/)
+    .filter(w => w.length>2 && !RECUR_STOPWORDS.has(w) && !/^\d+$/.test(w))
+    .sort()
+    .join(' ');
+}
+// Most-common title text within a recurrence group (falls back to the most
+// recent if every title in the group is unique) — used as the group's
+// display label since the raw signature isn't human-friendly.
+function representativeTitle(items){
+  const counts = new Map();
+  items.forEach(i=>counts.set(i.title, (counts.get(i.title)||0)+1));
+  let best=null, bestN=0;
+  counts.forEach((n,t)=>{ if(n>bestN){ bestN=n; best=t; } });
+  return bestN>1 ? best : [...items].sort((a,b)=>(b.date||'').localeCompare(a.date||''))[0]?.title;
+}
+
+// ── CSV export ────────────────────────────────────────────────────────────
+function toCsvValue(v){
+  const s = (v===null||v===undefined) ? '' : String(v);
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g,'""')}"` : s;
+}
+function downloadCsv(rows, columns, filename){
+  const header = columns.map(c=>toCsvValue(c.label)).join(',');
+  const body = rows.map(r=>columns.map(c=>toCsvValue(c.get(r))).join(',')).join('\n');
+  const blob = new Blob([header+'\n'+body], {type:'text/csv;charset=utf-8;'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 function renderMd(md){
   if(!md) return '';
   let h = md
@@ -542,6 +605,292 @@ function EmailSummaryPanel({form}){
       <div style={{flex:1,overflow:'auto',padding:20,background:'rgba(255,255,255,0.02)'}}>
         <div style={{background:'#fff',borderRadius:6,padding:16}} dangerouslySetInnerHTML={{__html: html}}/>
       </div>
+    </div>
+  );
+}
+
+// ── Small reusable bar row (used by Analytics) ───────────────────────────────
+function BarRow({label,count,max,color='#00c2ff',sub}){
+  const pct = max>0 ? Math.max(2,(count/max)*100) : 0;
+  return (
+    <div style={{marginBottom:10}}>
+      <div style={{display:'flex',justifyContent:'space-between',fontSize:12,marginBottom:3}}>
+        <span style={{color:'rgba(255,255,255,0.7)',fontWeight:500}}>{label}{sub&&<span style={{color:'rgba(255,255,255,0.3)',fontWeight:400}}> · {sub}</span>}</span>
+        <span style={{color:'rgba(255,255,255,0.5)',fontFamily:'DM Mono',fontWeight:700}}>{count}</span>
+      </div>
+      <div style={{height:6,background:'rgba(255,255,255,0.05)',borderRadius:4,overflow:'hidden'}}>
+        <div style={{height:'100%',width:`${pct}%`,background:color,borderRadius:4,transition:'width .3s'}}/>
+      </div>
+    </div>
+  );
+}
+
+// ── Analytics panel ───────────────────────────────────────────────────────
+function AnalyticsPanel({incidents,users}){
+  const stats = useMemo(()=>{
+    const bySeverity = {}, byStatus = {}, byEngineer = {}, byEnv = {}, byWho = {};
+    let sreContacted=0, sreTotal=0, escalated=0, totalHours=0, durSum=0, durCount=0, dailyCount=0;
+    const weekBuckets = new Map();
+    incidents.forEach(inc=>{
+      bySeverity[inc.severity]=(bySeverity[inc.severity]||0)+1;
+      byStatus[inc.status]=(byStatus[inc.status]||0)+1;
+      if(inc.assigned_to) byEngineer[inc.assigned_to]=(byEngineer[inc.assigned_to]||0)+1;
+      if(inc.env?.trim()) byEnv[inc.env.trim()]=(byEnv[inc.env.trim()]||0)+1;
+      if(inc.whoCalled?.trim()) byWho[inc.whoCalled.trim()]=(byWho[inc.whoCalled.trim()]||0)+1;
+      if(inc.sreContacted){ sreTotal++; if(inc.sreContacted==='Yes') sreContacted++; }
+      if(inc.escalated?.trim() && inc.escalated.trim().toLowerCase()!=='no') escalated++;
+      totalHours += Number(inc.hours)||0;
+      if(inc.isDaily) dailyCount++;
+      const dur = durationBetween(inc.startTime, inc.endTime);
+      if(dur){
+        const m = dur.match(/(?:(\d+)h)?\s*(?:(\d+)m)?/);
+        const mins = (Number(m?.[1]||0)*60)+Number(m?.[2]||0);
+        if(mins>0){ durSum+=mins; durCount++; }
+      }
+      if(inc.date){
+        const d = new Date(inc.date+'T12:00:00');
+        const onejan = new Date(d.getFullYear(),0,1);
+        const week = Math.ceil((((d-onejan)/86400000)+onejan.getDay()+1)/7);
+        const key = `${d.getFullYear()}-W${String(week).padStart(2,'0')}`;
+        weekBuckets.set(key,(weekBuckets.get(key)||0)+1);
+      }
+    });
+    const weeks = [...weekBuckets.entries()].sort((a,b)=>a[0].localeCompare(b[0])).slice(-12);
+    return {
+      bySeverity, byStatus, byEngineer, byEnv, byWho,
+      sreContacted, sreTotal, escalated, totalHours, dailyCount,
+      avgMins: durCount>0 ? Math.round(durSum/durCount) : null,
+      durCount, weeks,
+    };
+  },[incidents]);
+
+  const maxWeek = Math.max(1,...stats.weeks.map(([,v])=>v));
+  const engRows = Object.entries(stats.byEngineer).sort((a,b)=>b[1]-a[1]);
+  const maxEng = Math.max(1,...engRows.map(([,v])=>v));
+
+  if(incidents.length===0) return <EmptyState icon="📊" title="Nothing to analyze yet" sub="Analytics reflect whatever the filters above currently show."/>;
+
+  return (
+    <div style={{display:'flex',flexDirection:'column',gap:20}}>
+      {/* Trend */}
+      <Card title="📈 Incidents per week" sub="Last 12 weeks with activity, within current filters">
+        <div style={{display:'flex',alignItems:'flex-end',gap:4,height:90,paddingTop:6}}>
+          {stats.weeks.map(([wk,v])=>(
+            <div key={wk} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:4}} title={`${wk}: ${v}`}>
+              <div style={{width:'100%',height:Math.max(4,(v/maxWeek)*70),background:'#00c2ff',borderRadius:'3px 3px 0 0',opacity:0.85}}/>
+              <span style={{fontSize:8,color:'rgba(255,255,255,0.25)',whiteSpace:'nowrap'}}>{wk.slice(6)}</span>
+            </div>
+          ))}
+          {stats.weeks.length===0 && <span style={{fontSize:12,color:'rgba(255,255,255,0.3)'}}>No dated incidents in range.</span>}
+        </div>
+      </Card>
+
+      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit, minmax(260px, 1fr))',gap:16}}>
+        <Card title="By Severity">
+          {SEVERITIES.map(s=><BarRow key={s} label={s} count={stats.bySeverity[s]||0} max={incidents.length} color={SEV_COLORS[s]||'#00c2ff'}/>)}
+        </Card>
+        <Card title="By Status">
+          {STATUSES.map(s=><BarRow key={s} label={s} count={stats.byStatus[s]||0} max={incidents.length} color={STA_COLORS[s]||'#00c2ff'}/>)}
+        </Card>
+        <Card title="By Engineer">
+          {engRows.length===0 ? <Muted>No assignments.</Muted> : engRows.map(([uid,c])=>(
+            <BarRow key={uid} label={users.find(u=>u.id===uid)?.name||uid} count={c} max={maxEng}/>
+          ))}
+        </Card>
+        <Card title="By Environment">
+          {Object.keys(stats.byEnv).length===0 ? <Muted>No Env values logged yet.</Muted> : Object.entries(stats.byEnv).sort((a,b)=>b[1]-a[1]).map(([env,c])=>(
+            <BarRow key={env} label={env} count={c} max={incidents.length} color="#a78bfa"/>
+          ))}
+        </Card>
+      </div>
+
+      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit, minmax(180px, 1fr))',gap:12}}>
+        <Stat label="Avg resolution time" value={stats.avgMins!=null ? `${Math.floor(stats.avgMins/60)}h ${stats.avgMins%60}m` : '—'} sub={`${stats.durCount} with both times logged`}/>
+        <Stat label="SRE contacted" value={stats.sreTotal>0 ? `${Math.round(stats.sreContacted/stats.sreTotal*100)}%` : '—'} sub={`${stats.sreContacted}/${stats.sreTotal} logged`}/>
+        <Stat label="Escalated" value={`${stats.escalated}`} sub={`of ${incidents.length} total`}/>
+        <Stat label="Total hours logged" value={stats.totalHours.toFixed(1)} sub={`${stats.dailyCount} daily · ${incidents.length-stats.dailyCount} on-call`}/>
+      </div>
+
+      {Object.keys(stats.byWho).length>0 && (
+        <Card title="Who Called">
+          {Object.entries(stats.byWho).sort((a,b)=>b[1]-a[1]).map(([who,c])=>(
+            <BarRow key={who} label={who} count={c} max={incidents.length} color="#f59e0b"/>
+          ))}
+        </Card>
+      )}
+    </div>
+  );
+}
+const SEV_COLORS={Disaster:'#ef4444',Critical:'#f97316',High:'#f59e0b',Medium:'#eab308',Low:'#84cc16'};
+const STA_COLORS={Investigating:'#ef4444',Identified:'#f59e0b',Monitoring:'#3b82f6',Resolved:'#22c55e'};
+
+// ── Reports panel ─────────────────────────────────────────────────────────
+const CSV_COLUMNS = [
+  {label:'ID', get:i=>i.id}, {label:'Title', get:i=>i.title},
+  {label:'Severity', get:i=>i.severity}, {label:'Status', get:i=>i.status},
+  {label:'Assigned To', get:(i,users)=>users.find(u=>u.id===i.assigned_to)?.name||i.assigned_to},
+  {label:'Date', get:i=>i.date}, {label:'Start (UTC)', get:i=>fmtUTC(i.startTime)},
+  {label:'End (UTC)', get:i=>fmtUTC(i.endTime)}, {label:'Hours', get:i=>i.hours},
+  {label:'Env', get:i=>i.env}, {label:'Who Called', get:i=>i.whoCalled},
+  {label:'SUP Link', get:i=>i.supLink}, {label:'KB Used', get:i=>i.kbUsed},
+  {label:'SRE Contacted', get:i=>i.sreContacted}, {label:'Escalated', get:i=>i.escalated},
+  {label:'Service(s) back to normal', get:i=>i.servicesBackToNormal}, {label:'Other', get:i=>i.other},
+];
+function ReportsPanel({incidents,users}){
+  const [copied,setCopied]=useState(false);
+  const summary = useMemo(()=>{
+    const bySeverity={}, byEngineer={};
+    incidents.forEach(i=>{
+      bySeverity[i.severity]=(bySeverity[i.severity]||0)+1;
+      if(i.assigned_to) byEngineer[i.assigned_to]=(byEngineer[i.assigned_to]||0)+1;
+    });
+    const topEng = Object.entries(byEngineer).sort((a,b)=>b[1]-a[1])[0];
+    const resolved = incidents.filter(i=>i.status==='Resolved').length;
+    const dates = incidents.map(i=>i.date).filter(Boolean).sort();
+    return {
+      bySeverity, resolved, total:incidents.length,
+      topEngName: topEng ? (users.find(u=>u.id===topEng[0])?.name||topEng[0]) : null,
+      topEngCount: topEng?.[1],
+      from: dates[0], to: dates[dates.length-1],
+    };
+  },[incidents,users]);
+
+  const summaryText = [
+    `Incident Report${summary.from?` — ${summary.from} to ${summary.to}`:''}`,
+    `Total incidents: ${summary.total} (${summary.resolved} resolved, ${summary.total-summary.resolved} open)`,
+    `By severity: ${SEVERITIES.map(s=>`${s} ${summary.bySeverity[s]||0}`).join(', ')}`,
+    summary.topEngName ? `Most incidents handled: ${summary.topEngName} (${summary.topEngCount})` : null,
+  ].filter(Boolean).join('\n');
+
+  const copySummary = async ()=>{
+    try{
+      await navigator.clipboard.writeText(summaryText);
+      setCopied(true); setTimeout(()=>setCopied(false),2200);
+    }catch(e){ /* clipboard unavailable — button just won't confirm */ }
+  };
+
+  if(incidents.length===0) return <EmptyState icon="📄" title="Nothing to report on yet" sub="Reports reflect whatever the filters above currently show."/>;
+
+  return (
+    <div style={{display:'flex',flexDirection:'column',gap:16}}>
+      <Card title="📋 Summary">
+        <pre style={{whiteSpace:'pre-wrap',fontFamily:'inherit',fontSize:13,color:'rgba(255,255,255,0.75)',lineHeight:1.7,margin:0}}>{summaryText}</pre>
+        <button onClick={copySummary} style={{
+          marginTop:12,background:copied?'rgba(34,197,94,0.15)':'rgba(255,255,255,0.06)',
+          border:`1px solid ${copied?'#22c55e':'rgba(255,255,255,0.15)'}`,borderRadius:8,
+          padding:'7px 14px',cursor:'pointer',color:copied?'#86efac':'#fff',fontSize:12,fontWeight:700,
+        }}>{copied?'✓ Copied!':'📋 Copy summary'}</button>
+      </Card>
+      <Card title="⬇ Export">
+        <div style={{fontSize:12,color:'rgba(255,255,255,0.4)',marginBottom:10}}>{incidents.length} incident{incidents.length!==1?'s':''} in the current filter — exports exactly what's shown.</div>
+        <button className="btn btn-secondary btn-sm" onClick={()=>downloadCsv(incidents, CSV_COLUMNS.map(c=>({label:c.label,get:r=>c.get(r,users)})), `incidents_${new Date().toISOString().slice(0,10)}.csv`)}>
+          📥 Export CSV
+        </button>
+      </Card>
+    </div>
+  );
+}
+
+// ── Recurring incidents panel ────────────────────────────────────────────────
+function RecurringPanel({incidents,users,onView}){
+  const groups = useMemo(()=>{
+    const map=new Map();
+    incidents.forEach(inc=>{
+      const sig=titleSignature(inc.title);
+      if(!sig) return;
+      if(!map.has(sig)) map.set(sig,[]);
+      map.get(sig).push(inc);
+    });
+    return [...map.values()]
+      .filter(g=>g.length>=2)
+      .map(g=>{
+        const items=[...g].sort((a,b)=>(b.date||'').localeCompare(a.date||''));
+        return {
+          items, count:g.length,
+          title: representativeTitle(g),
+          totalHours: g.reduce((s,i)=>s+(Number(i.hours)||0),0),
+          severities: [...new Set(g.map(i=>i.severity))],
+          engineers: [...new Set(g.map(i=>i.assigned_to).filter(Boolean))],
+          lastDate: items[0]?.date,
+        };
+      })
+      .sort((a,b)=>b.count-a.count)
+      .slice(0,20);
+  },[incidents]);
+
+  const [openIdx,setOpenIdx]=useState(null);
+
+  if(groups.length===0) return <EmptyState icon="🔁" title="No repeat patterns found" sub="Nothing in the current filter shares a similar title more than once — this compares title wording, not a manual category field."/>;
+
+  return (
+    <div>
+      <div style={{fontSize:12,color:'rgba(255,255,255,0.35)',marginBottom:14}}>
+        Grouped by title similarity (punctuation, numbers, and common words ignored) — not a manual category, so double-check a group before treating it as a confirmed repeat problem.
+      </div>
+      <div style={{display:'flex',flexDirection:'column',gap:8}}>
+        {groups.map((g,idx)=>(
+          <div key={idx} style={{background:'rgba(255,255,255,0.02)',border:'1px solid rgba(255,255,255,0.07)',borderRadius:10,overflow:'hidden'}}>
+            <div onClick={()=>setOpenIdx(openIdx===idx?null:idx)} style={{
+              display:'flex',alignItems:'center',gap:12,padding:'12px 16px',cursor:'pointer',
+            }}>
+              <div style={{
+                width:30,height:30,borderRadius:8,background:'rgba(239,68,68,0.12)',border:'1px solid rgba(239,68,68,0.3)',
+                display:'flex',alignItems:'center',justifyContent:'center',fontWeight:800,fontSize:13,color:'#fca5a5',flexShrink:0,
+              }}>{g.count}×</div>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontSize:13,fontWeight:600,color:'#fff',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{g.title}</div>
+                <div style={{fontSize:11,color:'rgba(255,255,255,0.35)',marginTop:2}}>
+                  {g.severities.join(', ')} · {g.totalHours.toFixed(1)}h total · {g.engineers.length} engineer{g.engineers.length!==1?'s':''} involved · last {g.lastDate||'—'}
+                </div>
+              </div>
+              <span style={{color:'rgba(255,255,255,0.3)',fontSize:11,transform:openIdx===idx?'rotate(90deg)':'none',transition:'transform .15s'}}>▸</span>
+            </div>
+            {openIdx===idx && (
+              <div style={{borderTop:'1px solid rgba(255,255,255,0.06)',padding:'8px 16px 12px'}}>
+                {g.items.map(inc=>(
+                  <div key={inc.id} onClick={()=>onView(inc)} style={{
+                    display:'flex',justifyContent:'space-between',gap:10,padding:'6px 0',cursor:'pointer',
+                    borderBottom:'1px solid rgba(255,255,255,0.04)',fontSize:12,
+                  }}>
+                    <span style={{color:'rgba(255,255,255,0.7)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{inc.title}</span>
+                    <span style={{color:'rgba(255,255,255,0.3)',flexShrink:0}}>{inc.date} · {users.find(u=>u.id===inc.assigned_to)?.name||inc.assigned_to||'—'}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Shared tiny layout helpers ───────────────────────────────────────────────
+function Card({title,sub,children}){
+  return (
+    <div style={{background:'rgba(255,255,255,0.02)',border:'1px solid rgba(255,255,255,0.07)',borderRadius:12,padding:'14px 16px'}}>
+      <div style={{fontSize:12,fontWeight:700,color:'rgba(255,255,255,0.6)',marginBottom:sub?2:10,textTransform:'uppercase',letterSpacing:'0.5px'}}>{title}</div>
+      {sub && <div style={{fontSize:11,color:'rgba(255,255,255,0.3)',marginBottom:10}}>{sub}</div>}
+      {children}
+    </div>
+  );
+}
+function Stat({label,value,sub}){
+  return (
+    <div style={{background:'rgba(255,255,255,0.02)',border:'1px solid rgba(255,255,255,0.07)',borderRadius:12,padding:'14px 16px'}}>
+      <div style={{fontSize:9,color:'rgba(255,255,255,0.35)',textTransform:'uppercase',letterSpacing:'1px',marginBottom:4,fontWeight:700}}>{label}</div>
+      <div style={{fontSize:24,fontWeight:700,color:'#fff',lineHeight:1,marginBottom:2}}>{value}</div>
+      {sub && <div style={{fontSize:10,color:'rgba(255,255,255,0.3)'}}>{sub}</div>}
+    </div>
+  );
+}
+function Muted({children}){ return <div style={{fontSize:12,color:'rgba(255,255,255,0.25)'}}>{children}</div>; }
+function EmptyState({icon,title,sub}){
+  return (
+    <div style={{textAlign:'center',padding:'60px 0',background:'rgba(255,255,255,0.02)',border:'1px solid rgba(255,255,255,0.06)',borderRadius:12}}>
+      <div style={{fontSize:40,marginBottom:12}}>{icon}</div>
+      <div style={{fontSize:15,fontWeight:600,color:'rgba(255,255,255,0.4)',marginBottom:4}}>{title}</div>
+      <div style={{fontSize:12,color:'rgba(255,255,255,0.2)'}}>{sub}</div>
     </div>
   );
 }
@@ -1076,6 +1425,8 @@ export default function Incidents({
 }){
   const [view,setView]=useState('all');
   const [groupBy,setGroupBy]=useState('none'); // 'none' | 'severity' | 'status' | 'assigned_to' | 'date' | 'dailyType'
+  const [pageView,setPageView]=useState('list'); // 'list' | 'analytics' | 'reports' | 'recurring'
+  const [search,setSearch]=useState('');
   const [showModal,setShowModal]=useState(false);
   const [editId,setEditId]=useState(null);
   const [detailInc,setDetailInc]=useState(null);
@@ -1236,6 +1587,7 @@ export default function Incidents({
     if(filter.dateTo&&(i.date||'')>filter.dateTo) return false;
     if(filter.hoursMin!==''&&filter.hoursMin!=null&&(Number(i.hours)||0)<Number(filter.hoursMin)) return false;
     if(filter.hoursMax!==''&&filter.hoursMax!=null&&(Number(i.hours)||0)>Number(filter.hoursMax)) return false;
+    if(!incidentMatchesSearch(i, search, users.find(u=>u.id===i.assigned_to)?.name)) return false;
     return true;
   });
   const sorted=[...df].sort((a,b)=>{
@@ -1328,11 +1680,35 @@ export default function Incidents({
         ))}
       </div>
 
+      {/* View tabs */}
+      <div style={{display:'flex',gap:4,marginBottom:16,background:'rgba(255,255,255,0.03)',border:'1px solid rgba(255,255,255,0.07)',borderRadius:10,padding:4,width:'fit-content',flexWrap:'wrap'}}>
+        {[['list','📋 List'],['analytics','📊 Analytics'],['reports','📄 Reports'],['recurring','🔁 Recurring']].map(([id,label])=>(
+          <button key={id} onClick={()=>setPageView(id)} style={{
+            padding:'7px 16px',borderRadius:7,border:'none',cursor:'pointer',fontSize:12.5,fontWeight:600,
+            background:pageView===id?'rgba(0,194,255,0.1)':'transparent',
+            color:pageView===id?'#00c2ff':'rgba(255,255,255,0.4)',
+            transition:'all .15s',
+          }}>{label}</button>
+        ))}
+      </div>
+
       {/* Filter bar */}
       <div style={{
         display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',
         marginBottom:16,
       }}>
+        {/* Keyword search */}
+        <div style={{position:'relative'}}>
+          <span style={{position:'absolute',left:10,top:'50%',transform:'translateY(-50%)',fontSize:12,color:'rgba(255,255,255,0.25)',pointerEvents:'none'}}>🔍</span>
+          <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search title, notes, KB, env…"
+            className="form-input" style={{width:220,fontSize:12,paddingLeft:28,paddingRight:search?26:10}}/>
+          {search && (
+            <button onClick={()=>setSearch('')} title="Clear search" style={{
+              position:'absolute',right:6,top:'50%',transform:'translateY(-50%)',background:'none',border:'none',
+              color:'rgba(255,255,255,0.35)',cursor:'pointer',fontSize:13,padding:2,
+            }}>✕</button>
+          )}
+        </div>
         {/* View pills */}
         <div style={{display:'flex',background:'rgba(255,255,255,0.04)',borderRadius:8,padding:3,gap:2}}>
           {[{id:'all',label:'All'},{id:'daily',label:'📋 Daily'},{id:'oncall',label:'🚨 On-Call'}].map(t=>(
@@ -1377,22 +1753,24 @@ export default function Incidents({
         {(filter.status!=='all'||filter.severity!=='all'||filter.uid!=='all'||filter.dateFrom||filter.dateTo||filter.hoursMin!==''||filter.hoursMax!=='')&&(
           <button className="btn btn-secondary btn-sm" onClick={()=>setFilter({status:'all',severity:'all',uid:'all',dateFrom:'',dateTo:'',hoursMin:'',hoursMax:''})}>✕ Clear</button>
         )}
-        <div style={{display:'flex',alignItems:'center',gap:5}}>
-          <span style={{fontSize:11,color:'rgba(255,255,255,0.3)'}}>Group by</span>
-          <select className="form-input" style={{width:118,fontSize:12}} value={groupBy} onChange={e=>setGroupBy(e.target.value)}>
-            <option value="none">None</option>
-            <option value="severity">Severity</option>
-            <option value="status">Status</option>
-            <option value="assigned_to">Engineer</option>
-            <option value="date">Date</option>
-            <option value="dailyType">Type</option>
-          </select>
-        </div>
-        <span style={{marginLeft:groupBy==='none'?'auto':0,fontSize:11,color:'rgba(255,255,255,0.25)'}}>{sorted.length} incident{sorted.length!==1?'s':''}</span>
+        {pageView==='list' && (
+          <div style={{display:'flex',alignItems:'center',gap:5}}>
+            <span style={{fontSize:11,color:'rgba(255,255,255,0.3)'}}>Group by</span>
+            <select className="form-input" style={{width:118,fontSize:12}} value={groupBy} onChange={e=>setGroupBy(e.target.value)}>
+              <option value="none">None</option>
+              <option value="severity">Severity</option>
+              <option value="status">Status</option>
+              <option value="assigned_to">Engineer</option>
+              <option value="date">Date</option>
+              <option value="dailyType">Type</option>
+            </select>
+          </div>
+        )}
+        <span style={{marginLeft:'auto',fontSize:11,color:'rgba(255,255,255,0.25)'}}>{sorted.length} incident{sorted.length!==1?'s':''}</span>
       </div>
 
       {/* List */}
-      {sorted.length===0?(
+      {pageView==='list' && (sorted.length===0?(
         <div style={{
           textAlign:'center',padding:'60px 0',
           background:'rgba(255,255,255,0.02)',border:'1px solid rgba(255,255,255,0.06)',
@@ -1434,7 +1812,12 @@ export default function Incidents({
             </div>
           ))}
         </div>
-      )}
+      ))}
+
+      {pageView==='analytics' && <AnalyticsPanel incidents={sorted} users={users}/>}
+      {pageView==='reports'   && <ReportsPanel incidents={sorted} users={users}/>}
+      {pageView==='recurring' && <RecurringPanel incidents={sorted} users={users} onView={setDetailInc}/>}
+
 
       {showModal&&(
         <Modal editId={editId} form={form} setForm={setForm}
