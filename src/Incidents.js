@@ -460,6 +460,16 @@ function StaPill({s}){
   const c=STA[s]||STA.Investigating;
   return <span style={{background:c.bg,border:`1px solid ${c.border}`,color:c.text,borderRadius:6,padding:'2px 8px',fontSize:10,fontWeight:600}}>{s}</span>;
 }
+// Explicit Daily vs On-Call indicator — shown everywhere a ticket appears
+// (Workspace list, IncCard, Detail header). Previously On-Call tickets had
+// no badge at all (only Daily did), so type wasn't visible at a glance.
+function TypeBadge({isDaily,dailyType}){
+  if(isDaily){
+    const t=DAILY_TYPES.find(d=>d.id===dailyType);
+    return <span style={{fontSize:10,background:'rgba(99,102,241,0.12)',border:'1px solid rgba(99,102,241,0.3)',color:'#a5b4fc',borderRadius:20,padding:'1px 8px',fontWeight:600,whiteSpace:'nowrap'}}>{t?.icon||'📋'} Daily{t?` — ${t.label}`:''}</span>;
+  }
+  return <span style={{fontSize:10,background:'rgba(239,68,68,0.1)',border:'1px solid rgba(239,68,68,0.28)',color:'#fca5a5',borderRadius:20,padding:'1px 8px',fontWeight:600,whiteSpace:'nowrap'}}>🚨 On-Call</span>;
+}
 
 // ── Rich editor ────────────────────────────────────────────────────────────
 function RichEditor({value,onChange,placeholder}){
@@ -577,18 +587,24 @@ function StructuredFieldsBar({fields,form,setForm}){
 
   return (
     <div style={{
-      display:'flex', flexWrap:'wrap', gap:12, alignItems:'flex-end',
-      padding:'10px 14px', flexShrink:0,
+      display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(150px, 1fr))', gap:14,
+      padding:'14px 20px', flexShrink:0,
       borderBottom:'1px solid rgba(255,255,255,0.06)',
       background:'rgba(255,255,255,0.015)',
     }}>
       {fields.map(field=>(
-        <div key={field.key} style={{display:'flex',flexDirection:'column',gap:3,width:field.w}}>
-          <span style={{fontSize:9,color:'rgba(255,255,255,0.3)',textTransform:'uppercase',letterSpacing:'0.6px',fontWeight:600}}>{field.label}</span>
+        <div key={field.key} style={{display:'flex',flexDirection:'column',gap:5}}>
+          <span style={fieldLabelStyle}>{field.label}</span>
           {field.type==='select' ? (
-            <select value={form[field.key]||''} onChange={e=>set(field.key,e.target.value)} style={structFieldSel}>
-              {field.options.map(o=><option key={o} value={o}>{o||'—'}</option>)}
-            </select>
+            IMPACT_COLORS[form[field.key]] ? (
+              <select value={form[field.key]||''} onChange={e=>set(field.key,e.target.value)} style={pillSelectStyle(IMPACT_COLORS[form[field.key]])}>
+                {field.options.map(o=><option key={o} value={o}>{o||'Select…'}</option>)}
+              </select>
+            ) : (
+              <select value={form[field.key]||''} onChange={e=>set(field.key,e.target.value)} style={structFieldSel}>
+                {field.options.map(o=><option key={o} value={o}>{o||'Select…'}</option>)}
+              </select>
+            )
           ) : field.type==='datetime' ? (
             <div style={{display:'flex',flexDirection:'column',gap:2}}>
               <input type="datetime-local" value={form[field.key]||''} onChange={e=>set(field.key,e.target.value)} style={{...structFieldInput,colorScheme:'dark'}}/>
@@ -597,32 +613,45 @@ function StructuredFieldsBar({fields,form,setForm}){
               )}
             </div>
           ) : field.type==='computed' ? (
-            <div style={{...structFieldInput,background:'transparent',border:'1px solid transparent',padding:'5px 0',color:'rgba(255,255,255,0.5)',fontStyle:'italic'}}>
+            <div style={{...structFieldInput,background:'transparent',border:'1px solid transparent',padding:'8px 0',color:'rgba(255,255,255,0.5)',fontStyle:'italic'}}>
               {field.compute(form) || '—'}
             </div>
           ) : field.type==='image' ? (
-            <div style={{display:'flex',alignItems:'center',gap:6}}>
-              {form[field.key] ? (
-                <>
-                  <img src={form[field.key]} alt="Screenshot" style={{height:26,borderRadius:4,border:'1px solid rgba(255,255,255,0.15)'}}/>
-                  <button onClick={()=>set(field.key,'')} title="Remove screenshot" style={{...structFieldBtn,color:'#fca5a5'}}>✕</button>
-                </>
-              ) : (
-                <button onClick={()=>fi.current?.click()} disabled={busy} style={structFieldBtn}>{busy?'…':'⬆ Upload'}</button>
-              )}
-              <input ref={fi} type="file" accept="image/*" style={{display:'none'}} onChange={handleScreenshot}/>
-            </div>
+            form[field.key] ? (
+              <div style={{display:'flex',alignItems:'center',gap:8}}>
+                <img src={form[field.key]} alt="Screenshot" style={{height:34,borderRadius:6,border:'1px solid rgba(255,255,255,0.15)'}}/>
+                <button onClick={()=>set(field.key,'')} title="Remove screenshot" style={{...structFieldBtn,color:'#fca5a5'}}>✕</button>
+              </div>
+            ) : (
+              <button onClick={()=>fi.current?.click()} disabled={busy} style={{...structFieldBtn,width:'100%',padding:'8px 10px',justifyContent:'center',display:'flex',alignItems:'center',gap:6}}>{busy?'…':'⬆ Upload'}</button>
+            )
           ) : (
             <input value={form[field.key]||''} onChange={e=>set(field.key,e.target.value)} placeholder={field.placeholder} style={structFieldInput}/>
           )}
+          {field.type==='image' && <input ref={fi} type="file" accept="image/*" style={{display:'none'}} onChange={handleScreenshot}/>}
         </div>
       ))}
     </div>
   );
 }
-const structFieldInput={background:'rgba(255,255,255,0.05)',border:'1px solid rgba(255,255,255,0.1)',borderRadius:6,padding:'5px 8px',color:'#fff',fontSize:12,outline:'none',width:'100%'};
+// Reused for Impact/Urgency pill-selects here and for Severity/Status in the
+// Basics grid below — styles a native <select> to look like a colored badge
+// while keeping real <select> semantics (keyboard/accessibility for free).
+function pillSelectStyle(c){
+  return {
+    width:'100%', background:c.bg, border:`1px solid ${c.border}`, borderRadius:20,
+    outline:'none', color:c.text, fontSize:12.5, fontWeight:700,
+    fontFamily:'DM Sans,sans-serif', cursor:'pointer', padding:'8px 12px', textAlign:'center',
+  };
+}
+const IMPACT_COLORS = {
+  High:  {bg:'rgba(239,68,68,0.14)',  border:'rgba(239,68,68,0.4)',  text:'#fca5a5'},
+  Medium:{bg:'rgba(245,158,11,0.12)', border:'rgba(245,158,11,0.35)',text:'#fcd34d'},
+  Low:   {bg:'rgba(34,197,94,0.12)',  border:'rgba(34,197,94,0.35)', text:'#86efac'},
+};
+const structFieldInput={background:'rgba(255,255,255,0.05)',border:'1px solid rgba(255,255,255,0.1)',borderRadius:8,padding:'8px 10px',color:'#fff',fontSize:12.5,outline:'none',width:'100%'};
 const structFieldSel={...structFieldInput,cursor:'pointer'};
-const structFieldBtn={background:'rgba(255,255,255,0.06)',border:'1px solid rgba(255,255,255,0.12)',borderRadius:6,padding:'5px 10px',color:'rgba(255,255,255,0.6)',fontSize:11,cursor:'pointer',fontWeight:600};
+const structFieldBtn={background:'rgba(255,255,255,0.06)',border:'1px solid rgba(255,255,255,0.12)',borderRadius:8,padding:'8px 10px',color:'rgba(255,255,255,0.6)',fontSize:12,cursor:'pointer',fontWeight:600};
 
 // ── Email Summary panel — auto-built table + copy-for-Outlook button ────────
 function EmailSummaryPanel({form}){
@@ -1069,22 +1098,66 @@ function MajorIncidentBanner({incidents,onView}){
 // ServiceNow-style split layout: a compact triage list on the left, full
 // incident detail inline on the right — no modal round-trip between
 // incidents, so an agent can work through a queue quickly.
+// Quick views within the Workspace triage list — a second, independent
+// filter layer on top of whatever the page-wide filter bar already applies,
+// matching ServiceNow's "list views" pattern inside Agent Workspace (My
+// Incidents, Unassigned, Priority 1, etc).
+const WORKSPACE_VIEWS = [
+  { id:'open',   label:'Open',        test:(i)=>i.status!=='Resolved' },
+  { id:'mine',   label:'👤 Mine',      test:(i,ctx)=>i.assigned_to===ctx.currentUser },
+  { id:'major',  label:'🔴 Major',     test:(i)=>i.isMajor },
+  { id:'sla',    label:'⏰ SLA Risk',  test:(i)=>!!slaRisk(i) },
+  { id:'oncall', label:'🚨 On-Call',   test:(i)=>!i.isDaily },
+  { id:'daily',  label:'📋 Daily',     test:(i)=>i.isDaily },
+  { id:'all',    label:'All',         test:()=>true },
+];
+
 function WorkspacePanel({incidents,allIncidents,users,isManager,currentUser,onEdit,onDelete,onResolve,onClone,onQuickUpdate}){
-  const [selectedId,setSelectedId] = useState(incidents[0]?.id||null);
+  const [workspaceView,setWorkspaceView] = useState('open');
   const [tab,setTab] = useState('issue');
-  const selected = incidents.find(i=>i.id===selectedId) || incidents[0] || null;
+  const ctx = {currentUser};
+  const viewDef = WORKSPACE_VIEWS.find(v=>v.id===workspaceView) || WORKSPACE_VIEWS[0];
+  const scoped = incidents.filter(i=>viewDef.test(i,ctx));
+  const [selectedId,setSelectedId] = useState(scoped[0]?.id||null);
+  const selected = scoped.find(i=>i.id===selectedId) || scoped[0] || null;
 
-  useEffect(()=>{ if(!incidents.find(i=>i.id===selectedId)) setSelectedId(incidents[0]?.id||null); },[incidents]); // eslint-disable-line
-
-  if(incidents.length===0) return <EmptyState icon="🖥️" title="Nothing in the queue" sub="Incidents matching the current filters will appear here for triage."/>;
+  useEffect(()=>{ if(!scoped.find(i=>i.id===selectedId)) setSelectedId(scoped[0]?.id||null); },[workspaceView, incidents]); // eslint-disable-line
 
   const canEdit = selected && (isManager || selected.assigned_to===currentUser);
 
   return (
-    <div style={{display:'flex',gap:16,height:'70vh',minHeight:520}}>
+    <div>
+      {/* Quick views */}
+      <div style={{display:'flex',gap:6,marginBottom:12,flexWrap:'wrap'}}>
+        {WORKSPACE_VIEWS.map(v=>{
+          const count = incidents.filter(i=>v.test(i,ctx)).length;
+          return (
+            <button key={v.id} onClick={()=>setWorkspaceView(v.id)} style={{
+              display:'flex',alignItems:'center',gap:6,
+              padding:'6px 12px',borderRadius:20,cursor:'pointer',fontSize:12,fontWeight:600,
+              background:workspaceView===v.id?'rgba(0,194,255,0.12)':'rgba(255,255,255,0.03)',
+              border:`1px solid ${workspaceView===v.id?'rgba(0,194,255,0.4)':'rgba(255,255,255,0.08)'}`,
+              color:workspaceView===v.id?'#00c2ff':'rgba(255,255,255,0.5)',
+              transition:'all .15s',
+            }}>
+              {v.label}
+              <span style={{
+                fontSize:10,fontWeight:700,padding:'0px 6px',borderRadius:10,
+                background:workspaceView===v.id?'rgba(0,194,255,0.2)':'rgba(255,255,255,0.08)',
+                color:workspaceView===v.id?'#00c2ff':'rgba(255,255,255,0.35)',
+              }}>{count}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {scoped.length===0 ? (
+        <EmptyState icon="🖥️" title="Nothing in this view" sub="Try a different view above, or check the filters higher up the page."/>
+      ) : (
+      <div style={{display:'flex',gap:16,height:'70vh',minHeight:520}}>
       {/* Triage list */}
       <div style={{width:320,flexShrink:0,overflowY:'auto',display:'flex',flexDirection:'column',gap:6,paddingRight:4}}>
-        {incidents.map(inc=>{
+        {scoped.map(inc=>{
           const sevC = SEV[inc.severity]||SEV.Low;
           const sla = slaRisk(inc);
           const assignee = users.find(u=>u.id===inc.assigned_to);
@@ -1101,7 +1174,10 @@ function WorkspacePanel({incidents,allIncidents,users,isManager,currentUser,onEd
                 {sla && <span style={{fontSize:9,fontWeight:700,color:sla.level==='breached'?'#fca5a5':'#fcd34d'}}>⏰</span>}
               </div>
               <div style={{fontSize:12.5,fontWeight:600,color:'#fff',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{inc.title}</div>
-              <div style={{fontSize:10,color:'rgba(255,255,255,0.35)',marginTop:2}}>{assignee?.name||inc.assigned_to||'Unassigned'} · {inc.status}</div>
+              <div style={{display:'flex',alignItems:'center',gap:5,marginTop:3}}>
+                <span style={{fontSize:9,fontWeight:700,padding:'0px 6px',borderRadius:10,background:inc.isDaily?'rgba(99,102,241,0.15)':'rgba(239,68,68,0.12)',color:inc.isDaily?'#a5b4fc':'#fca5a5',whiteSpace:'nowrap'}}>{inc.isDaily?'📋 Daily':'🚨 On-Call'}</span>
+                <span style={{fontSize:10,color:'rgba(255,255,255,0.35)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{assignee?.name||inc.assigned_to||'Unassigned'} · {inc.status}</span>
+              </div>
             </div>
           );
         })}
@@ -1118,6 +1194,8 @@ function WorkspacePanel({incidents,allIncidents,users,isManager,currentUser,onEd
                 <div style={{minWidth:0,flex:1}}>
                   <div style={{fontSize:16,fontWeight:700,color:'#fff',marginBottom:6}}>{selected.title}</div>
                   <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                    {selected.isMajor && <span style={{fontSize:10,background:'rgba(239,68,68,0.18)',border:'1px solid rgba(239,68,68,0.5)',color:'#fca5a5',borderRadius:20,padding:'2px 9px',fontWeight:800}}>🔴 MAJOR</span>}
+                    <TypeBadge isDaily={selected.isDaily} dailyType={selected.dailyType}/>
                     <SevPill s={selected.severity}/><StaPill s={selected.status}/>
                   </div>
                 </div>
@@ -1133,6 +1211,8 @@ function WorkspacePanel({incidents,allIncidents,users,isManager,currentUser,onEd
           </>
         )}
       </div>
+      </div>
+      )}
     </div>
   );
 }
@@ -1171,7 +1251,6 @@ function EmptyState({icon,title,sub}){
 function IncCard({inc,users,isManager,currentUser,onEdit,onDelete,onResolve,onView,onClone}){
   const assignee=users.find(u=>u.id===inc.assigned_to);
   const canEdit=isManager||inc.assigned_to===currentUser;
-  const dailyT=DAILY_TYPES.find(t=>t.id===inc.dailyType);
   const snippet=(inc.issueContent||inc.description||'').replace(/[#*`>_\-]/g,'').trim().slice(0,140);
   const sevC=SEV[inc.severity]||SEV.Low;
   const staC=STA[inc.status]||STA.Investigating;
@@ -1197,7 +1276,7 @@ function IncCard({inc,users,isManager,currentUser,onEdit,onDelete,onResolve,onVi
           {/* Title row */}
           <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginBottom:5}}>
             {inc.isMajor&&<span style={{fontSize:10,background:'rgba(239,68,68,0.18)',border:'1px solid rgba(239,68,68,0.5)',color:'#fca5a5',borderRadius:20,padding:'1px 8px',fontWeight:800,letterSpacing:'0.3px'}}>🔴 MAJOR</span>}
-            {inc.isDaily&&<span style={{fontSize:10,background:'rgba(99,102,241,0.12)',border:'1px solid rgba(99,102,241,0.3)',color:'#a5b4fc',borderRadius:20,padding:'1px 8px',fontWeight:600}}>{dailyT?.icon||'📋'} Daily</span>}
+            <TypeBadge isDaily={inc.isDaily} dailyType={inc.dailyType}/>
             <SevPill s={inc.severity}/>
             <StaPill s={inc.status}/>
             {sla&&<span title={`Open ${sla.hoursOpen.toFixed(1)}h of a ${sla.threshold}h target`} style={{
@@ -1390,7 +1469,6 @@ function DetailView({inc, users, isManager, currentUser, onClose, onEdit, onReso
   const canEdit  = isManager || inc.assigned_to === currentUser;
   const sevC     = SEV[inc.severity] || SEV.Low;
   const staC     = STA[inc.status]   || STA.Investigating;
-  const dailyT   = DAILY_TYPES.find(t => t.id === inc.dailyType);
 
   return (
     <div style={{
@@ -1422,10 +1500,11 @@ function DetailView({inc, users, isManager, currentUser, onClose, onEdit, onReso
             </div>
             {/* Meta pills */}
             <div style={{display:'flex', gap:6, flexWrap:'wrap', alignItems:'center'}}>
+              {inc.isMajor && <span style={{fontSize:10,background:'rgba(239,68,68,0.18)',border:'1px solid rgba(239,68,68,0.5)',color:'#fca5a5',borderRadius:20,padding:'2px 9px',fontWeight:800}}>🔴 MAJOR</span>}
+              <TypeBadge isDaily={inc.isDaily} dailyType={inc.dailyType}/>
               <SevPill s={inc.severity}/>
               <StaPill s={inc.status}/>
-              {inc.isDaily && <span style={{fontSize:10,background:'rgba(99,102,241,0.12)',border:'1px solid rgba(99,102,241,0.3)',color:'#a5b4fc',borderRadius:20,padding:'2px 9px',fontWeight:600}}>{dailyT?.icon||'📋'} Daily — {dailyT?.label||'Other'}</span>}
-              {!inc.isDaily && inc.hours > 0 && <span style={{fontSize:10,background:'rgba(245,158,11,0.1)',border:'1px solid rgba(245,158,11,0.25)',color:'#fcd34d',borderRadius:20,padding:'2px 9px'}}>⏱ {inc.hours}h on-call</span>}
+              {!inc.isDaily && inc.hours > 0 && <span style={{fontSize:10,background:'rgba(245,158,11,0.1)',border:'1px solid rgba(245,158,11,0.25)',color:'#fcd34d',borderRadius:20,padding:'2px 9px'}}>⏱ {inc.hours}h payroll</span>}
             </div>
           </div>
           {/* Action buttons */}
@@ -1549,37 +1628,18 @@ function Modal({editId,form,setForm,onSave,onClose,users,currentUser,isManager})
         boxShadow:'0 40px 120px rgba(0,0,0,0.8),0 0 0 1px rgba(255,255,255,0.04)',
         animation:'slideUpModal .28s cubic-bezier(.34,1.4,.64,1)',
       }}>
+        {/* Severity accent bar — ties the form's colour identity together */}
+        <div style={{height:3,flexShrink:0,background:(SEV[form.severity]||SEV.Low).border}}/>
 
         {/* ── Header bar ────────────────────────────────────────────────── */}
         <div style={{
           display:'flex',alignItems:'center',gap:10,
-          padding:'12px 16px',flexShrink:0,
+          padding:'14px 20px',flexShrink:0,
           background:'rgba(255,255,255,0.02)',
           borderBottom:'1px solid rgba(255,255,255,0.07)',
         }}>
-          {/* Type toggle */}
-          <div style={{display:'flex',background:'rgba(255,255,255,0.05)',borderRadius:8,padding:3,gap:2,flexShrink:0}}>
-            {[{v:false,label:'🚨 On-Call'},{v:true,label:'📋 Daily'}].map(({v,label})=>(
-              <button key={String(v)} onClick={()=>setForm(f=>({...f,isDaily:v}))} style={{
-                padding:'4px 12px',borderRadius:6,border:'none',cursor:'pointer',fontSize:12,fontWeight:600,
-                background:form.isDaily===v?'rgba(255,255,255,0.1)':'transparent',
-                color:form.isDaily===v?'#fff':'rgba(255,255,255,0.35)',
-                transition:'all .15s',
-              }}>{label}</button>
-            ))}
-          </div>
-
-          {/* Title */}
-          <input value={form.title} onChange={e=>setForm(f=>({...f,title:e.target.value}))}
-            placeholder="Incident title…"
-            autoFocus
-            style={{
-              flex:1,background:'transparent',border:'none',outline:'none',
-              fontSize:16,fontWeight:600,color:'#fff',minWidth:0,
-              '::placeholder':{color:'rgba(255,255,255,0.2)'},
-            }}
-          />
-
+          <span style={{fontSize:15,fontWeight:700,color:'#fff'}}>{editId?'✏️ Edit Incident':'🚨 Log New Incident'}</span>
+          <div style={{flex:1}}/>
           {/* Close */}
           <button onClick={onClose} style={{
             background:'rgba(255,255,255,0.06)',border:'1px solid rgba(255,255,255,0.1)',
@@ -1593,52 +1653,78 @@ function Modal({editId,form,setForm,onSave,onClose,users,currentUser,isManager})
           >✕</button>
         </div>
 
-        {/* ── Meta strip ────────────────────────────────────────────────── */}
+        {/* ── Basics: title + a clean, labeled field grid ──────────────────── */}
         <div style={{
-          display:'flex',gap:0,flexShrink:0,
+          padding:'16px 20px', flexShrink:0,
           background:'rgba(255,255,255,0.015)',
           borderBottom:'1px solid rgba(255,255,255,0.07)',
-          overflowX:'auto',
         }}>
-          {[
-            {label:'Severity', content:
-              <select value={form.severity} onChange={e=>setForm(f=>({...f,severity:e.target.value}))} style={metaSel}>
+          <div style={{marginBottom:14}}>
+            <div style={fieldLabelStyle}>Title</div>
+            <input value={form.title} onChange={e=>setForm(f=>({...f,title:e.target.value}))}
+              placeholder="Brief, searchable summary of the incident…"
+              autoFocus
+              style={{
+                width:'100%',background:'rgba(255,255,255,0.05)',border:'1px solid rgba(255,255,255,0.12)',
+                borderRadius:8,padding:'10px 12px',outline:'none',
+                fontSize:15,fontWeight:600,color:'#fff',
+              }}
+            />
+          </div>
+
+          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill, minmax(150px, 1fr))',gap:14}}>
+            <div>
+              <div style={fieldLabelStyle}>Type</div>
+              <div style={{display:'flex',background:'rgba(255,255,255,0.05)',border:'1px solid rgba(255,255,255,0.1)',borderRadius:8,padding:3,gap:2}}>
+                {[{v:false,label:'🚨 On-Call'},{v:true,label:'📋 Daily'}].map(({v,label})=>(
+                  <button key={String(v)} onClick={()=>setForm(f=>({...f,isDaily:v}))} style={{
+                    flex:1,padding:'6px 10px',borderRadius:6,border:'none',cursor:'pointer',fontSize:12,fontWeight:600,
+                    background:form.isDaily===v?'rgba(255,255,255,0.12)':'transparent',
+                    color:form.isDaily===v?'#fff':'rgba(255,255,255,0.4)',
+                    transition:'all .15s',whiteSpace:'nowrap',
+                  }}>{label}</button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <div style={fieldLabelStyle}>Severity</div>
+              <select value={form.severity} onChange={e=>setForm(f=>({...f,severity:e.target.value}))} style={pillSelectStyle(SEV[form.severity]||SEV.Low)}>
                 {SEVERITIES.map(s=><option key={s}>{s}</option>)}
               </select>
-            },
-            {label:'Status', content:
-              <select value={form.status} onChange={e=>setForm(f=>({...f,status:e.target.value}))} style={metaSel}>
+            </div>
+            <div>
+              <div style={fieldLabelStyle}>Status</div>
+              <select value={form.status} onChange={e=>setForm(f=>({...f,status:e.target.value}))} style={pillSelectStyle(STA[form.status]||STA.Investigating)}>
                 {STATUSES.map(s=><option key={s}>{s}</option>)}
               </select>
-            },
-            {label:'Assigned To', content:
-              <select value={form.assigned_to} onChange={e=>setForm(f=>({...f,assigned_to:e.target.value}))} style={metaSel} disabled={!isManager}>
+            </div>
+            <div>
+              <div style={fieldLabelStyle}>Assigned To</div>
+              <select value={form.assigned_to} onChange={e=>setForm(f=>({...f,assigned_to:e.target.value}))} style={fieldSelStyle} disabled={!isManager}>
                 <option value="">— pick —</option>
                 {(isManager?users:users.filter(u=>u.id===currentUser)).map(u=><option key={u.id} value={u.id}>{u.name}</option>)}
               </select>
-            },
-            {label:'Date', content:
-              <input type="date" value={form.date} onChange={e=>setForm(f=>({...f,date:e.target.value}))} style={{...metaSel,colorScheme:'dark'}}/>
-            },
-            ...(!form.isDaily?[{label:'Hours (payroll)', content:
-              <select value={form.hours} onChange={e=>setForm(f=>({...f,hours:Number(e.target.value)}))} style={metaSel}>
-                {HOURS_OPTIONS.map(h=><option key={h} value={h}>{h}h</option>)}
-              </select>
-            }]:[{label:'Type', content:
-              <select value={form.dailyType} onChange={e=>setForm(f=>({...f,dailyType:e.target.value}))} style={metaSel}>
-                {DAILY_TYPES.map(t=><option key={t.id} value={t.id}>{t.icon} {t.label}</option>)}
-              </select>
-            }]),
-          ].map(({label,content},i)=>(
-            <div key={i} style={{
-              display:'flex',flexDirection:'column',justifyContent:'center',
-              padding:'8px 16px',borderRight:'1px solid rgba(255,255,255,0.06)',
-              flexShrink:0,
-            }}>
-              <div style={{fontSize:9,color:'rgba(255,255,255,0.3)',textTransform:'uppercase',letterSpacing:'0.8px',marginBottom:3,fontWeight:600}}>{label}</div>
-              {content}
             </div>
-          ))}
+            <div>
+              <div style={fieldLabelStyle}>Date</div>
+              <input type="date" value={form.date} onChange={e=>setForm(f=>({...f,date:e.target.value}))} style={{...fieldSelStyle,colorScheme:'dark'}}/>
+            </div>
+            {!form.isDaily ? (
+              <div>
+                <div style={fieldLabelStyle}>Hours (payroll)</div>
+                <select value={form.hours} onChange={e=>setForm(f=>({...f,hours:Number(e.target.value)}))} style={fieldSelStyle}>
+                  {HOURS_OPTIONS.map(h=><option key={h} value={h}>{h}h</option>)}
+                </select>
+              </div>
+            ) : (
+              <div>
+                <div style={fieldLabelStyle}>Daily Type</div>
+                <select value={form.dailyType} onChange={e=>setForm(f=>({...f,dailyType:e.target.value}))} style={fieldSelStyle}>
+                  {DAILY_TYPES.map(t=><option key={t.id} value={t.id}>{t.icon} {t.label}</option>)}
+                </select>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* ── Two-panel body ─────────────────────────────────────────────── */}
@@ -1732,12 +1818,12 @@ function Modal({editId,form,setForm,onSave,onClose,users,currentUser,isManager})
   );
 }
 
-// ── metaSel style ──────────────────────────────────────────────────────────
-const metaSel={
-  background:'transparent',border:'none',outline:'none',
-  color:'rgba(255,255,255,0.75)',fontSize:12,fontWeight:500,
-  fontFamily:'DM Sans,sans-serif',cursor:'pointer',padding:0,
-  appearance:'none',WebkitAppearance:'none',
+// ── Field styles for the redesigned "Basics" form ────────────────────────────
+const fieldLabelStyle={fontSize:10,color:'rgba(255,255,255,0.4)',textTransform:'uppercase',letterSpacing:'0.6px',marginBottom:5,fontWeight:700};
+const fieldSelStyle={
+  width:'100%',background:'rgba(255,255,255,0.05)',border:'1px solid rgba(255,255,255,0.12)',
+  borderRadius:8,outline:'none',color:'rgba(255,255,255,0.85)',fontSize:12.5,fontWeight:500,
+  fontFamily:'DM Sans,sans-serif',cursor:'pointer',padding:'8px 10px',
 };
 
 // ── Main component ─────────────────────────────────────────────────────────
