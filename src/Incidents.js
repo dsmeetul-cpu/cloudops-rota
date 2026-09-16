@@ -1936,17 +1936,29 @@ export default function Incidents({
   // record. Resets identity/status/timestamps; keeps everything else
   // (severity, dailyType, issue/diagnostics/resolution content, hours) so
   // repeat incidents (e.g. a recurring deployment issue) are quick to log.
+  //
+  // Anyone can clone ANY incident, including another engineer's. A clone is a
+  // brand-new incident being logged now, so it's assigned to whoever is doing
+  // the cloning — not to the original incident's assignee. Without this,
+  // non-managers hit saveIncident's "only log incidents for yourself" guard
+  // with no way out, since the Assigned To field is disabled for them.
+  // Managers keep the original assignee, since they're allowed to reassign.
   const openClone=(inc)=>{
     setForm({
       ...BLANK, ...inc,
       id: undefined,
       title: `${inc.title} (Copy)`,
       status: 'Investigating',
+      assigned_to: isManager ? inc.assigned_to : currentUser,
       date: new Date().toISOString().slice(0,10),
       startTime: nowLocalDateTime(), // this is a fresh incident being logged now
       endTime: '',
       created_at: undefined,
       updated_at: undefined,
+      // A clone is a fresh incident — don't inherit the original's Major
+      // Incident declaration or its War Room/stakeholder comms history.
+      isMajor: false, majorDeclaredAt:'', majorBridgeLink:'',
+      majorCommsLog: [], majorNextUpdateDue:'',
     });
     setEditId(null);
     setShowModal(true);
