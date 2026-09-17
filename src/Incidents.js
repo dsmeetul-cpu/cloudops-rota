@@ -41,6 +41,10 @@ const BLANK = {
   issueContent:'', diagnosticsContent:'', resolutionContent:'',
   // Structured fields — feed the Email Summary table (see EMAIL_ROWS below).
   startTime:'', endTime:'', whoCalled:'', env:'', supLink:'', screenshot:'',
+  // Multi-screenshot galleries, one per tab (unlimited count). The legacy
+  // single `screenshot` string above is kept so incidents logged before this
+  // change still render — readShots() below transparently merges the two.
+  issueShots:[], diagnosticsShots:[], resolutionShots:[],
   kbUsed:'', sreContacted:'', sreResponse:'', escalated:'',
   servicesBackToNormal:'', other:'',
   // ITSM triage fields — purely additive, never read by payroll/timesheet
@@ -104,30 +108,43 @@ const STRUCTURED_FIELDS = {
     { key:'impact',      label:'Impact',             type:'select', options:['','High','Medium','Low'], w:100 },
     { key:'urgency',     label:'Urgency',            type:'select', options:['','High','Medium','Low'], w:100 },
     { key:'supLink',     label:'SUP Link',           type:'text',   placeholder:'https://…', w:220 },
-    { key:'screenshot',  label:'Screenshot',         type:'image',  w:200 },
+    { key:'issueShots',  label:'Screenshots',        type:'images', legacyKey:'screenshot' },
   ],
   diagnostics: [
     { key:'kbUsed',       label:'KB Used',                  type:'text',   placeholder:'KB article ID or link', w:200 },
     { key:'sreContacted', label:'SRE Contacted?',           type:'select', options:['','No','Yes'], w:110 },
     { key:'sreResponse',  label:'SRE Response',             type:'text',   placeholder:'What SRE said/did', w:220 },
     { key:'escalated',    label:'Escalated? If so who?',    type:'text',   placeholder:'No, or name of escalation contact', w:220 },
+    { key:'diagnosticsShots', label:'Screenshots',          type:'images' },
   ],
   resolution: [
     { key:'endTime',               label:'End Time',                    type:'datetime', w:190 },
     { key:'duration',              label:'Duration',                     type:'computed', compute:f=>durationBetween(f.startTime,f.endTime), w:110 },
     { key:'servicesBackToNormal',  label:'Service(s) back to normal',   type:'select', options:['','Yes','No'], w:150 },
     { key:'other',                 label:'Other',                        type:'text',   placeholder:'Anything else worth noting', w:220 },
+    { key:'resolutionShots',       label:'Screenshots',                  type:'images' },
   ],
 };
 
+// Reads a screenshot gallery off an incident/form, transparently folding in
+// the legacy single-`screenshot` string so incidents logged before multi-
+// screenshot support still show their image. Always returns an array.
+function readShots(obj, key, legacyKey){
+  const list = Array.isArray(obj[key]) ? obj[key] : [];
+  const legacy = legacyKey && obj[legacyKey] ? [obj[legacyKey]] : [];
+  return [...legacy, ...list];
+}
+
 // Returns what should be displayed for a structured field, given either the
 // live form (while editing) or a saved incident (read-only detail view).
-// Handles the two field types that don't map 1:1 onto a raw stored value:
-// 'datetime' (stored as a datetime-local string, shown human-readable) and
-// 'computed' (never stored — derived live from other fields, e.g. Duration).
+// Handles the field types that don't map 1:1 onto a raw stored value:
+// 'datetime' (stored as a datetime-local string, shown human-readable),
+// 'computed' (never stored — derived live, e.g. Duration), and 'images'
+// (a gallery array, reported here as a count so callers can test emptiness).
 function fieldDisplayValue(f, obj){
   if (f.type==='computed') return f.compute(obj) || '';
   if (f.type==='datetime') return fmtUTC(obj[f.key]);
+  if (f.type==='images')   { const n = readShots(obj, f.key, f.legacyKey).length; return n ? `${n}` : ''; }
   return obj[f.key] || '';
 }
 
@@ -176,13 +193,15 @@ const EMAIL_ROWS = [
   { tab:'Resolution',  topic:'Service(s) back to normal', get:f=>f.servicesBackToNormal },
   { tab:'Diagnostics', topic:'Analysis',                  get:f=>f.diagnosticsContent, md:true },
   { tab:'Issue',       topic:'Env',                       get:f=>f.env },
-  { tab:'Issue',       topic:'Screenshot',                get:f=>f.screenshot, image:true },
+  { tab:'Issue',       topic:'Screenshot',                get:f=>readShots(f,'issueShots','screenshot'), images:true },
   { tab:'Diagnostics', topic:'KB used',                   get:f=>f.kbUsed },
   { tab:'Issue',       topic:'SUP Link',                  get:f=>f.supLink },
   { tab:'Diagnostics', topic:'SRE Contacted?',            get:f=>f.sreContacted },
   { tab:'Diagnostics', topic:'SRE Response',              get:f=>f.sreResponse },
   { tab:'Diagnostics', topic:'Escalated? If so who?',     get:f=>f.escalated },
+  { tab:'Diagnostics', topic:'Diagnostics Screenshots',   get:f=>readShots(f,'diagnosticsShots'), images:true },
   { tab:'Resolution',  topic:'Other',                     get:f=>f.other },
+  { tab:'Resolution',  topic:'Resolution Screenshots',    get:f=>readShots(f,'resolutionShots'), images:true },
 ];
 
 // Fixed brand colour (not a CSS var — email clients strip external/root
@@ -199,8 +218,8 @@ function buildEmailHtml(form){
     const val = r.get(form) || '';
     const td = i%2 ? EMAIL_TD_ALT : EMAIL_TD;
     let cell;
-    if (r.image) {
-      cell = val ? `<img src="${val}" style="max-width:420px;max-height:280px;display:block;border:1px solid #ccc;"/>` : '';
+    if (r.images) {
+      cell = (val||[]).map(src=>`<img src="${src}" style="max-width:420px;max-height:280px;display:block;border:1px solid #ccc;margin-bottom:6px;"/>`).join('');
     } else if (r.md) {
       cell = val ? renderMd(val).replace(/ class="[^"]*"/g,'') : '';
     } else {
@@ -214,7 +233,13 @@ function buildEmailHtml(form){
 }
 
 function buildEmailPlainText(form){
-  return EMAIL_ROWS.map(r=>`${r.topic}: ${r.image ? (r.get(form)?'[Screenshot attached]':'') : (r.get(form)||'')}`).join('\n');
+  return EMAIL_ROWS.map(r=>{
+    if(r.images){
+      const n=(r.get(form)||[]).length;
+      return `${r.topic}: ${n?`[${n} screenshot${n!==1?'s':''} attached]`:''}`;
+    }
+    return `${r.topic}: ${r.get(form)||''}`;
+  }).join('\n');
 }
 
 // Copies the summary as rich HTML (so pasting into Outlook keeps the table)
@@ -570,20 +595,79 @@ function RichEditor({value,onChange,placeholder}){
   );
 }
 
-// ── Structured fields bar (shown above the editor on Issue/Diagnostics/Resolution) ──
-function StructuredFieldsBar({fields,form,setForm}){
+// ── Screenshot gallery (multi-upload, no limit) ──────────────────────────────
+// Available on Issue, Diagnostics, and Resolution. Accepts multi-select and
+// paste, compresses each image before storing (same as the old single
+// upload), and spans the full width of the fields grid so thumbnails have
+// room. Reads via readShots() so legacy single-screenshot incidents still show.
+function ScreenshotGallery({field,form,setForm}){
   const fi = useRef(null);
   const [busy,setBusy] = useState(false);
-  const set = (key,v)=>setForm(f=>({...f,[key]:v}));
+  const shots = readShots(form, field.key, field.legacyKey);
 
-  const handleScreenshot = async(e)=>{
-    const f = e.target.files?.[0]; if(!f) return; e.target.value='';
-    if(!f.type.startsWith('image/')){ alert('Please choose an image file.'); return; }
+  const addFiles = async(fileList)=>{
+    const files = [...fileList].filter(f=>f.type.startsWith('image/'));
+    if(files.length===0) return;
     setBusy(true);
-    try{ set('screenshot', await compressScreenshot(f)); }
-    catch(err){ alert('Could not read that image.\n'+err.message); }
+    try{
+      const compressed = await Promise.all(files.map(f=>compressScreenshot(f)));
+      setForm(f=>({...f,[field.key]:[...(Array.isArray(f[field.key])?f[field.key]:[]), ...compressed]}));
+    }catch(err){ alert('Could not read one of those images.\n'+err.message); }
     finally{ setBusy(false); }
   };
+
+  // Removing needs care: index 0 may be the legacy single-screenshot string
+  // rather than a member of the gallery array.
+  const removeAt = (i)=>{
+    const legacyCount = (field.legacyKey && form[field.legacyKey]) ? 1 : 0;
+    if(i < legacyCount){ setForm(f=>({...f,[field.legacyKey]:''})); return; }
+    const arrIdx = i - legacyCount;
+    setForm(f=>({...f,[field.key]:(Array.isArray(f[field.key])?f[field.key]:[]).filter((_,n)=>n!==arrIdx)}));
+  };
+
+  return (
+    <div style={{gridColumn:'1 / -1'}}>
+      <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
+        <span style={fieldLabelStyle}>{field.label}</span>
+        {shots.length>0 && <span style={{fontSize:10,color:'rgba(255,255,255,0.3)',marginBottom:5}}>{shots.length} attached</span>}
+      </div>
+      <div
+        onPaste={e=>{ const f=e.clipboardData?.files; if(f?.length) addFiles(f); }}
+        onDragOver={e=>e.preventDefault()}
+        onDrop={e=>{ e.preventDefault(); if(e.dataTransfer?.files?.length) addFiles(e.dataTransfer.files); }}
+        style={{display:'flex',flexWrap:'wrap',gap:8,alignItems:'flex-start'}}
+      >
+        {shots.map((src,i)=>(
+          <div key={i} style={{position:'relative'}}>
+            <img src={src} alt={`Screenshot ${i+1}`} onClick={()=>window.open(src,'_blank')}
+              style={{height:64,borderRadius:8,border:'1px solid rgba(255,255,255,0.15)',cursor:'zoom-in',display:'block'}}/>
+            <button onClick={()=>removeAt(i)} title="Remove"
+              style={{
+                position:'absolute',top:-6,right:-6,width:20,height:20,borderRadius:'50%',
+                background:'#1a1a2e',border:'1px solid rgba(239,68,68,0.5)',color:'#fca5a5',
+                cursor:'pointer',fontSize:11,lineHeight:1,display:'flex',alignItems:'center',justifyContent:'center',padding:0,
+              }}>✕</button>
+          </div>
+        ))}
+        <button onClick={()=>fi.current?.click()} disabled={busy} style={{
+          height:64,minWidth:88,borderRadius:8,cursor:busy?'default':'pointer',
+          background:'rgba(255,255,255,0.03)',border:'1px dashed rgba(255,255,255,0.2)',
+          color:'rgba(255,255,255,0.45)',fontSize:11,fontWeight:600,
+          display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:3,padding:'0 12px',
+        }}>
+          {busy ? '…' : <><span style={{fontSize:16}}>⬆</span><span>Add</span></>}
+        </button>
+        <input ref={fi} type="file" accept="image/*" multiple style={{display:'none'}}
+          onChange={e=>{ addFiles(e.target.files); e.target.value=''; }}/>
+      </div>
+      <div style={{fontSize:10,color:'rgba(255,255,255,0.25)',marginTop:5}}>Select multiple, drag &amp; drop, or paste. Click a thumbnail to open full size.</div>
+    </div>
+  );
+}
+
+// ── Structured fields bar (shown above the editor on Issue/Diagnostics/Resolution) ──
+function StructuredFieldsBar({fields,form,setForm}){
+  const set = (key,v)=>setForm(f=>({...f,[key]:v}));
 
   return (
     <div style={{
@@ -593,6 +677,9 @@ function StructuredFieldsBar({fields,form,setForm}){
       background:'rgba(255,255,255,0.015)',
     }}>
       {fields.map(field=>(
+        field.type==='images' ? (
+          <ScreenshotGallery key={field.key} field={field} form={form} setForm={setForm}/>
+        ) : (
         <div key={field.key} style={{display:'flex',flexDirection:'column',gap:5}}>
           <span style={fieldLabelStyle}>{field.label}</span>
           {field.type==='select' ? (
@@ -616,20 +703,11 @@ function StructuredFieldsBar({fields,form,setForm}){
             <div style={{...structFieldInput,background:'transparent',border:'1px solid transparent',padding:'8px 0',color:'rgba(255,255,255,0.5)',fontStyle:'italic'}}>
               {field.compute(form) || '—'}
             </div>
-          ) : field.type==='image' ? (
-            form[field.key] ? (
-              <div style={{display:'flex',alignItems:'center',gap:8}}>
-                <img src={form[field.key]} alt="Screenshot" style={{height:34,borderRadius:6,border:'1px solid rgba(255,255,255,0.15)'}}/>
-                <button onClick={()=>set(field.key,'')} title="Remove screenshot" style={{...structFieldBtn,color:'#fca5a5'}}>✕</button>
-              </div>
-            ) : (
-              <button onClick={()=>fi.current?.click()} disabled={busy} style={{...structFieldBtn,width:'100%',padding:'8px 10px',justifyContent:'center',display:'flex',alignItems:'center',gap:6}}>{busy?'…':'⬆ Upload'}</button>
-            )
           ) : (
             <input value={form[field.key]||''} onChange={e=>set(field.key,e.target.value)} placeholder={field.placeholder} style={structFieldInput}/>
           )}
-          {field.type==='image' && <input ref={fi} type="file" accept="image/*" style={{display:'none'}} onChange={handleScreenshot}/>}
         </div>
+        )
       ))}
     </div>
   );
@@ -1422,10 +1500,15 @@ function IncidentDetailBody({inc, tab, setTab, canEdit, onEditRequest, allIncide
                 borderBottom:'1px solid rgba(255,255,255,0.08)',
               }}>
                 {STRUCTURED_FIELDS[tab].filter(f=>fieldDisplayValue(f,inc).toString().trim()).map(f=>(
-                  <div key={f.key} style={{minWidth:100}}>
+                  <div key={f.key} style={f.type==='images'?{width:'100%'}:{minWidth:100}}>
                     <div style={{fontSize:9,color:'rgba(255,255,255,0.3)',textTransform:'uppercase',letterSpacing:'0.6px',fontWeight:600,marginBottom:3}}>{f.label}</div>
-                    {f.type==='image' ? (
-                      <img src={inc[f.key]} alt="Screenshot" style={{maxHeight:80,borderRadius:6,border:'1px solid rgba(255,255,255,0.12)'}}/>
+                    {f.type==='images' ? (
+                      <div style={{display:'flex',flexWrap:'wrap',gap:8}}>
+                        {readShots(inc,f.key,f.legacyKey).map((src,i)=>(
+                          <img key={i} src={src} alt={`Screenshot ${i+1}`} onClick={()=>window.open(src,'_blank')}
+                            style={{maxHeight:80,borderRadius:6,border:'1px solid rgba(255,255,255,0.12)',cursor:'zoom-in'}}/>
+                        ))}
+                      </div>
                     ) : (
                       <div style={{fontSize:13,color:'rgba(255,255,255,0.8)',fontWeight:500}}>{fieldDisplayValue(f,inc)}</div>
                     )}
