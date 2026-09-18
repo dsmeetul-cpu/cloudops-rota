@@ -38,6 +38,7 @@ const BLANK = {
   title:'', severity:'High', status:'Investigating', assigned_to:'',
   date: new Date().toISOString().slice(0,10),
   hours:1, isDaily:false, dailyType:'other',
+  created_by:'', // set once at creation (see saveIncident) — who's allowed to delete their own incident
   issueContent:'', diagnosticsContent:'', resolutionContent:'',
   // Structured fields — feed the Email Summary table (see EMAIL_ROWS below).
   startTime:'', endTime:'', whoCalled:'', env:'', supLink:'', screenshot:'',
@@ -70,6 +71,17 @@ const IMPACT_URGENCY_MATRIX = {
 // SLA risk in the Workspace/Insights view. Purely a display flag — never
 // changes stored data or touches payroll.
 const SLA_HOURS = { Disaster:1, Critical:4, High:8, Medium:24, Low:72 };
+// One-click starting points for War Room stakeholder updates — fills the
+// message box (doesn't auto-post) so specifics can still be added first.
+const WAR_ROOM_TEMPLATES = [
+  'Investigating',
+  'Root cause identified',
+  'Fix in progress',
+  'Fix deployed, monitoring',
+  'Resolved',
+  'Escalated to vendor',
+  'No update — still investigating',
+];
 function slaRisk(inc){
   if(inc.status==='Resolved') return null;
   const threshold = SLA_HOURS[inc.severity];
@@ -374,6 +386,49 @@ function findSimilarIncidents(inc, allIncidents, limit=5){
     .filter(o=>o.id!==inc.id && titleSignature(o.title)===sig)
     .sort((a,b)=>(b.date||'').localeCompare(a.date||''))
     .slice(0,limit);
+}
+
+// ── Wiki runbook matching ─────────────────────────────────────────────────
+// Surfaces Wiki entries whose title/category share significant words with
+// the incident's title — a simple keyword-overlap match, not semantic
+// search, so it's shown as "suggested" rather than authoritative.
+function findMatchingRunbooks(incidentTitle, wiki, limit=3){
+  const words = (incidentTitle||'').toLowerCase().replace(/[^a-z0-9\s]/g,' ')
+    .split(/\s+/).filter(w=>w.length>3 && !RECUR_STOPWORDS.has(w));
+  if(words.length===0 || !Array.isArray(wiki) || wiki.length===0) return [];
+  return wiki
+    .map(entry=>{
+      const hay = `${entry.title||''} ${entry.cat||''}`.toLowerCase();
+      const score = words.filter(w=>hay.includes(w)).length;
+      return {entry,score};
+    })
+    .filter(s=>s.score>0)
+    .sort((a,b)=>b.score-a.score)
+    .slice(0,limit)
+    .map(s=>s.entry);
+}
+// Small suggestion strip shown above the Diagnostics editor. Inserting
+// appends the runbook's content (as a quoted, attributed block) to whatever
+// is already in Diagnostics, rather than overwriting existing notes.
+function RunbookSuggestions({incidentTitle,wiki,diagnosticsContent,onInsert}){
+  const matches = useMemo(()=>findMatchingRunbooks(incidentTitle,wiki),[incidentTitle,wiki]);
+  if(matches.length===0) return null;
+  return (
+    <div style={{padding:'10px 20px',borderBottom:'1px solid rgba(255,255,255,0.06)',background:'rgba(167,139,250,0.05)'}}>
+      <div style={{fontSize:10,color:'rgba(167,139,250,0.7)',textTransform:'uppercase',letterSpacing:'0.6px',fontWeight:700,marginBottom:6}}>📚 Suggested runbooks</div>
+      <div style={{display:'flex',flexWrap:'wrap',gap:8}}>
+        {matches.map(entry=>(
+          <div key={entry.id} style={{display:'flex',alignItems:'center',gap:8,background:'rgba(255,255,255,0.04)',border:'1px solid rgba(255,255,255,0.1)',borderRadius:20,padding:'4px 6px 4px 12px'}}>
+            <span style={{fontSize:12,color:'rgba(255,255,255,0.75)'}}>{entry.title}</span>
+            <button onClick={()=>onInsert(entry)} style={{
+              background:'rgba(167,139,250,0.15)',border:'1px solid rgba(167,139,250,0.35)',borderRadius:16,
+              padding:'3px 10px',cursor:'pointer',color:'#c4b5fd',fontSize:11,fontWeight:700,
+            }}>Insert</button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 // ── CSV export ────────────────────────────────────────────────────────────
@@ -775,10 +830,12 @@ function WarRoomPanel({inc, onQuickUpdate}){
   const [bridge,setBridge] = useState(inc.majorBridgeLink||'');
   const [nextUpdate,setNextUpdate] = useState(inc.majorNextUpdateDue||'');
   const log = inc.majorCommsLog||[];
+  const msgRef = useRef(null);
 
-  const post = ()=>{
-    if(!msg.trim()) return;
-    const entry = { time:new Date().toISOString(), message:msg.trim() };
+  const post = (text)=>{
+    const m = (text!==undefined ? text : msg).trim();
+    if(!m) return;
+    const entry = { time:new Date().toISOString(), message:m };
     onQuickUpdate(inc.id, { majorCommsLog:[...log, entry] });
     setMsg('');
   };
@@ -809,11 +866,19 @@ function WarRoomPanel({inc, onQuickUpdate}){
 
       <div>
         <div style={{fontSize:9,color:'rgba(255,255,255,0.3)',textTransform:'uppercase',letterSpacing:'0.6px',fontWeight:600,marginBottom:8}}>Stakeholder Update Log</div>
+        <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:10}}>
+          {WAR_ROOM_TEMPLATES.map(t=>(
+            <button key={t} onClick={()=>{ setMsg(t); msgRef.current?.focus(); }} style={{
+              background:'rgba(255,255,255,0.04)',border:'1px solid rgba(255,255,255,0.1)',borderRadius:16,
+              padding:'4px 12px',cursor:'pointer',color:'rgba(255,255,255,0.55)',fontSize:11,fontWeight:600,
+            }}>{t}</button>
+          ))}
+        </div>
         <div style={{display:'flex',gap:8,marginBottom:14}}>
-          <input value={msg} onChange={e=>setMsg(e.target.value)} onKeyDown={e=>e.key==='Enter'&&post()}
-            placeholder="Post an update for stakeholders…"
+          <input ref={msgRef} value={msg} onChange={e=>setMsg(e.target.value)} onKeyDown={e=>e.key==='Enter'&&post()}
+            placeholder="Post an update for stakeholders… (or pick a template above)"
             style={{flex:1,background:'rgba(255,255,255,0.05)',border:'1px solid rgba(255,255,255,0.12)',borderRadius:6,padding:'8px 12px',color:'#fff',fontSize:12}}/>
-          <button onClick={post} disabled={!msg.trim()} className="btn btn-primary btn-sm">Post</button>
+          <button onClick={()=>post()} disabled={!msg.trim()} className="btn btn-primary btn-sm">Post</button>
         </div>
         {log.length===0 ? <Muted>No updates posted yet.</Muted> : (
           <div style={{display:'flex',flexDirection:'column',gap:10}}>
@@ -1281,6 +1346,13 @@ function WorkspacePanel({incidents,allIncidents,users,isManager,currentUser,onEd
                   {canEdit && selected.status!=='Resolved' && <button onClick={()=>onResolve(selected.id)} className="btn btn-secondary btn-sm">✓ Resolve</button>}
                   {canEdit && <button onClick={()=>onEdit(selected)} className="btn btn-secondary btn-sm">✏ Edit</button>}
                   {onClone && <button onClick={()=>onClone(selected)} className="btn btn-secondary btn-sm">📋 Clone</button>}
+                  {onDelete && (isManager||selected.created_by===currentUser) && (
+                    <button onClick={()=>onDelete(selected.id)} title="Delete incident" style={{
+                      background:'rgba(239,68,68,0.08)', border:'1px solid rgba(239,68,68,0.25)',
+                      borderRadius:6, padding:'6px 10px', cursor:'pointer',
+                      color:'rgba(239,68,68,0.7)', fontSize:12, fontWeight:600,
+                    }}>🗑</button>
+                  )}
                 </div>
               </div>
             </div>
@@ -1420,7 +1492,7 @@ function IncCard({inc,users,isManager,currentUser,onEdit,onDelete,onResolve,onVi
               onMouseLeave={e=>{e.currentTarget.style.color='rgba(255,255,255,0.55)';e.currentTarget.style.borderColor='rgba(255,255,255,0.1)';}}
             >📋 Clone</button>
           )}
-          {isManager&&(
+          {(isManager||inc.created_by===currentUser)&&(
             <button onClick={()=>onDelete(inc.id)} style={{
               background:'transparent',border:'1px solid transparent',
               borderRadius:7,padding:'5px 8px',cursor:'pointer',
@@ -1545,7 +1617,7 @@ function IncidentDetailBody({inc, tab, setTab, canEdit, onEditRequest, allIncide
   );
 }
 
-function DetailView({inc, users, isManager, currentUser, onClose, onEdit, onResolve, onClone, allIncidents, onQuickUpdate}){
+function DetailView({inc, users, isManager, currentUser, onClose, onEdit, onResolve, onClone, onDelete, allIncidents, onQuickUpdate}){
   const [tab, setTab] = React.useState('issue');
   if (!inc) return null;
   const assignee = users.find(u => u.id === inc.assigned_to);
@@ -1634,6 +1706,13 @@ function DetailView({inc, users, isManager, currentUser, onClose, onEdit, onReso
                 }}>🔴 Declare Major</button>
               )
             )}
+            {onDelete && (isManager||inc.created_by===currentUser) && (
+              <button onClick={()=>{ onClose(); onDelete(inc.id); }} title="Delete incident" style={{
+                background:'rgba(239,68,68,0.08)', border:'1px solid rgba(239,68,68,0.25)',
+                borderRadius:8, padding:'7px 14px', cursor:'pointer',
+                color:'rgba(239,68,68,0.7)', fontSize:12, fontWeight:600,
+              }}>🗑 Delete</button>
+            )}
             <button onClick={onClose} style={{
               background:'rgba(255,255,255,0.06)', border:'1px solid rgba(255,255,255,0.1)',
               borderRadius:8, width:34, height:34, cursor:'pointer',
@@ -1681,7 +1760,7 @@ function DetailView({inc, users, isManager, currentUser, onClose, onEdit, onReso
 }
 
 // ── Modal ──────────────────────────────────────────────────────────────────
-function Modal({editId,form,setForm,onSave,onClose,users,currentUser,isManager}){
+function Modal({editId,form,setForm,onSave,onClose,users,currentUser,isManager,wiki}){
   const [tab,setTab]=useState('issue');
   const active=EDITOR_TABS.find(t=>t.id===tab);
 
@@ -1849,6 +1928,10 @@ function Modal({editId,form,setForm,onSave,onClose,users,currentUser,isManager})
 
           {/* Right: editor */}
           <div style={{flex:1,display:'flex',flexDirection:'column',minHeight:0}}>
+            {active && active.id==='diagnostics' && (
+              <RunbookSuggestions incidentTitle={form.title} wiki={wiki} diagnosticsContent={form.diagnosticsContent}
+                onInsert={entry=>setForm(f=>({...f,diagnosticsContent:`${f.diagnosticsContent?f.diagnosticsContent+'\n\n':''}> 📚 From runbook "${entry.title}":\n${entry.content}`}))}/>
+            )}
             {active && active.id!=='email' && STRUCTURED_FIELDS[active.id] && (
               <StructuredFieldsBar fields={STRUCTURED_FIELDS[active.id]} form={form} setForm={setForm}/>
             )}
@@ -1916,6 +1999,7 @@ export default function Incidents({
   driveToken, addLog,
   timesheets, setTimesheets,
   initialFilter, onConsumeInitialFilter,
+  wiki,
 }){
   const [view,setView]=useState('all');
   const [groupBy,setGroupBy]=useState('none'); // 'none' | 'severity' | 'status' | 'assigned_to' | 'date' | 'dailyType'
@@ -2057,6 +2141,11 @@ export default function Incidents({
       hours: Number(form.hours)||1,
       updated_at: new Date().toISOString(),
       created_at: editId?(safe.find(i=>i.id===editId)?.created_at||new Date().toISOString()):new Date().toISOString(),
+      // Set once, at creation, and never changed on edit — who logged this
+      // incident (not necessarily who it's currently assigned to, since
+      // assignment can change later). Used to let an engineer delete only
+      // incidents they personally created; managers can delete any.
+      created_by: editId?(safe.find(i=>i.id===editId)?.created_by||''):currentUser,
     };
     // setIncidents triggers App.js useEffect → save('incidents', ...) → driveWrite
     setIncidents(editId?safe.map(i=>i.id===editId?entry:i):[entry,...safe]);
@@ -2066,9 +2155,13 @@ export default function Incidents({
   };
 
   const deleteIncident=(id)=>{
-    if(!isManager){toast('⚠ Manager only.');return;}
-    if(!window.confirm('Delete this incident?')) return;
     const entry=safe.find(i=>i.id===id);
+    // Engineers may delete only incidents they personally logged
+    // (created_by); managers may delete any. Legacy incidents logged before
+    // created_by existed have no value there, so they fall back to
+    // manager-only — the safe default rather than guessing who logged them.
+    if(!isManager && entry?.created_by!==currentUser){toast('⚠ You can only delete incidents you logged yourself.');return;}
+    if(!window.confirm('Delete this incident?')) return;
     setIncidents(safe.filter(i=>i.id!==id));
     toast('🗑 Deleted.');
     addLog?.({section:'incidents',level:'warning',action:'Delete incident',detail:`"${entry?.title||id}"`});
@@ -2342,7 +2435,7 @@ export default function Incidents({
       {showModal&&(
         <Modal editId={editId} form={form} setForm={setForm}
           onSave={saveIncident} onClose={()=>setShowModal(false)}
-          users={users} currentUser={currentUser} isManager={isManager}/>
+          users={users} currentUser={currentUser} isManager={isManager} wiki={wiki}/>
       )}
       {detailInc&&(
         <DetailView
@@ -2354,6 +2447,7 @@ export default function Incidents({
           onEdit={(inc)=>{ setDetailInc(null); openEdit(inc); }}
           onResolve={(id)=>{ resolveIncident(id); setDetailInc(prev=>prev&&prev.id===id?{...prev,status:'Resolved'}:prev); }}
           onClone={(inc)=>{ setDetailInc(null); openClone(inc); }}
+          onDelete={deleteIncident}
           allIncidents={safe}
           onQuickUpdate={quickUpdateIncident}
         />
