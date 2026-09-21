@@ -481,6 +481,50 @@ function insertMd(ref, before, after, ph='text'){
   el.setSelectionRange(s+before.length+sel.length, s+before.length+sel.length);
 }
 
+// ── Paste rich HTML (e.g. an Outlook email) as Markdown ─────────────────────
+// Outlook copies a full HTML fragment to the clipboard alongside plain text.
+// Left to the browser default, a textarea only ever takes the plain-text
+// variant, which turns a table into one run-on line with no column
+// structure. This intercepts the paste, walks the HTML, and converts it to
+// Markdown — tables become real Markdown tables, formatting/links/lists are
+// preserved where practical, and anything unrecognised (images, styling)
+// degrades gracefully to plain text or is dropped rather than breaking.
+function htmlTableToMarkdown(table){
+  const esc = s => s.replace(/\|/g,'\\|').replace(/\s+/g,' ').trim();
+  const rows = [...table.rows].map(tr => [...tr.cells].map(c => esc(c.textContent)));
+  if(rows.length===0) return '';
+  const cols = Math.max(...rows.map(r=>r.length));
+  const norm = rows.map(r => { const c=[...r]; while(c.length<cols) c.push(''); return c; });
+  let out = `| ${norm[0].join(' | ')} |\n| ${norm[0].map(()=>'---').join(' | ')} |\n`;
+  norm.slice(1).forEach(r => { out += `| ${r.join(' | ')} |\n`; });
+  return out;
+}
+function htmlToMarkdown(html){
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const walk = (node) => {
+    if(node.nodeType===3) return node.textContent.replace(/\u00A0/g,' '); // text node
+    if(node.nodeType!==1) return ''; // not an element
+    const kids = () => [...node.childNodes].map(walk).join('');
+    switch(node.tagName.toLowerCase()){
+      case 'script': case 'style': return '';
+      case 'br': return '\n';
+      case 'table': return htmlTableToMarkdown(node) + '\n';
+      case 'p': case 'div': { const t=kids(); return t.trim() ? t+'\n\n' : ''; }
+      case 'h1': return `# ${kids().trim()}\n\n`;
+      case 'h2': return `## ${kids().trim()}\n\n`;
+      case 'h3': return `### ${kids().trim()}\n\n`;
+      case 'b': case 'strong': { const t=kids(); return t.trim() ? `**${t}**` : ''; }
+      case 'i': case 'em': { const t=kids(); return t.trim() ? `*${t}*` : ''; }
+      case 'a': { const href=node.getAttribute('href'), t=kids(); return (href && t.trim()) ? `[${t}](${href})` : t; }
+      case 'li': { const ordered=node.parentElement?.tagName.toLowerCase()==='ol'; return `${ordered?'1.':'-'} ${kids().trim()}\n`; }
+      case 'ul': case 'ol': return kids()+'\n';
+      case 'img': return ''; // dropped — use the Screenshot gallery for images, not inline in notes
+      default: return kids();
+    }
+  };
+  return walk(doc.body).replace(/[ \t]+\n/g,'\n').replace(/\n{3,}/g,'\n\n').trim();
+}
+
 // ── .docx extractor ────────────────────────────────────────────────────────
 async function extractDocx(buf){
   const b=new Uint8Array(buf), entries=[];
@@ -618,6 +662,13 @@ function RichEditor({value,onChange,placeholder}){
         />
       ) : (
         <textarea ref={ta} value={value} onChange={e=>onChange(e.target.value)}
+          onPaste={e=>{
+            const html = e.clipboardData?.getData('text/html');
+            if(!html) return; // no rich data on the clipboard — let default plain-text paste happen
+            e.preventDefault();
+            const md = htmlToMarkdown(html);
+            if(md) insertMd(ta, md, '', '');
+          }}
           placeholder={placeholder} spellCheck={false}
           style={{
             flex:1,resize:'none',border:'none',outline:'none',
@@ -1950,7 +2001,7 @@ function Modal({editId,form,setForm,onSave,onClose,users,currentUser,isManager,w
           borderTop:'1px solid rgba(255,255,255,0.07)',
         }}>
           <div style={{display:'flex',gap:12,alignItems:'center'}}>
-            <span style={{fontSize:10,color:'rgba(255,255,255,0.2)'}}>Markdown · ↑ Import .md / .txt / .docx · ◉ Preview</span>
+            <span style={{fontSize:10,color:'rgba(255,255,255,0.2)'}}>Markdown · ↑ Import .md / .txt / .docx · Paste from Outlook/Word keeps tables · ◉ Preview</span>
             {/* Tab completion indicators */}
             <div style={{display:'flex',gap:6}}>
               {EDITOR_TABS.map(t=>(
