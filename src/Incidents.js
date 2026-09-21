@@ -447,9 +447,43 @@ function downloadCsv(rows, columns, filename){
   URL.revokeObjectURL(url);
 }
 
+// Converts Markdown pipe-table blocks (header row, --- separator, 1+ data
+// rows) into real inline-styled <table> HTML. Runs before the rest of
+// renderMd's line-based replacements, since those would otherwise mangle a
+// table's newlines into <br/> soup before it's ever recognised as a table.
+// Inline styles (not CSS classes) are deliberate: this same HTML is reused
+// verbatim in the Outlook Email Summary (buildEmailHtml strips class
+// attributes but not inline styles), so it needs to look right there too.
+const MD_TABLE_STYLE = 'border-collapse:collapse;width:100%;margin:10px 0;font-size:13px;';
+const MD_TABLE_TH = 'text-align:left;padding:6px 10px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.07);font-weight:700;color:rgba(255,255,255,0.85);';
+const MD_TABLE_TD = 'padding:6px 10px;border:1px solid rgba(255,255,255,0.08);color:rgba(255,255,255,0.7);';
+function convertMdTables(md){
+  const lines = md.split('\n');
+  const isRow = l => /^\s*\|.*\|\s*$/.test(l);
+  const isSep = l => /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$/.test(l);
+  const cells = l => l.trim().replace(/^\|/,'').replace(/\|$/,'').split('|').map(s=>s.trim());
+  const out = [];
+  let i = 0;
+  while(i < lines.length){
+    if(isRow(lines[i]) && isSep(lines[i+1]||'')){
+      const header = cells(lines[i]);
+      let j = i+2;
+      const rows = [];
+      while(j<lines.length && isRow(lines[j])){ rows.push(cells(lines[j])); j++; }
+      const thead = `<thead><tr>${header.map(h=>`<th style="${MD_TABLE_TH}">${esc(h)}</th>`).join('')}</tr></thead>`;
+      const tbody = `<tbody>${rows.map(r=>`<tr>${header.map((_,ci)=>`<td style="${MD_TABLE_TD}">${esc(r[ci]||'')}</td>`).join('')}</tr>`).join('')}</tbody>`;
+      out.push(`<table style="${MD_TABLE_STYLE}">${thead}${tbody}</table>`);
+      i = j;
+    } else {
+      out.push(lines[i]);
+      i++;
+    }
+  }
+  return out.join('\n');
+}
 function renderMd(md){
   if(!md) return '';
-  let h = md
+  let h = convertMdTables(md)
     .replace(/```(\w*)\n?([\s\S]*?)```/g,(_,l,c)=>`<pre class="ipr"${l?` data-lang="${l}"`:''}><code>${esc(c.trimEnd())}</code></pre>`)
     .replace(/`([^`]+)`/g,(_,c)=>`<code class="iic">${esc(c)}</code>`)
     .replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>')
@@ -464,7 +498,8 @@ function renderMd(md){
     .replace(/^\d+\. (.+)$/gm,'<li class="iol">$1</li>')
     .replace(/^> (.+)$/gm,'<blockquote class="ibq">$1</blockquote>')
     .replace(/\n\n/g,'</p><p class="ipp">')
-    .replace(/\n/g,'<br/>');
+    .replace(/\n/g,'<br/>')
+    .replace(/<br\/>(<table)/g,'$1').replace(/(<\/table>)<br\/>/g,'$1'); // a table shouldn't be wrapped in stray <br/>s from its own surrounding blank lines
   return `<p class="ipp">${h}</p>`;
 }
 
