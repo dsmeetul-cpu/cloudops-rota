@@ -686,9 +686,16 @@ function RichEditor({value,onChange,placeholder}){
           onPaste={e=>{
             const html = e.clipboardData?.getData('text/html');
             if(!html) return; // no rich data on the clipboard — let default plain-text paste happen
-            e.preventDefault();
-            const md = htmlToMarkdown(html);
-            if(md) insertMd(ta, md, '', '');
+            let md = '';
+            try { md = htmlToMarkdown(html); } catch(err) { md = ''; }
+            if(md){ e.preventDefault(); insertMd(ta, md, '', ''); return; }
+            // Conversion produced nothing usable (or threw) — fall back to
+            // the plain-text clipboard variant rather than silently
+            // swallowing the paste. Only intercept if there IS a plain-text
+            // fallback to use; otherwise let the browser's own default
+            // paste behaviour run rather than risk blocking it for nothing.
+            const plain = e.clipboardData.getData('text/plain');
+            if(plain){ e.preventDefault(); insertMd(ta, plain, '', ''); }
           }}
           placeholder={placeholder} spellCheck={false}
           style={{
@@ -753,15 +760,16 @@ function ScreenshotGallery({field,form,setForm}){
   };
 
   return (
-    <div style={{gridColumn:'1 / -1'}}>
-      <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
+    <div style={{gridColumn: shots.length>0 ? '1 / -1' : 'auto'}}>
+      <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:5}}>
         <span style={fieldLabelStyle}>{field.label}</span>
-        {shots.length>0 && <span style={{fontSize:10,color:'rgba(255,255,255,0.3)',marginBottom:5}}>{shots.length} attached</span>}
+        {shots.length>0 && <span style={{fontSize:10,color:'rgba(255,255,255,0.3)'}}>{shots.length} attached</span>}
       </div>
       <div
         onPaste={e=>{ const f=e.clipboardData?.files; if(f?.length) addFiles(f); }}
         onDragOver={e=>e.preventDefault()}
         onDrop={e=>{ e.preventDefault(); if(e.dataTransfer?.files?.length) addFiles(e.dataTransfer.files); }}
+        title="Select multiple, drag & drop, or paste. Click a thumbnail to open full size."
         style={{display:'flex',flexWrap:'wrap',gap:8,alignItems:'flex-start'}}
       >
         {shots.map((src,i)=>(
@@ -776,18 +784,21 @@ function ScreenshotGallery({field,form,setForm}){
               }}>✕</button>
           </div>
         ))}
-        <button onClick={()=>fi.current?.click()} disabled={busy} style={{
-          height:64,minWidth:88,borderRadius:8,cursor:busy?'default':'pointer',
-          background:'rgba(255,255,255,0.03)',border:'1px dashed rgba(255,255,255,0.2)',
-          color:'rgba(255,255,255,0.45)',fontSize:11,fontWeight:600,
-          display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:3,padding:'0 12px',
-        }}>
-          {busy ? '…' : <><span style={{fontSize:16}}>⬆</span><span>Add</span></>}
-        </button>
+        {shots.length>0 ? (
+          <button onClick={()=>fi.current?.click()} disabled={busy} style={{
+            height:64,minWidth:64,borderRadius:8,cursor:busy?'default':'pointer',
+            background:'rgba(255,255,255,0.03)',border:'1px dashed rgba(255,255,255,0.2)',
+            color:'rgba(255,255,255,0.45)',fontSize:16,
+            display:'flex',alignItems:'center',justifyContent:'center',
+          }}>{busy?'…':'⬆'}</button>
+        ) : (
+          <button onClick={()=>fi.current?.click()} disabled={busy} style={{...structFieldBtn,width:'100%',display:'flex',alignItems:'center',justifyContent:'center',gap:6}}>
+            {busy ? '…' : '⬆ Add'}
+          </button>
+        )}
         <input ref={fi} type="file" accept="image/*" multiple style={{display:'none'}}
           onChange={e=>{ addFiles(e.target.files); e.target.value=''; }}/>
       </div>
-      <div style={{fontSize:10,color:'rgba(255,255,255,0.25)',marginTop:5}}>Select multiple, drag &amp; drop, or paste. Click a thumbnail to open full size.</div>
     </div>
   );
 }
@@ -798,8 +809,8 @@ function StructuredFieldsBar({fields,form,setForm}){
 
   return (
     <div style={{
-      display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(150px, 1fr))', gap:14,
-      padding:'14px 20px', flexShrink:0,
+      display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(150px, 1fr))', gap:10,
+      padding:'10px 20px', flexShrink:0,
       borderBottom:'1px solid rgba(255,255,255,0.06)',
       background:'rgba(255,255,255,0.015)',
     }}>
@@ -1854,7 +1865,7 @@ function Modal({editId,form,setForm,onSave,onClose,users,currentUser,isManager,w
       `}</style>
 
       <div style={{
-        width:'100%',maxWidth:1080,height:'min(88vh,820px)',
+        width:'100%',maxWidth:1080,height:'min(93vh,920px)',
         display:'flex',flexDirection:'column',
         background:'#0d1117',
         border:'1px solid rgba(255,255,255,0.1)',
@@ -1889,18 +1900,18 @@ function Modal({editId,form,setForm,onSave,onClose,users,currentUser,isManager,w
 
         {/* ── Basics: title + a clean, labeled field grid ──────────────────── */}
         <div style={{
-          padding:'16px 20px', flexShrink:0,
+          padding:'12px 20px', flexShrink:0,
           background:'rgba(255,255,255,0.015)',
           borderBottom:'1px solid rgba(255,255,255,0.07)',
         }}>
-          <div style={{marginBottom:14}}>
+          <div style={{marginBottom:10}}>
             <div style={fieldLabelStyle}>Title</div>
             <input value={form.title} onChange={e=>setForm(f=>({...f,title:e.target.value}))}
               placeholder="Brief, searchable summary of the incident…"
               autoFocus
               style={{
                 width:'100%',background:'rgba(255,255,255,0.05)',border:'1px solid rgba(255,255,255,0.12)',
-                borderRadius:8,padding:'10px 12px',outline:'none',
+                borderRadius:8,padding:'8px 12px',outline:'none',
                 fontSize:15,fontWeight:600,color:'#fff',
               }}
             />
