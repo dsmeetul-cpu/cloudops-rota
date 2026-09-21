@@ -489,6 +489,25 @@ function insertMd(ref, before, after, ph='text'){
 // Markdown — tables become real Markdown tables, formatting/links/lists are
 // preserved where practical, and anything unrecognised (images, styling)
 // degrades gracefully to plain text or is dropped rather than breaking.
+//
+// Outlook/Word HTML is notorious for wrapping the actual data table inside
+// one or more outer LAYOUT tables (often literally 1 row × 1 cell, purely
+// for spacing/borders). Naively converting whichever <table> is encountered
+// first flattens the real table's cells into one run-on blob via
+// textContent, since textContent ignores structure entirely. isDataTable()
+// below distinguishes a genuine data table (multiple simple cells, nothing
+// block-level nested inside them) from a layout wrapper; wrappers are
+// treated as transparent and walked through until a real table is found,
+// however deep it's nested.
+function isDataTable(table){
+  const rows = [...table.rows];
+  if(rows.length===0) return false;
+  // The only real problem case is a nested <table> inside a cell (a genuine
+  // layout wrapper). <p>/<div>-wrapped text is normal even in real Outlook/
+  // Word data cells, so those must NOT disqualify a table here.
+  if(!rows.every(tr => tr.cells.length>0 && [...tr.cells].every(c => !c.querySelector('table')))) return false;
+  return rows.length>1 || rows[0].cells.length>1; // more than one row, or one row with multiple columns
+}
 function htmlTableToMarkdown(table){
   const esc = s => s.replace(/\|/g,'\\|').replace(/\s+/g,' ').trim();
   const rows = [...table.rows].map(tr => [...tr.cells].map(c => esc(c.textContent)));
@@ -508,7 +527,9 @@ function htmlToMarkdown(html){
     switch(node.tagName.toLowerCase()){
       case 'script': case 'style': return '';
       case 'br': return '\n';
-      case 'table': return htmlTableToMarkdown(node) + '\n';
+      case 'table': return isDataTable(node) ? htmlTableToMarkdown(node)+'\n' : kids(); // layout wrapper → transparent, recurse to find the real table inside
+      case 'tr': return kids()+'\n'; // only reached for rows inside a layout-wrapper table, above
+      case 'td': case 'th': return kids()+' ';
       case 'p': case 'div': { const t=kids(); return t.trim() ? t+'\n\n' : ''; }
       case 'h1': return `# ${kids().trim()}\n\n`;
       case 'h2': return `## ${kids().trim()}\n\n`;
