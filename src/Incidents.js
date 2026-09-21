@@ -521,29 +521,39 @@ function htmlTableToMarkdown(table){
 function htmlToMarkdown(html){
   const doc = new DOMParser().parseFromString(html, 'text/html');
   const walk = (node) => {
-    if(node.nodeType===3) return node.textContent.replace(/\u00A0/g,' '); // text node
+    // Text node: collapse whitespace the way a browser actually renders it.
+    // Machine-generated HTML (Outlook included) is usually pretty-printed
+    // with newlines + indentation spaces purely for source readability —
+    // textContent preserves that literally, so without collapsing it here,
+    // that formatting whitespace leaks into the output as if it were real
+    // content (and 4-space runs happen to trigger a Markdown code block).
+    if(node.nodeType===3) return node.textContent.replace(/\u00A0/g,' ').replace(/[ \t\r\n]+/g,' ');
     if(node.nodeType!==1) return ''; // not an element
-    const kids = () => [...node.childNodes].map(walk).join('');
+    const kids = () => [...node.childNodes].map(walk).join('').trim();
     switch(node.tagName.toLowerCase()){
       case 'script': case 'style': return '';
       case 'br': return '\n';
       case 'table': return isDataTable(node) ? htmlTableToMarkdown(node)+'\n' : kids(); // layout wrapper → transparent, recurse to find the real table inside
       case 'tr': return kids()+'\n'; // only reached for rows inside a layout-wrapper table, above
       case 'td': case 'th': return kids()+' ';
-      case 'p': case 'div': { const t=kids(); return t.trim() ? t+'\n\n' : ''; }
-      case 'h1': return `# ${kids().trim()}\n\n`;
-      case 'h2': return `## ${kids().trim()}\n\n`;
-      case 'h3': return `### ${kids().trim()}\n\n`;
-      case 'b': case 'strong': { const t=kids(); return t.trim() ? `**${t}**` : ''; }
-      case 'i': case 'em': { const t=kids(); return t.trim() ? `*${t}*` : ''; }
-      case 'a': { const href=node.getAttribute('href'), t=kids(); return (href && t.trim()) ? `[${t}](${href})` : t; }
-      case 'li': { const ordered=node.parentElement?.tagName.toLowerCase()==='ol'; return `${ordered?'1.':'-'} ${kids().trim()}\n`; }
+      case 'p': case 'div': { const t=kids(); return t ? t+'\n\n' : ''; }
+      case 'h1': return `# ${kids()}\n\n`;
+      case 'h2': return `## ${kids()}\n\n`;
+      case 'h3': return `### ${kids()}\n\n`;
+      case 'b': case 'strong': { const t=kids(); return t ? `**${t}**` : ''; }
+      case 'i': case 'em': { const t=kids(); return t ? `*${t}*` : ''; }
+      case 'a': { const href=node.getAttribute('href'), t=kids(); return (href && t) ? `[${t}](${href})` : t; }
+      case 'li': { const ordered=node.parentElement?.tagName.toLowerCase()==='ol'; return `${ordered?'1.':'-'} ${kids()}\n`; }
       case 'ul': case 'ol': return kids()+'\n';
       case 'img': return ''; // dropped — use the Screenshot gallery for images, not inline in notes
       default: return kids();
     }
   };
-  return walk(doc.body).replace(/[ \t]+\n/g,'\n').replace(/\n{3,}/g,'\n\n').trim();
+  return walk(doc.body)
+    .replace(/[ \t]+\n/g,'\n')   // trailing space left before a line break
+    .replace(/\n[ \t]+/g,'\n')   // leading space left after a line break (from whitespace-only text nodes between block elements — invisible in real HTML rendering, but textContent doesn't collapse it for us)
+    .replace(/\n{3,}/g,'\n\n')
+    .trim();
 }
 
 // ── .docx extractor ────────────────────────────────────────────────────────
