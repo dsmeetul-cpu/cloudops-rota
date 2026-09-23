@@ -99,13 +99,13 @@ function slaRisk(inc){
 const EDITOR_TABS = [
   { id:'issue',       label:'Issue',       icon:'🚨', field:'issueContent',
     hint:'Describe what happened, impact, and timeline',
-    ph:'# Summary\nBrief description of the incident.\n\n## Impact\n- Services affected\n- Users impacted\n- Duration\n\n## Timeline\n- HH:MM — Alert fired\n- HH:MM — Engineer paged\n- HH:MM — Incident declared' },
+    ph:'Summary, impact (services/users affected, duration), and a timeline of key events…' },
   { id:'diagnostics', label:'Diagnostics', icon:'🔍', field:'diagnosticsContent',
     hint:'Investigation steps, logs, and root cause',
-    ph:'## Investigation\n1. Checked dashboards\n2. Reviewed logs\n\n## Relevant Logs\n```\npaste logs here\n```\n\n## Root Cause\nWhat caused the incident.' },
+    ph:'Investigation steps, relevant logs, and root cause…' },
   { id:'resolution',  label:'Resolution',  icon:'✅', field:'resolutionContent',
     hint:'Fix applied, follow-ups, and post-incident review',
-    ph:'## Fix Applied\nWhat was done to resolve the incident.\n\n## Follow-up Actions\n- [ ] Action item 1\n- [ ] Action item 2\n\n## Post-Incident Review\nScheduled for: ' },
+    ph:'Fix applied, follow-up actions, and post-incident review notes…' },
   { id:'email',       label:'Email Summary', icon:'📧', field:null,
     hint:'Auto-built from the fields on the other tabs — copy and paste straight into an Outlook email.' },
 ];
@@ -233,7 +233,7 @@ function buildEmailHtml(form){
     if (r.images) {
       cell = (val||[]).map(src=>`<img src="${src}" style="max-width:420px;max-height:280px;display:block;border:1px solid #ccc;margin-bottom:6px;"/>`).join('');
     } else if (r.md) {
-      cell = val ? renderMd(val).replace(/ class="[^"]*"/g,'') : '';
+      cell = val ? contentToHtml(val).replace(/ class="[^"]*"/g,'') : '';
     } else {
       cell = esc(val).replace(/\n/g,'<br/>');
     }
@@ -311,20 +311,20 @@ function compressScreenshot(file){
 }
 
 const TOOLBAR_ITEMS = [
-  { label:'B',   title:'Bold',          md:['**','**'],      s:{fontWeight:800} },
-  { label:'I',   title:'Italic',        md:['*','*'],        s:{fontStyle:'italic'} },
+  { label:'B',   title:'Bold',          cmd:()=>document.execCommand('bold'),                              s:{fontWeight:800} },
+  { label:'I',   title:'Italic',        cmd:()=>document.execCommand('italic'),                            s:{fontStyle:'italic'} },
   { sep:true },
-  { label:'H1',  title:'Heading 1',     md:['\n# ',''],      s:{fontSize:10,fontWeight:700} },
-  { label:'H2',  title:'Heading 2',     md:['\n## ',''],     s:{fontSize:10,fontWeight:700} },
-  { label:'H3',  title:'Heading 3',     md:['\n### ',''],    s:{fontSize:10,fontWeight:700} },
+  { label:'H1',  title:'Heading 1',     cmd:()=>document.execCommand('formatBlock',false,'H1'),            s:{fontSize:10,fontWeight:700} },
+  { label:'H2',  title:'Heading 2',     cmd:()=>document.execCommand('formatBlock',false,'H2'),            s:{fontSize:10,fontWeight:700} },
+  { label:'H3',  title:'Heading 3',     cmd:()=>document.execCommand('formatBlock',false,'H3'),            s:{fontSize:10,fontWeight:700} },
+  { label:'P',   title:'Paragraph',     cmd:()=>document.execCommand('formatBlock',false,'P'),             s:{fontSize:10,fontWeight:700} },
   { sep:true },
-  { label:'``',  title:'Inline code',   md:['`','`'],        s:{fontFamily:'monospace',fontSize:11} },
-  { label:'```', title:'Code block',    md:['```\n','\n```'],s:{fontFamily:'monospace',fontSize:10} },
+  { label:'``',  title:'Inline code (select text first)', cmd:()=>wrapSelectionWithTag('code'),             s:{fontFamily:'monospace',fontSize:11} },
   { sep:true },
-  { label:'❝',   title:'Blockquote',   md:['\n> ',''],      s:{} },
-  { label:'•',   title:'Bullet list',  md:['\n- ',''],      s:{fontSize:15} },
-  { label:'1.',  title:'Numbered',     md:['\n1. ',''],      s:{} },
-  { label:'──',  title:'Divider',      md:['\n---\n',''],   s:{letterSpacing:-1} },
+  { label:'❝',   title:'Blockquote',    cmd:()=>document.execCommand('formatBlock',false,'BLOCKQUOTE'),    s:{} },
+  { label:'•',   title:'Bullet list',   cmd:()=>document.execCommand('insertUnorderedList'),               s:{fontSize:15} },
+  { label:'1.',  title:'Numbered list', cmd:()=>document.execCommand('insertOrderedList'),                 s:{} },
+  { label:'──',  title:'Divider',       cmd:()=>document.execCommand('insertHorizontalRule'),               s:{letterSpacing:-1} },
 ];
 
 // ── Markdown renderer ──────────────────────────────────────────────────────
@@ -503,37 +503,45 @@ function renderMd(md){
   return `<p class="ipp">${h}</p>`;
 }
 
-// ── Insert at cursor ───────────────────────────────────────────────────────
-function insertMd(ref, before, after, ph='text'){
-  const el = ref.current; if(!el) return;
-  const s=el.selectionStart, e=el.selectionEnd;
-  const sel=el.value.substring(s,e)||ph;
-  const nv=el.value.substring(0,s)+before+sel+after+el.value.substring(e);
-  const setter=Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value').set;
-  setter.call(el,nv);
-  el.dispatchEvent(new Event('input',{bubbles:true}));
-  el.focus();
-  el.setSelectionRange(s+before.length+sel.length, s+before.length+sel.length);
+// ── Content-format helpers ───────────────────────────────────────────────────
+// issueContent/diagnosticsContent/resolutionContent now store real HTML
+// (see RichEditor below), but incidents logged before this change still have
+// Markdown strings in those fields. Every place that displays or edits this
+// content needs to handle both without the person ever seeing a difference.
+function looksLikeHtml(s){ return /<[a-z][\s\S]*>/i.test(s||''); }
+function contentToHtml(raw){ return !raw ? '' : (looksLikeHtml(raw) ? raw : renderMd(raw)); }
+function stripToPlainText(raw){
+  if(!raw) return '';
+  if(looksLikeHtml(raw)){
+    const doc = new DOMParser().parseFromString(raw,'text/html');
+    return (doc.body.textContent||'').replace(/\s+/g,' ').trim();
+  }
+  return raw.replace(/[#*`>_\-]/g,'').replace(/\s+/g,' ').trim(); // legacy Markdown — strip syntax chars
 }
 
-// ── Paste rich HTML (e.g. an Outlook email) as Markdown ─────────────────────
+// ── Insert at cursor (used by the inline-code toolbar button, and by
+// content that needs inserting into the WYSIWYG editor as real markup) ──────
+function wrapSelectionWithTag(tag){
+  const sel = window.getSelection();
+  if(!sel || sel.rangeCount===0 || sel.isCollapsed) return; // needs an actual selection to wrap
+  const range = sel.getRangeAt(0);
+  const el = document.createElement(tag);
+  try{ range.surroundContents(el); }catch(e){ /* selection spans element boundaries — skip rather than corrupt the DOM */ }
+}
+
+// ── Clean pasted HTML (e.g. an Outlook email) for insertion as real markup ──
 // Outlook copies a full HTML fragment to the clipboard alongside plain text.
-// Left to the browser default, a textarea only ever takes the plain-text
-// variant, which turns a table into one run-on line with no column
-// structure. This intercepts the paste, walks the HTML, and converts it to
-// Markdown — tables become real Markdown tables, formatting/links/lists are
-// preserved where practical, and anything unrecognised (images, styling)
-// degrades gracefully to plain text or is dropped rather than breaking.
+// Since the editor below is itself HTML-native (not Markdown), pasted content
+// can be inserted directly rather than lossily converted to a text format —
+// this only strips presentational cruft (inline colours/fonts that would
+// clash with the app's dark theme, Outlook's mso-* noise, scripts) while
+// preserving real structure: tables, bold, links, lists, headings.
 //
 // Outlook/Word HTML is notorious for wrapping the actual data table inside
 // one or more outer LAYOUT tables (often literally 1 row × 1 cell, purely
-// for spacing/borders). Naively converting whichever <table> is encountered
-// first flattens the real table's cells into one run-on blob via
-// textContent, since textContent ignores structure entirely. isDataTable()
-// below distinguishes a genuine data table (multiple simple cells, nothing
-// block-level nested inside them) from a layout wrapper; wrappers are
-// treated as transparent and walked through until a real table is found,
-// however deep it's nested.
+// for spacing/borders). isDataTable() below distinguishes a genuine data
+// table from a layout wrapper; wrappers are treated as transparent and
+// walked through until a real table is found, however deep it's nested.
 function isDataTable(table){
   const rows = [...table.rows];
   if(rows.length===0) return false;
@@ -543,52 +551,45 @@ function isDataTable(table){
   if(!rows.every(tr => tr.cells.length>0 && [...tr.cells].every(c => !c.querySelector('table')))) return false;
   return rows.length>1 || rows[0].cells.length>1; // more than one row, or one row with multiple columns
 }
-function htmlTableToMarkdown(table){
-  const esc = s => s.replace(/\|/g,'\\|').replace(/\s+/g,' ').trim();
-  const rows = [...table.rows].map(tr => [...tr.cells].map(c => esc(c.textContent)));
+function htmlTableToCleanHtml(table){
+  const cell = s => esc(s.replace(/\u00A0/g,' ').replace(/[ \t\r\n]+/g,' ').trim());
+  const rows = [...table.rows].map(tr => [...tr.cells].map(c => cell(c.textContent)));
   if(rows.length===0) return '';
-  const cols = Math.max(...rows.map(r=>r.length));
-  const norm = rows.map(r => { const c=[...r]; while(c.length<cols) c.push(''); return c; });
-  let out = `| ${norm[0].join(' | ')} |\n| ${norm[0].map(()=>'---').join(' | ')} |\n`;
-  norm.slice(1).forEach(r => { out += `| ${r.join(' | ')} |\n`; });
-  return out;
+  const [header, ...body] = rows;
+  const th = header.map(h=>`<th style="${MD_TABLE_TH}">${h}</th>`).join('');
+  const tb = body.map(r=>`<tr>${header.map((_,i)=>`<td style="${MD_TABLE_TD}">${r[i]||''}</td>`).join('')}</tr>`).join('');
+  return `<table style="${MD_TABLE_STYLE}"><thead><tr>${th}</tr></thead><tbody>${tb}</tbody></table>`;
 }
-function htmlToMarkdown(html){
+function cleanPastedHtml(html){
   const doc = new DOMParser().parseFromString(html, 'text/html');
   const walk = (node) => {
-    // Text node: collapse whitespace the way a browser actually renders it.
-    // Machine-generated HTML (Outlook included) is usually pretty-printed
-    // with newlines + indentation spaces purely for source readability —
-    // textContent preserves that literally, so without collapsing it here,
-    // that formatting whitespace leaks into the output as if it were real
-    // content (and 4-space runs happen to trigger a Markdown code block).
-    if(node.nodeType===3) return node.textContent.replace(/\u00A0/g,' ').replace(/[ \t\r\n]+/g,' ');
+    if(node.nodeType===3) return esc(node.textContent.replace(/\u00A0/g,' ').replace(/[ \t\r\n]+/g,' '));
     if(node.nodeType!==1) return ''; // not an element
     const kids = () => [...node.childNodes].map(walk).join('').trim();
     switch(node.tagName.toLowerCase()){
       case 'script': case 'style': return '';
-      case 'br': return '\n';
-      case 'table': return isDataTable(node) ? htmlTableToMarkdown(node)+'\n' : kids(); // layout wrapper → transparent, recurse to find the real table inside
-      case 'tr': return kids()+'\n'; // only reached for rows inside a layout-wrapper table, above
+      case 'br': return '<br/>';
+      case 'table': return isDataTable(node) ? htmlTableToCleanHtml(node) : kids(); // layout wrapper → transparent, recurse to find the real table inside
+      case 'tr': return kids();
       case 'td': case 'th': return kids()+' ';
-      case 'p': case 'div': { const t=kids(); return t ? t+'\n\n' : ''; }
-      case 'h1': return `# ${kids()}\n\n`;
-      case 'h2': return `## ${kids()}\n\n`;
-      case 'h3': return `### ${kids()}\n\n`;
-      case 'b': case 'strong': { const t=kids(); return t ? `**${t}**` : ''; }
-      case 'i': case 'em': { const t=kids(); return t ? `*${t}*` : ''; }
-      case 'a': { const href=node.getAttribute('href'), t=kids(); return (href && t) ? `[${t}](${href})` : t; }
-      case 'li': { const ordered=node.parentElement?.tagName.toLowerCase()==='ol'; return `${ordered?'1.':'-'} ${kids()}\n`; }
-      case 'ul': case 'ol': return kids()+'\n';
+      case 'p': case 'div': { const t=kids(); return t ? `<p>${t}</p>` : ''; }
+      case 'h1': return `<h1>${kids()}</h1>`;
+      case 'h2': return `<h2>${kids()}</h2>`;
+      case 'h3': return `<h3>${kids()}</h3>`;
+      case 'b': case 'strong': { const t=kids(); return t ? `<strong>${t}</strong>` : ''; }
+      case 'i': case 'em': { const t=kids(); return t ? `<em>${t}</em>` : ''; }
+      case 'u': return kids();
+      case 'a': { const href=node.getAttribute('href'), t=kids(); return (href && t) ? `<a href="${esc(href)}" target="_blank" rel="noreferrer">${t}</a>` : t; }
+      case 'li': return `<li>${kids()}</li>`;
+      case 'ul': return `<ul>${kids()}</ul>`;
+      case 'ol': return `<ol>${kids()}</ol>`;
+      case 'blockquote': return `<blockquote>${kids()}</blockquote>`;
+      case 'code': return `<code>${kids()}</code>`;
       case 'img': return ''; // dropped — use the Screenshot gallery for images, not inline in notes
       default: return kids();
     }
   };
-  return walk(doc.body)
-    .replace(/[ \t]+\n/g,'\n')   // trailing space left before a line break
-    .replace(/\n[ \t]+/g,'\n')   // leading space left after a line break (from whitespace-only text nodes between block elements — invisible in real HTML rendering, but textContent doesn't collapse it for us)
-    .replace(/\n{3,}/g,'\n\n')
-    .trim();
+  return walk(doc.body);
 }
 
 // ── .docx extractor ────────────────────────────────────────────────────────
@@ -662,22 +663,51 @@ function TypeBadge({isDaily,dailyType}){
 }
 
 // ── Rich editor ────────────────────────────────────────────────────────────
+// Content is stored as real HTML (not Markdown) so paste — from Outlook,
+// Word, anywhere — keeps its actual structure natively via the browser's own
+// paste handling, rather than round-tripping through a lossy text format.
+// Legacy incidents logged before this change still have Markdown in these
+// fields; contentToHtml() (see above) transparently upgrades them for
+// editing here, and the same helper is used wherever this content displays
+// elsewhere (Detail view, Email Summary) so nothing looks broken.
 function RichEditor({value,onChange,placeholder}){
-  const [prev,setPrev]=useState(false);
-  const ta=useRef(null), fi=useRef(null);
+  const editorRef=useRef(null), fi=useRef(null);
+  const lastEmitted=useRef(value);
+
+  // Keep the DOM in sync with value changes that originate OUTSIDE this
+  // editor (Import, Insert runbook, switching in from a freshly-loaded
+  // incident) — guarded so it never fights the user's own typing: when a
+  // keystroke fires onInput below, value is set to exactly what the DOM
+  // already contains, so this effect is a no-op for that render.
+  useEffect(()=>{
+    const el=editorRef.current; if(!el) return;
+    if(value===lastEmitted.current) return;
+    el.innerHTML = contentToHtml(value);
+    lastEmitted.current = value;
+  },[value]);
+
+  const emit=()=>{
+    const html = editorRef.current?.innerHTML || '';
+    lastEmitted.current = html;
+    onChange(html);
+  };
+
+  const insertHtmlAtCursor=(html)=>{
+    editorRef.current?.focus();
+    document.execCommand('insertHTML', false, html);
+    emit();
+  };
 
   const handleFile=async(e)=>{
     const f=e.target.files?.[0]; if(!f) return; e.target.value='';
     const n=f.name.toLowerCase();
-    if(n.endsWith('.md')||n.endsWith('.txt')||n.endsWith('.markdown')){
-      const t=await f.text(); onChange(value?value+'\n\n'+t:t); return;
-    }
-    if(n.endsWith('.docx')){
-      try{ const t=await extractDocx(await f.arrayBuffer()); onChange(value?value+'\n\n'+t:t); }
-      catch(err){ alert('Could not parse .docx\n'+err.message); }
-      return;
-    }
-    alert('Supported: .md  .txt  .docx');
+    let md='';
+    if(n.endsWith('.md')||n.endsWith('.txt')||n.endsWith('.markdown')){ md = await f.text(); }
+    else if(n.endsWith('.docx')){
+      try{ md = await extractDocx(await f.arrayBuffer()); }
+      catch(err){ alert('Could not parse .docx\n'+err.message); return; }
+    } else { alert('Supported: .md  .txt  .docx'); return; }
+    insertHtmlAtCursor(renderMd(md));
   };
 
   return (
@@ -691,7 +721,7 @@ function RichEditor({value,onChange,placeholder}){
         {TOOLBAR_ITEMS.map((t,i)=> t.sep
           ? <div key={i} style={{width:1,height:16,background:'rgba(255,255,255,0.1)',margin:'0 3px',flexShrink:0}}/>
           : <button key={i} title={t.title}
-              onMouseDown={ev=>{ev.preventDefault();insertMd(ta,...t.md);}}
+              onMouseDown={ev=>{ev.preventDefault(); editorRef.current?.focus(); t.cmd(); emit();}}
               style={{background:'transparent',border:'none',borderRadius:5,padding:'3px 7px',
                 cursor:'pointer',color:'rgba(255,255,255,0.45)',flexShrink:0,
                 transition:'color .1s,background .1s',...t.s,
@@ -707,57 +737,57 @@ function RichEditor({value,onChange,placeholder}){
           borderRadius:6,padding:'4px 11px',cursor:'pointer',
           color:'#60a5fa',fontSize:11,fontWeight:600,flexShrink:0,
         }}>↑ Import</button>
-        <div style={{width:1,height:16,background:'rgba(255,255,255,0.08)',margin:'0 6px',flexShrink:0}}/>
-        <button onClick={()=>setPrev(p=>!p)} style={{
-          display:'flex',alignItems:'center',gap:5,
-          background:prev?'rgba(59,130,246,0.15)':'transparent',
-          border:`1px solid ${prev?'rgba(59,130,246,0.4)':'rgba(255,255,255,0.08)'}`,
-          borderRadius:6,padding:'4px 11px',cursor:'pointer',
-          color:prev?'#60a5fa':'rgba(255,255,255,0.4)',fontSize:11,flexShrink:0,
-        }}>{prev?'✏ Edit':'◉ Preview'}</button>
         <input ref={fi} type="file" accept=".md,.txt,.markdown,.docx" style={{display:'none'}} onChange={handleFile}/>
       </div>
 
-      {/* Content area */}
-      {prev ? (
-        <div className="inc-pv" style={{
-          flex:1,overflowY:'auto',padding:'20px 24px',
-          fontSize:13,lineHeight:1.8,color:'rgba(255,255,255,0.75)',
+      {/* Content area — WYSIWYG: what you see here is exactly what's stored
+          and exactly what shows elsewhere (Detail view, Email Summary) */}
+      <div
+        ref={editorRef}
+        contentEditable
+        suppressContentEditableWarning
+        className="inc-pv"
+        onInput={emit}
+        onPaste={e=>{
+          const html = e.clipboardData?.getData('text/html');
+          if(!html) return; // no rich data on the clipboard — let default plain-text paste happen
+          let cleaned='';
+          try{ cleaned = cleanPastedHtml(html); }catch(err){ cleaned=''; }
+          if(cleaned){ e.preventDefault(); insertHtmlAtCursor(cleaned); return; }
+          // Conversion produced nothing usable (or threw) — fall back to the
+          // plain-text clipboard variant rather than silently swallowing the
+          // paste. Only intercept if there IS a plain-text fallback to use;
+          // otherwise let the browser's own default paste behaviour run.
+          const plain = e.clipboardData.getData('text/plain');
+          if(plain){ e.preventDefault(); document.execCommand('insertText', false, plain); emit(); }
         }}
-          dangerouslySetInnerHTML={{__html:renderMd(value)||'<em style="color:rgba(255,255,255,0.2)">Nothing to preview yet.</em>'}}
-        />
-      ) : (
-        <textarea ref={ta} value={value} onChange={e=>onChange(e.target.value)}
-          onPaste={e=>{
-            const html = e.clipboardData?.getData('text/html');
-            if(!html) return; // no rich data on the clipboard — let default plain-text paste happen
-            let md = '';
-            try { md = htmlToMarkdown(html); } catch(err) { md = ''; }
-            if(md){ e.preventDefault(); insertMd(ta, md, '', ''); return; }
-            // Conversion produced nothing usable (or threw) — fall back to
-            // the plain-text clipboard variant rather than silently
-            // swallowing the paste. Only intercept if there IS a plain-text
-            // fallback to use; otherwise let the browser's own default
-            // paste behaviour run rather than risk blocking it for nothing.
-            const plain = e.clipboardData.getData('text/plain');
-            if(plain){ e.preventDefault(); insertMd(ta, plain, '', ''); }
-          }}
-          placeholder={placeholder} spellCheck={false}
-          style={{
-            flex:1,resize:'none',border:'none',outline:'none',
-            background:'transparent',color:'rgba(255,255,255,0.82)',
-            fontFamily:'"DM Mono","Fira Code","Cascadia Code",monospace',
-            fontSize:12.5,lineHeight:1.85,padding:'18px 24px',
-            caretColor:'var(--accent)',
-          }}
-        />
-      )}
+        data-placeholder={placeholder}
+        style={{
+          flex:1,overflowY:'auto',outline:'none',
+          padding:'18px 24px',fontSize:13,lineHeight:1.8,
+          color:'rgba(255,255,255,0.82)',
+        }}
+      />
       <style>{`
+        [contenteditable]:empty:before{content:attr(data-placeholder);color:rgba(255,255,255,0.2)}
+        .inc-pv h1{font-size:20px;font-weight:700;color:#fff;margin:16px 0 8px;border-bottom:1px solid rgba(255,255,255,0.1);padding-bottom:6px}
+        .inc-pv h2{font-size:16px;font-weight:700;color:#fff;margin:14px 0 6px}
+        .inc-pv h3{font-size:13px;font-weight:600;color:rgba(255,255,255,0.7);margin:10px 0 4px}
+        .inc-pv p{margin:0 0 10px}
+        .inc-pv ul,.inc-pv ol{margin:0 0 10px;padding-left:22px}
+        .inc-pv li{margin-bottom:3px;color:rgba(255,255,255,0.75)}
+        .inc-pv blockquote{border-left:3px solid var(--accent);padding:4px 14px;color:rgba(255,255,255,0.45);margin:8px 0;font-style:italic;background:rgba(59,130,246,0.06);border-radius:0 4px 4px 0}
+        .inc-pv hr{border:none;border-top:1px solid rgba(255,255,255,0.08);margin:14px 0}
+        .inc-pv code{background:#161b22;border:1px solid rgba(255,255,255,0.1);border-radius:4px;padding:1px 6px;font-family:"DM Mono",monospace;font-size:12px;color:#79c0ff}
+        .inc-pv table{border-collapse:collapse;margin:10px 0}
+        .inc-pv a{color:var(--accent)}
+        /* Legacy classes — content converted from pre-existing Markdown
+           incidents via renderMd() still carries these; keep them styled
+           identically to the plain-tag rules above. */
         .inc-pv .ih1{font-size:20px;font-weight:700;color:#fff;margin:16px 0 8px;border-bottom:1px solid rgba(255,255,255,0.1);padding-bottom:6px}
         .inc-pv .ih2{font-size:16px;font-weight:700;color:#fff;margin:14px 0 6px}
         .inc-pv .ih3{font-size:13px;font-weight:600;color:rgba(255,255,255,0.7);margin:10px 0 4px}
         .inc-pv .ipp{margin:0 0 10px}
-        .inc-pv li{margin-left:20px;list-style:disc;margin-bottom:3px;color:rgba(255,255,255,0.75)}
         .inc-pv .iol{list-style:decimal}
         .inc-pv .ick{list-style:none;margin-left:4px;padding-left:20px;position:relative}
         .inc-pv .ick::before{content:"☐";position:absolute;left:0;color:rgba(255,255,255,0.3)}
@@ -1067,7 +1097,7 @@ function InsightsPanel({inc, allIncidents, onQuickUpdate}){
               <div key={s.id} style={{padding:'8px 0',borderBottom:'1px solid rgba(255,255,255,0.05)'}}>
                 <div style={{fontSize:12,color:'rgba(255,255,255,0.75)',fontWeight:500}}>{s.title}</div>
                 <div style={{fontSize:10,color:'rgba(255,255,255,0.3)',marginTop:2}}>{s.date} · {s.status}{s.kbUsed?` · KB: ${s.kbUsed}`:''}</div>
-                {s.resolutionContent && <div style={{fontSize:11,color:'rgba(255,255,255,0.45)',marginTop:3,fontStyle:'italic'}}>{s.resolutionContent.replace(/[#*`>_\-]/g,'').trim().slice(0,140)}</div>}
+                {s.resolutionContent && <div style={{fontSize:11,color:'rgba(255,255,255,0.45)',marginTop:3,fontStyle:'italic'}}>{stripToPlainText(s.resolutionContent).slice(0,140)}</div>}
               </div>
             ))}
           </div>
@@ -1529,7 +1559,7 @@ function EmptyState({icon,title,sub}){
 function IncCard({inc,users,isManager,currentUser,onEdit,onDelete,onResolve,onView,onClone}){
   const assignee=users.find(u=>u.id===inc.assigned_to);
   const canEdit=isManager||inc.assigned_to===currentUser;
-  const snippet=(inc.issueContent||inc.description||'').replace(/[#*`>_\-]/g,'').trim().slice(0,140);
+  const snippet=stripToPlainText(inc.issueContent||inc.description||'').slice(0,140);
   const sevC=SEV[inc.severity]||SEV.Low;
   const staC=STA[inc.status]||STA.Investigating;
   const sla=slaRisk(inc);
@@ -1718,7 +1748,7 @@ function IncidentDetailBody({inc, tab, setTab, canEdit, onEditRequest, allIncide
             )}
             {activeTab && (inc[activeTab.field]||'').trim() ? (
               <div className="inc-pv" style={{fontSize:14, lineHeight:1.8, color:'rgba(255,255,255,0.75)'}}
-                dangerouslySetInnerHTML={{__html: renderMd(inc[activeTab.field])}}
+                dangerouslySetInnerHTML={{__html: contentToHtml(inc[activeTab.field])}}
               />
             ) : (
               <div style={{
@@ -2058,7 +2088,9 @@ function Modal({editId,form,setForm,onSave,onClose,users,currentUser,isManager,w
           <div style={{flex:1,display:'flex',flexDirection:'column',minHeight:0}}>
             {active && active.id==='diagnostics' && (
               <RunbookSuggestions incidentTitle={form.title} wiki={wiki} diagnosticsContent={form.diagnosticsContent}
-                onInsert={entry=>setForm(f=>({...f,diagnosticsContent:`${f.diagnosticsContent?f.diagnosticsContent+'\n\n':''}> 📚 From runbook "${entry.title}":\n${entry.content}`}))}/>
+                onInsert={entry=>setForm(f=>({...f,diagnosticsContent:
+                  contentToHtml(f.diagnosticsContent) + `<blockquote><strong>📚 From runbook "${esc(entry.title)}":</strong><br/>${renderMd(entry.content)}</blockquote>`
+                }))}/>
             )}
             {active && active.id!=='email' && STRUCTURED_FIELDS[active.id] && (
               <StructuredFieldsBar fields={STRUCTURED_FIELDS[active.id]} form={form} setForm={setForm}/>
@@ -2078,7 +2110,7 @@ function Modal({editId,form,setForm,onSave,onClose,users,currentUser,isManager,w
           borderTop:'1px solid rgba(255,255,255,0.07)',
         }}>
           <div style={{display:'flex',gap:12,alignItems:'center'}}>
-            <span style={{fontSize:10,color:'rgba(255,255,255,0.2)'}}>Markdown · ↑ Import .md / .txt / .docx · Paste from Outlook/Word keeps tables · ◉ Preview</span>
+            <span style={{fontSize:10,color:'rgba(255,255,255,0.2)'}}>Rich text · ↑ Import .md / .txt / .docx · Paste from Outlook/Word keeps formatting</span>
             {/* Tab completion indicators */}
             <div style={{display:'flex',gap:6}}>
               {EDITOR_TABS.map(t=>(
