@@ -1072,8 +1072,19 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
       const H4 = { font:{bold:true,color:{rgb:'FFFFFF'}}, fill:{fgColor:{rgb:'0F1629'}}, alignment:{horizontal:'center',wrapText:true}, border:{bottom:{style:'medium',color:{rgb:'10B981'}}} };
       styleRow(ws4, 0, s4Hdrs.length, H4);
 
-      const standbyColour = { fill:{fgColor:{rgb:'064E3B'}}, font:{color:{rgb:'6EE7B7'},bold:true} };
-      const workedColour  = { fill:{fgColor:{rgb:'78350F'}}, font:{color:{rgb:'FCD34D'},bold:true} };
+      // Columns H (Standby <1164>) and I (Worked <2011>) are the two figures
+      // payroll actually key into their system — highlighted green end to
+      // end (header cells included) so they read as a matched, unmissable
+      // pair rather than two differently-categorised columns.
+      const PAYROLL_HDR  = { font:{bold:true,color:{rgb:'FFFFFF'}}, fill:{fgColor:{rgb:'15803D'}}, alignment:{horizontal:'center',wrapText:true}, border:{bottom:{style:'medium',color:{rgb:'22C55E'}}} };
+      const PAYROLL_DATA = { fill:{fgColor:{rgb:'064E3B'}}, font:{color:{rgb:'6EE7B7'},bold:true} };
+      [7,8].forEach(c => {
+        const hdrAddr = XLSX.utils.encode_cell({r:0, c});
+        if (ws4[hdrAddr]) ws4[hdrAddr].s = PAYROLL_HDR;
+      });
+
+      const standbyColour = PAYROLL_DATA;
+      const workedColour  = PAYROLL_DATA;
       const weColour      = { fill:{fgColor:{rgb:'0C2D2D'}}, font:{color:{rgb:'6EE7B7'}} };
       const wdColour      = { fill:{fgColor:{rgb:'0C2820'}}, font:{color:{rgb:'86EFAC'}} };
       const bhColour      = { fill:{fgColor:{rgb:'2D0C0C'}}, font:{color:{rgb:'FCA5A5'}} };
