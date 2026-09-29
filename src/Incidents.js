@@ -672,7 +672,12 @@ function TypeBadge({isDaily,dailyType}){
 // elsewhere (Detail view, Email Summary) so nothing looks broken.
 function RichEditor({value,onChange,placeholder}){
   const editorRef=useRef(null), fi=useRef(null);
-  const lastEmitted=useRef(value);
+  // Deliberately NOT seeded with `value` — must differ from any real value
+  // (including '') so the very first effect run below (on mount) actually
+  // populates the DOM with the incident's existing content, instead of
+  // being incorrectly treated as "no change needed" because both sides
+  // started out equal.
+  const lastEmitted=useRef(undefined);
 
   // Keep the DOM in sync with value changes that originate OUTSIDE this
   // editor (Import, Insert runbook, switching in from a freshly-loaded
