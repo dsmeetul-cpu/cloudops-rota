@@ -1297,7 +1297,7 @@ function RotaContent({
                   if (!isOnCallActive(u, ds)) return null;
                   const hol = holidays.find(h=>h.userId===u.id && ds>=h.start && ds<=h.end);
                   const toilC=(toil||[]).find(t=>t.userId===u.id && t.type==='Used' && t.status==='approved' && t.date===ds);
-                  const shift = hol ? 'holiday' : toilC ? 'toil' : (rota[u.id]?.[ds] || 'off');
+                  const shift = toilC ? 'toil' : hol ? 'holiday' : (rota[u.id]?.[ds] || 'off');
                   if (shift === 'off') return null;
                   return { user: u, shift };
                 }).filter(Boolean);
@@ -1372,7 +1372,7 @@ function RotaContent({
               const ds = d.toISOString().slice(0,10);
               const hol = holidays.find(h=>h.userId===u.id && ds>=h.start && ds<=h.end);
               const toilTL=(toil||[]).find(t=>t.userId===u.id && t.type==='Used' && t.status==='approved' && t.date===ds);
-              const shift = hol ? 'holiday' : toilTL ? 'toil' : (rota[u.id]?.[ds] || 'off');
+              const shift = toilTL ? 'toil' : hol ? 'holiday' : (rota[u.id]?.[ds] || 'off');
               return shift === filterShift;
             });
             if (!hasShift) return false;
@@ -1389,7 +1389,7 @@ function RotaContent({
           const bh   = (UK_BANK_HOLIDAYS||[]).find(b=>b.date===dateStr);
           const rotaEntry = rota[userId]?.[dateStr] || 'off';
           const toilCE=(toil||[]).find(t=>t.userId===userId && t.type==='Used' && t.status==='approved' && t.date===dateStr);
-          const thisShift = hol ? 'holiday' : toilCE ? 'toil' : bh ? (rotaEntry !== 'off' ? rotaEntry : 'bankholiday') : rotaEntry;
+          const thisShift = toilCE ? 'toil' : hol ? 'holiday' : bh ? (rotaEntry !== 'off' ? rotaEntry : 'bankholiday') : rotaEntry;
           if (hour>=7) {
             if (thisShift==='daily')   return hour<19?'daily':null;
             if (thisShift==='evening') return hour>=19?'evening':null;
@@ -1442,7 +1442,7 @@ function RotaContent({
                       const active= isOnCallActive(u, ds);
                       const status= getOnCallStatus(u, ds);
                       const toilRow=(toil||[]).find(t=>t.userId===u.id && t.type==='Used' && t.status==='approved' && t.date===ds);
-                      const shift = hol?'holiday':toilRow?'toil':bh?'bankholiday':(rota[u.id]?.[ds]||'off');
+                      const shift = toilRow?'toil':hol?'holiday':bh?'bankholiday':(rota[u.id]?.[ds]||'off');
                       const col   = active?SHIFT_COLORS[shift]||{}:SHIFT_COLORS.inactive;
                       return (
                         <div key={u.id} style={{ display:'flex', alignItems:'center', marginBottom:2 }}>
@@ -1545,7 +1545,7 @@ function RotaContent({
                       const status=getOnCallStatus(u,ds);
                       const rotaShift = rota[u.id]?.[ds] || 'off';
                       const toilUsed = (toil||[]).find(t=>t.userId===u.id && t.type==='Used' && t.status==='approved' && t.date===ds);
-                      const s    = hol ? 'holiday' : toilUsed ? 'toil' : rotaShift;
+                      const s    = toilUsed ? 'toil' : hol ? 'holiday' : rotaShift;
                       const col  = active ? (SHIFT_COLORS[s]||{}) : SHIFT_COLORS.inactive;
                       const bhOverlay = bh && rotaShift !== 'off' && !hol && !toilUsed;
                       const displayCol = (bh && rotaShift === 'off' && !hol && !toilUsed) ? SHIFT_COLORS.bankholiday : col;
@@ -1558,7 +1558,7 @@ function RotaContent({
                       const prevHol=holidays.find(h=>h.userId===u.id && prevDs>=h.start && prevDs<=h.end);
                       const prevRotaShift = rota[u.id]?.[prevDs] || 'off';
                       const prevToilUsed = (toil||[]).find(t=>t.userId===u.id && t.type==='Used' && t.status==='approved' && t.date===prevDs);
-                      const prevS = prevHol ? 'holiday' : prevToilUsed ? 'toil' : prevRotaShift;
+                      const prevS = prevToilUsed ? 'toil' : prevHol ? 'holiday' : prevRotaShift;
                       const prevDow = prevDate.getDay();
                       const prevIsBH = (UK_BANK_HOLIDAYS||[]).some(b => b.date === prevDs);
                       const currentHasNoShift = (s==='off' || (bh && rotaShift==='off') || hol || toilUsed);
@@ -1683,10 +1683,10 @@ function RotaAnalytics({ users, rota, holidays, UK_BANK_HOLIDAYS, upgrades, appS
   }, [start, end]);
 
   const getShift = (uid, ds) => {
-    const hol = (holidays||[]).find(h=>h.userId===uid && ds>=h.start && ds<=h.end);
-    if (hol) return 'holiday';
     const toilR=(toil||[]).find(t=>t.userId===uid && t.type==='Used' && t.status==='approved' && t.date===ds);
     if (toilR) return 'toil';
+    const hol = (holidays||[]).find(h=>h.userId===uid && ds>=h.start && ds<=h.end);
+    if (hol) return 'holiday';
     const bh = (UK_BANK_HOLIDAYS||[]).find(b=>b.date===ds);
     const r  = rota[uid]?.[ds] || 'off';
     if (bh && r !== 'off') return r;
