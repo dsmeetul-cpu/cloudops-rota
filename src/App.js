@@ -6,7 +6,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
 import {
   initGoogleAuth, gapiLoad, loadAllFromDrive, driveWrite, driveRead,
-  generateICalFeed, downloadIcal, DriveConflictError, refreshGoogleAuthSilently
+  generateICalFeed, downloadIcal, DriveConflictError
 } from './hooks/useGoogleDrive';
 import {
   DEFAULT_USERS, DEFAULT_HOLIDAYS, DEFAULT_INCIDENTS, DEFAULT_TIMESHEETS,
@@ -17,7 +17,6 @@ import {
 import TimeKeeping from './TimeKeeping';
 import TOIL from './TOIL';
 import RotaPage from './Rota';
-import OnCallPlanning from './oncallplanning';
 import SettingsPage from './Settings';
 import Wiki from './Wiki';
 import Announcements, { AnnouncementBanners } from './Announcements';
@@ -29,7 +28,7 @@ import Incidents from './Incidents';
 import Logs, { createLogWriter, readLogs, LoginIssuesBreakdown } from './Logs';
 import UpgradeDays from './UpgradeDays';
 import Holidays from './Holidays';
-import Payroll, { calcOncallPay, calcBankHolidayHours } from './Payroll';
+import Payroll from './Payroll';
 import TeamChat from './TeamChat';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1026,7 +1025,6 @@ const NAV = [
   { section: 'Operations', items: [
     { id: 'rota',      icon: '🔄', label: 'Rota'            },
     { id: 'incidents', icon: '🚨', label: 'Incidents', badge: true },
-    { id: 'oncallplanning', icon: '🗂️', label: 'OnCall Planning DS' },
   ]},
   { section: 'People', items: [
     { id: 'timesheets',   icon: '⏱', label: 'Timesheets'                      },
@@ -1794,12 +1792,107 @@ const ONCALL_WORKED_MULTIPLIER = 1.5;
 const TOIL_ACCRUAL_RATE = 1.0;       // 1:1 per UK WTR
 
 // ── calcOncallPay ──────────────────────────────────────────────────────────
-// NOTE: this used to be a local copy that hardcoded the pre-cutover schedule
-// (12h WD nights, Fri=5h/Mon=7h weekend split, 22h flat BH) and never checked
-// the date. That silently under-paid every shift after the W35 (24 Aug 2026)
-// schedule cutover to 15h WD / 63h WE. It's now imported from Payroll.js,
-// which picks the correct schedule per-date via scheduleFor(date, appSettings)
-// — see Payroll.js for the full implementation.
+// Derives standby/worked hours directly from the ROTA (single source of truth)
+// rather than relying on timesheet fields which may be incomplete.
+//
+// Shift hour rules:
+//   daily       10:00–19:00  = 9h worked  (Mon–Fri)
+//   evening     19:00–07:00  = 12h standby (Mon–Thu)
+//   weekend     Fri19:00–Mon07:00 = 60h standby total (split across 3 nights)
+//   bankholiday 09:00–07:00  = 22h standby
+//   upgrade     approved hours at 1.5x worked rate
+//
+// Incident hours come from timesheets entries flagged with week starting "INC".
+function calcOncallPay(timesheetEntries, hourlyRate, upgradeHrs = 0, bankHolHrs = 0,
+                       rotaForUser = {}, holidays = [], bankHolidays = [], startDs = null, endDs = null,
+                       liveIncidentIds = null) {
+  // liveIncidentIds: Set of incident IDs that still exist. If provided, INC timesheet
+  // entries whose incident has been deleted are excluded from the calculation.
+
+  // ── Derive hours from rota entries ───────────────────────────────────────
+  let standbyWD = 0, workedWD = 0, standbyWE = 0, workedWE = 0;
+
+  Object.entries(rotaForUser).forEach(([date, shift]) => {
+    if (startDs && date < startDs) return;
+    if (endDs   && date > endDs)   return;
+    if (!shift || shift === 'off') return;
+
+    // Skip bank holidays — counted separately below
+    const isBH = bankHolidays.some(b => b.date === date);
+    if (isBH) return;
+
+    const isHol = holidays.some(h => h.userId !== undefined
+      ? (date >= h.start && date <= h.end) : false);
+    if (isHol) return;
+
+    const dow = new Date(date).getDay(); // 0=Sun,1=Mon…6=Sat
+    const isWeekend = dow === 0 || dow === 5 || dow === 6; // Fri/Sat/Sun = weekend OC
+
+    if (shift === 'daily') {
+      workedWD += 9; // 10:00–19:00
+    } else if (shift === 'evening') {
+      // Weekday OC: 19:00–07:00 = 12h standby per night
+      standbyWD += 12;
+    } else if (shift === 'weekend') {
+      // Weekend OC: each day contributes standby hours
+      // Fri: 5h (19:00–24:00), Sat: 24h, Sun: 24h, Mon morning handled as carry-over
+      // Simpler: each weekend rota entry represents one day's portion
+      if (dow === 5) standbyWE += 5;      // Fri 19:00–24:00
+      else if (dow === 6) standbyWE += 24; // Sat full day
+      else if (dow === 0) standbyWE += 24; // Sun full day
+      else if (dow === 1) standbyWE += 7;  // Mon 00:00–07:00
+      else standbyWE += 12; // fallback
+    }
+  });
+
+  // Bank holiday standby hours — pre-calculated hours
+  const bhStandby = bankHolHrs;
+
+  // Incident hours from timesheets (entries with week starting "INC")
+  // Only count entries whose incident still exists in the live incidents list.
+  // IMPORTANT: these hours are tracked separately in incidentHrs and must NOT
+  // also be added to workedWD/workedWE — doing so would double-count them in
+  // workedPay and show e.g. 6h for a 3h incident.
+  let incidentHrs = 0;
+  (timesheetEntries || [])
+    .filter(e => {
+      if (!e.week || !e.week.startsWith('INC')) return false;
+      const incId = e.week.slice(4).trim();
+      if (liveIncidentIds && !liveIncidentIds.has(incId)) return false;
+      return true;
+    })
+    .forEach(e => {
+      // Sum all hour fields but deduplicate: worked_wd mirrors weekday_oncall, so
+      // prefer worked_wd+worked_we when present, otherwise fall back to oncall fields.
+      const hasWorked = (e.worked_wd || 0) + (e.worked_we || 0) > 0;
+      const hrs = hasWorked
+        ? (e.worked_wd || 0) + (e.worked_we || 0)
+        : (e.weekday_oncall || 0) + (e.weekend_oncall || 0);
+      incidentHrs += hrs;
+      // Do NOT add to workedWD/workedWE — incident pay is charged via incidentHrs
+    });
+
+  const standbyPay  = (standbyWD + standbyWE + bhStandby) * ONCALL_STANDBY_RATE;
+  const workedPay   = (workedWD + workedWE) * hourlyRate * ONCALL_WORKED_MULTIPLIER;
+  const incidentPay = incidentHrs * hourlyRate * ONCALL_WORKED_MULTIPLIER;
+  const upgradePay  = upgradeHrs * hourlyRate * ONCALL_WORKED_MULTIPLIER;
+  const bankHolPay  = bhStandby * ONCALL_STANDBY_RATE;
+  const totalOncallHours = standbyWD + workedWD + standbyWE + workedWE + incidentHrs + upgradeHrs + bhStandby;
+
+  return {
+    standbyWD: Math.round(standbyWD * 10) / 10,
+    workedWD:  Math.round(workedWD  * 10) / 10,
+    standbyWE: Math.round(standbyWE * 10) / 10,
+    workedWE:  Math.round(workedWE  * 10) / 10,
+    upgradeHrs, bankHolHrs,
+    incidentHrs: Math.round(incidentHrs * 10) / 10,
+    standbyPay, workedPay, incidentPay, upgradePay, bankHolPay,
+    total: standbyPay + workedPay + incidentPay + upgradePay,
+    totalOncallHours: Math.round(totalOncallHours * 10) / 10,
+    totalStandbyHours: Math.round((standbyWD + standbyWE + bhStandby) * 10) / 10,
+    totalWorkedHours:  Math.round((workedWD + workedWE + upgradeHrs) * 10) / 10,
+  };
+}
 
 function calcTOILBalance(timesheetEntries, toilEntries, userId) {
   // Accrual: worked on-call hours beyond contracted hours → TOIL at 1:1 (UK WTR)
@@ -3919,7 +4012,7 @@ function PayrollReports({ users, timesheets, incidents, upgrades, overtime, toil
 }
 
 // ── Pay Config (Manager only) ──────────────────────────────────────────────
-function PayConfig({ users, payconfig, setPayconfig, isManager, timesheets, overtime, rota, holidays, appSettings }) {
+function PayConfig({ users, payconfig, setPayconfig, isManager, timesheets, overtime, rota, holidays }) {
   if (!isManager) return <Alert type="warning">⚠ Pay configuration is restricted to managers.</Alert>;
 
   const [taxMsg, setTaxMsg]     = useState('');
@@ -3955,11 +4048,20 @@ function PayConfig({ users, payconfig, setPayconfig, isManager, timesheets, over
   const userSheets  = safeTS[selectedUid] || [];
   const userHols    = safeHols.filter(h => h.userId === selectedUid);
   const upgradeHrs  = 0; // simplified — no upgrade days in this view
-  // Schedule-versioned BH hours — shared with Payroll.js so this view matches
-  // the actual payroll run instead of drifting with its own hardcoded copy.
-  const bankHolHrs  = calcBankHolidayHours(selectedUid, safeRota[selectedUid] || {}, bhList, userHols, null, null, appSettings);
+  const bankHolHrs  = (() => {
+    let total = 0;
+    bhList.forEach(bh => {
+      const s = safeRota[selectedUid]?.[bh.date];
+      if (!s || s === 'off') return;
+      const dow = new Date(bh.date).getDay();
+      if (s === 'weekend' || s === 'bankholiday') {
+        total += dow === 1 ? 24 : dow === 5 ? 12 : 22;
+      } else { total += 22; }
+    });
+    return total;
+  })();
   const oc = (typeof calcOncallPay === 'function')
-    ? calcOncallPay(userSheets, hourly, upgradeHrs, bankHolHrs, safeRota[selectedUid] || {}, userHols, bhList, null, null, null, appSettings)
+    ? calcOncallPay(userSheets, hourly, upgradeHrs, bankHolHrs, safeRota[selectedUid] || {}, userHols, bhList)
     : { total: 0, standbyWD: 0, workedWD: 0, standbyWE: 0, workedWE: 0 };
   const approvedOT = safeOT.filter(o => o.userId === selectedUid && o.status === 'approved')
     .reduce((s, o) => s + (o.hours || 0), 0);
@@ -4306,22 +4408,6 @@ export default function App() {
   const [glossary, setGlossary]       = useState(DEFAULT_GLOSSARY);
   const [contacts, setContacts]       = useState(DEFAULT_CONTACTS);
   const [payconfig, setPayconfig]     = useState(DEFAULT_PAYCONFIG);
-  const [appSettings, setAppSettings] = useState({
-    schedules: [
-      { id:'v1', label:'Original (pre W35)', effectiveFrom:'2026-01-01', effectiveTo:'2026-08-23', dailyStart:'09:00', dailyEnd:'18:00', wdStart:'19:00', wdEnd:'07:00', wdHoursPerNight:12, wdNights:['Mon','Tue','Wed','Thu'], weStart:'19:00', weFriHrs:5, weSatHrs:24, weSunHrs:24, weMonHrs:7, weTotal:60, bhMonHrs:31, bhFriHrs:17, bhMidweekHrs:22 },
-      { id:'v2', label:'Current (W35, 24 Aug 2026+)', effectiveFrom:'2026-08-24', effectiveTo:null, dailyStart:'09:00', dailyEnd:'18:00', wdStart:'18:00', wdEnd:'09:00', wdHoursPerNight:15, wdNights:['Mon','Tue','Wed','Thu'], weStart:'18:00', weFriHrs:6, weSatHrs:24, weSunHrs:24, weMonHrs:9, weTotal:63, bhMonHrs:33, bhFriHrs:15, bhMidweekHrs:24 },
-    ],
-    pay: { standbyRate: 5, workedMultiplier: 1.5, cycleStartDay: 10 },
-    timekeeping: { lateThresholdMins: 10, gracePeriodMins: 5, reminderMins60: true, reminderMins10: true },
-    holidays: { annualEntitlement: 25, carryOverDays: 5, requiresApproval: true },
-    toil: { autoAccrual: true, maxBalanceDays: 0, expiryMonths: 0, bhAutoToil: false },
-    overtime: { weeklyThresholdHrs: 40, multiplier: 1.5 },
-    incidents: { severities: ['Critical','High','Medium','Low'], toilForCallout: true, escalationMins: 15 },
-    notifications: { enableToastOS: true, enableInApp: true, rotaReminderHrs: 24, shiftSoonMins: 60, lateWarningMins: 10, triggers: { upgradeReminder:true, incidentOpen:true, holidayPending:true, swapPending:true, onCallGap:true, payrollDeadline:true, payslipReady:true, shiftReminder:true, lateWarning:true } },
-    stressScore: { weights: { evening:2, weekend:3, bankholiday:4, upgrade:5, incident:6, daily:1 }, highThreshold:20, criticalThreshold:35 },
-    shiftReminders: { leadTimeHrs: 24, channels: ['inapp','os'] },
-    access: { managerPin:'', payConfigAccess:'manager', pageAccess: { dashboard:false, oncall:true, myshift:true, calendar:true, rota:true, incidents:true, timesheets:true, timekeeping:true, holidays:true, swaps:true, upgrades:true, stress:false, toil:true, absence:true, overtime:true, logbook:true, wiki:true, glossary:true, contacts:true, notes:true, docs:true, whatsapp:true, announcements:true, shiftreminders:true, insights:false, capacity:false, reports:false, payroll:false, payconfig:false, settings:false, logs:false, myaccount:true } },
-  });
   const [rota, setRota]               = useState(() => sanitiseRota(generateRota(DEFAULT_USERS, '2026-03-30', 8)));
   const [swapRequests, setSwapRequests] = useState([]);
   const [toil, setToil]               = useState([]);
@@ -4504,7 +4590,6 @@ export default function App() {
       if (data.glossary     != null) setGlossary(data.glossary);
       if (data.contacts     != null) setContacts(data.contacts);
       if (data.payconfig    != null) setPayconfig(data.payconfig);
-      if (data.appSettings  != null) setAppSettings(prev => ({ ...prev, ...data.appSettings }));
       if (data.rota         != null) setRota(sanitiseRota(data.rota));
       if (data.swapRequests != null) setSwapRequests(data.swapRequests);
       if (data.toil         != null) setToil(Array.isArray(data.toil) ? data.toil : Object.values(data.toil));
@@ -4695,48 +4780,6 @@ export default function App() {
     await Promise.all(pending.map(key => performSave(key, latestData.current[key])));
   }, [performSave]);
 
-  // ── Proactive silent token refresh ───────────────────────────────────────
-  // Google Drive OAuth access tokens are only valid for ~60 minutes. Before
-  // this, nothing renewed the token once the app was open — whatever was
-  // issued at login just sat in `driveToken` until it genuinely expired,
-  // at which point every save started failing (401s from Drive), surfaced
-  // only reactively via the SyncErrorBanner asking the person to reconnect.
-  // A tab left open across a long shift, or one where the laptop was put to
-  // sleep for a while, would silently stop syncing anything the moment that
-  // ~60-minute window closed — however far into a work session that fell.
-  //
-  // This refreshes silently (no popup — see refreshGoogleAuthSilently) 5
-  // minutes before that expiry, and updates `driveToken` in state. Since
-  // `save`/`performSave` read driveToken from their own useCallback closure
-  // (dependency array includes driveToken), every subsequent save
-  // automatically uses the refreshed token with no other plumbing needed.
-  // Re-schedules itself for the next cycle each time driveToken changes.
-  useEffect(() => {
-    if (!driveToken) return;
-    const REFRESH_AFTER_MS = 55 * 60 * 1000; // 55 min — 5 min safety margin before ~60 min expiry
-    const timer = setTimeout(async () => {
-      const fresh = await refreshGoogleAuthSilently(GOOGLE_CLIENT_ID);
-      if (fresh) {
-        try {
-          sessionStorage.setItem('gdrive_token', fresh);
-          sessionStorage.setItem('gdrive_token_ts', String(Date.now()));
-        } catch (_) {}
-        setDriveToken(fresh); // triggers this effect again, scheduling the next refresh
-        markSyncOk('session');
-        console.log('Drive: token silently refreshed');
-      } else {
-        // Silent refresh failed (session/consent no longer valid, offline,
-        // etc). Don't clear driveToken or force a popup — just surface it
-        // the same way a genuine save failure would, via the existing
-        // SyncErrorBanner, so the person sees the Reconnect button instead
-        // of edits quietly failing with no explanation.
-        console.warn('Drive: silent token refresh failed — will surface as a save error if/when a write is attempted');
-        markSyncError('session', "Your Google Drive session may have expired — click Reconnect to keep saving changes.");
-      }
-    }, REFRESH_AFTER_MS);
-    return () => clearTimeout(timer);
-  }, [driveToken]);
-
   // Save all data to Drive whenever it changes (only when token present)
   // IMPORTANT: driveToken is intentionally NOT in the dependency arrays.
   // Including driveToken would cause these effects to fire when the token is first
@@ -4752,7 +4795,6 @@ export default function App() {
   useEffect(() => { save('glossary', glossary); },         [glossary]);
   useEffect(() => { save('contacts', contacts); },         [contacts]);
   useEffect(() => { save('payconfig', payconfig); },       [payconfig]);
-  useEffect(() => { save('appSettings', appSettings); },   [appSettings]);
   useEffect(() => { save('rota', rota); },                 [rota]);
   useEffect(() => { save('swapRequests', swapRequests); }, [swapRequests]);
   useEffect(() => { save('toil', toil); },                 [toil]);
@@ -4970,7 +5012,6 @@ export default function App() {
         if (data.glossary != null) setGlossary(data.glossary);
         if (data.contacts != null) setContacts(data.contacts);
         if (data.payconfig != null) setPayconfig(data.payconfig);
-        if (data.appSettings != null) setAppSettings(prev => ({ ...prev, ...data.appSettings }));
         if (data.rota != null) setRota(sanitiseRota(data.rota));
         if (data.swapRequests != null) setSwapRequests(data.swapRequests);
         if (data.toil != null) setToil(Array.isArray(data.toil) ? data.toil : Object.values(data.toil));
@@ -5106,7 +5147,7 @@ export default function App() {
     notes: '📝 Notes', docs: '📄 Documents', whatsapp: '💬 WhatsApp',
     insights: '📈 Insights', capacity: '⚡ Capacity', reports: '📊 Weekly Reports',
     payroll: '💷 Payroll', payconfig: '⚙ Pay Config', settings: '🔧 Settings',
-    myaccount: '👤 My Account', oncallplanning: '🗂️ OnCall Planning DS',
+    myaccount: '👤 My Account',
   };
 
   // ── Props passed to all page components ────────────────────────────────
@@ -5120,7 +5161,6 @@ export default function App() {
     glossary, setGlossary,
     contacts, setContacts,
     payconfig, setPayconfig,
-    appSettings, setAppSettings,
     rota, setRota,
     swapRequests, setSwapRequests,
     toil, setToil,
@@ -5149,8 +5189,7 @@ export default function App() {
       case 'oncall':     return <OnCall {...props} />;
       case 'myshift':    return <MyShift {...props} />;
       case 'calendar':   return <CalendarPage users={users} rota={rota} holidays={holidays} upgrades={upgrades} absences={absences} incidents={incidents} UK_BANK_HOLIDAYS={UK_BANK_HOLIDAYS} currentUser={currentUser} isManager={isManager} calendarEvents={calendarEvents} setCalendarEvents={setCalendarEvents} userCalendars={userCalendars} setUserCalendars={setUserCalendars} />;
-      case 'rota':       return <RotaPage users={users} rota={rota} setRota={setRota} holidays={holidays} upgrades={upgrades} swapRequests={swapRequests} setSwapRequests={setSwapRequests} isManager={isManager} UK_BANK_HOLIDAYS={UK_BANK_HOLIDAYS} generateRota={generateRota} generateICalFeed={generateICalFeed} downloadIcal={downloadIcal} onCallGapLog={onCallGapLog} setOnCallGapLog={setOnCallGapLog} appSettings={appSettings} />;
-      case 'oncallplanning': return <OnCallPlanning users={users} rota={rota} driveToken={driveToken} appSettings={appSettings} isManager={isManager} />;
+      case 'rota':       return <RotaPage users={users} rota={rota} setRota={setRota} holidays={holidays} upgrades={upgrades} swapRequests={swapRequests} setSwapRequests={setSwapRequests} toil={toil} isManager={isManager} UK_BANK_HOLIDAYS={UK_BANK_HOLIDAYS} generateRota={generateRota} generateICalFeed={generateICalFeed} downloadIcal={downloadIcal} onCallGapLog={onCallGapLog} setOnCallGapLog={setOnCallGapLog} />;
       case 'incidents':  return <Incidents {...props} timesheets={timesheets} setTimesheets={setTimesheets} addLog={addLog} initialFilter={incidentsPrefilter} onConsumeInitialFilter={() => setIncidentsPrefilter(null)} />;
       case 'timesheets': return <Timesheets {...props} />;
       case 'timekeeping': return <TimeKeeping users={users} holidays={holidays} currentUser={currentUser} isManager={isManager} bankHolidays={UK_BANK_HOLIDAYS} timekeeping={timekeeping} setTimekeeping={setTimekeeping} driveToken={driveToken} />;
@@ -5174,7 +5213,7 @@ export default function App() {
       case 'insights':   return <Insights {...props} />;
       case 'capacity':   return <Capacity {...props} incidents={incidents} />;
       case 'reports':    return <WeeklyReports {...props} />;
-      case 'payroll':    return <Payroll {...props} incidents={incidents} upgrades={upgrades} rota={rota} overtime={overtime} driveToken={driveToken} payrollAdjustments={payrollAdjustments} setPayrollAdjustments={setPayrollAdjustments} goToIncidents={goToIncidents} appSettings={appSettings} />;
+      case 'payroll':    return <Payroll {...props} incidents={incidents} upgrades={upgrades} rota={rota} overtime={overtime} driveToken={driveToken} payrollAdjustments={payrollAdjustments} setPayrollAdjustments={setPayrollAdjustments} goToIncidents={goToIncidents} />;
       case 'payconfig':  return <PayConfig {...props} timesheets={timesheets} overtime={overtime} rota={rota} holidays={holidays} />;
       case 'settings':   return <SettingsPage
         users={users} setUsers={setUsers}
@@ -5198,8 +5237,6 @@ export default function App() {
         syncUsersFromSheet={syncUsersFromSheet}
         syncUsersToSheet={syncUsersToSheet}
         driveWriteJson={driveWriteJson}
-        settings={appSettings} setSettings={setAppSettings}
-        payconfig={payconfig} setPayconfig={setPayconfig}
       />;
       case 'myaccount':  return <MyAccount currentUser={currentUser} users={users} setUsers={setUsers} driveToken={driveToken} profilePics={profilePics} setProfilePicsState={setProfilePicsState} />;
       default: return <p className="muted-sm">Page coming soon</p>;
