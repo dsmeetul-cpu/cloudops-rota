@@ -105,12 +105,13 @@ const SHIFT_COLORS = {
   upgrade:     { bg: '#991b1b', label: 'Upgrade Day',                  text: '#fecaca' },
   holiday:     { bg: '#92400e', label: 'Holiday',                      text: '#fde68a' },
   bankholiday: { bg: '#7f1d1d', label: 'Bank Holiday',                 text: '#fca5a5' },
+  toil:        { bg: '#5b21b6', label: 'TOIL',                          text: '#ddd6fe' },
   inactive:    { bg: '#1e293b', label: 'Not on-call yet',              text: '#475569' },
 };
 
 const SHIFT_ABBR = {
   daily: 'D', evening: 'WD', weekend: 'WE',
-  upgrade: 'UD', holiday: 'H', bankholiday: 'BH', off: '—',
+  upgrade: 'UD', holiday: 'H', bankholiday: 'BH', toil: 'T', off: '—',
 };
 
 const SHIFT_HOURS = {
@@ -207,6 +208,7 @@ function ShiftLegend() {
         ['#854d0e', 'WE', 'Weekend On-Call (19:00–07:00)'],
         ['#991b1b', 'UD', 'Upgrade Day'],
         ['#92400e', 'H',  'Holiday'],
+        ['#5b21b6', 'T',  'TOIL'],
         ['#1e293b', '—',  'Not on-call yet'],
       ].map(([bg, abbr, label]) => (
         <div key={label} style={{ display:'flex', alignItems:'center', gap:5, fontSize:11, color:'var(--text-secondary)' }}>
@@ -559,7 +561,7 @@ function CellEditorPopover({ cell, users, rota, holidays, UK_BANK_HOLIDAYS, upgr
 // ── Rota content (schedule views) ────────────────────────────────────────────
 function RotaContent({
   users, rota, setRota, holidays, upgrades, swapRequests, setSwapRequests,
-  isManager, UK_BANK_HOLIDAYS, generateRota, generateICalFeed, downloadIcal,
+  toil, isManager, UK_BANK_HOLIDAYS, generateRota, generateICalFeed, downloadIcal,
   onCallGapLog, setOnCallGapLog,
 }) {
   const [startDate,       setStartDate]       = useState(() => new Date().toISOString().slice(0, 10));
@@ -1294,7 +1296,8 @@ function RotaContent({
                 const shiftsToday = visibleUsers.map(u => {
                   if (!isOnCallActive(u, ds)) return null;
                   const hol = holidays.find(h=>h.userId===u.id && ds>=h.start && ds<=h.end);
-                  const shift = hol ? 'holiday' : (rota[u.id]?.[ds] || 'off');
+                  const toilC=(toil||[]).find(t=>t.userId===u.id && t.type==='Used' && t.status==='approved' && t.date===ds);
+                  const shift = hol ? 'holiday' : toilC ? 'toil' : (rota[u.id]?.[ds] || 'off');
                   if (shift === 'off') return null;
                   return { user: u, shift };
                 }).filter(Boolean);
@@ -1368,7 +1371,8 @@ function RotaContent({
             const hasShift = wdates.slice(0,7).some(d => {
               const ds = d.toISOString().slice(0,10);
               const hol = holidays.find(h=>h.userId===u.id && ds>=h.start && ds<=h.end);
-              const shift = hol ? 'holiday' : (rota[u.id]?.[ds] || 'off');
+              const toilTL=(toil||[]).find(t=>t.userId===u.id && t.type==='Used' && t.status==='approved' && t.date===ds);
+              const shift = hol ? 'holiday' : toilTL ? 'toil' : (rota[u.id]?.[ds] || 'off');
               return shift === filterShift;
             });
             if (!hasShift) return false;
@@ -1384,12 +1388,13 @@ function RotaContent({
           const hol  = holidays.find(h=>h.userId===userId && dateStr>=h.start && dateStr<=h.end);
           const bh   = (UK_BANK_HOLIDAYS||[]).find(b=>b.date===dateStr);
           const rotaEntry = rota[userId]?.[dateStr] || 'off';
-          const thisShift = hol ? 'holiday' : bh ? (rotaEntry !== 'off' ? rotaEntry : 'bankholiday') : rotaEntry;
+          const toilCE=(toil||[]).find(t=>t.userId===userId && t.type==='Used' && t.status==='approved' && t.date===dateStr);
+          const thisShift = hol ? 'holiday' : toilCE ? 'toil' : bh ? (rotaEntry !== 'off' ? rotaEntry : 'bankholiday') : rotaEntry;
           if (hour>=7) {
             if (thisShift==='daily')   return hour<19?'daily':null;
             if (thisShift==='evening') return hour>=19?'evening':null;
             if (thisShift==='weekend') return hour>=19?'weekend':null;
-            if (['upgrade','holiday','bankholiday'].includes(thisShift)) return thisShift;
+            if (['upgrade','holiday','bankholiday','toil'].includes(thisShift)) return thisShift;
             return null;
           }
           for (let back = 1; back <= 3; back++) {
@@ -1436,7 +1441,8 @@ function RotaContent({
                       const hol   = holidays.find(h=>h.userId===u.id && ds>=h.start && ds<=h.end);
                       const active= isOnCallActive(u, ds);
                       const status= getOnCallStatus(u, ds);
-                      const shift = hol?'holiday':bh?'bankholiday':(rota[u.id]?.[ds]||'off');
+                      const toilRow=(toil||[]).find(t=>t.userId===u.id && t.type==='Used' && t.status==='approved' && t.date===ds);
+                      const shift = hol?'holiday':toilRow?'toil':bh?'bankholiday':(rota[u.id]?.[ds]||'off');
                       const col   = active?SHIFT_COLORS[shift]||{}:SHIFT_COLORS.inactive;
                       return (
                         <div key={u.id} style={{ display:'flex', alignItems:'center', marginBottom:2 }}>
@@ -1538,10 +1544,11 @@ function RotaContent({
                       const active=isOnCallActive(u,ds);
                       const status=getOnCallStatus(u,ds);
                       const rotaShift = rota[u.id]?.[ds] || 'off';
-                      const s    = hol ? 'holiday' : rotaShift;
+                      const toilUsed = (toil||[]).find(t=>t.userId===u.id && t.type==='Used' && t.status==='approved' && t.date===ds);
+                      const s    = hol ? 'holiday' : toilUsed ? 'toil' : rotaShift;
                       const col  = active ? (SHIFT_COLORS[s]||{}) : SHIFT_COLORS.inactive;
-                      const bhOverlay = bh && rotaShift !== 'off' && !hol;
-                      const displayCol = (bh && rotaShift === 'off' && !hol) ? SHIFT_COLORS.bankholiday : col;
+                      const bhOverlay = bh && rotaShift !== 'off' && !hol && !toilUsed;
+                      const displayCol = (bh && rotaShift === 'off' && !hol && !toilUsed) ? SHIFT_COLORS.bankholiday : col;
                       const key  = `${u.id}::${ds}`;
                       const isBulkSel=bulkSelected.has(key);
                       const dow=d.getDay(); const isWkd=dow===0||dow===6;
@@ -1550,10 +1557,11 @@ function RotaContent({
                       const prevDs=prevDate.toISOString().slice(0,10);
                       const prevHol=holidays.find(h=>h.userId===u.id && prevDs>=h.start && prevDs<=h.end);
                       const prevRotaShift = rota[u.id]?.[prevDs] || 'off';
-                      const prevS = prevHol ? 'holiday' : prevRotaShift;
+                      const prevToilUsed = (toil||[]).find(t=>t.userId===u.id && t.type==='Used' && t.status==='approved' && t.date===prevDs);
+                      const prevS = prevHol ? 'holiday' : prevToilUsed ? 'toil' : prevRotaShift;
                       const prevDow = prevDate.getDay();
                       const prevIsBH = (UK_BANK_HOLIDAYS||[]).some(b => b.date === prevDs);
-                      const currentHasNoShift = (s==='off' || (bh && rotaShift==='off') || hol);
+                      const currentHasNoShift = (s==='off' || (bh && rotaShift==='off') || hol || toilUsed);
                       // Show carry-over when the previous overnight shift runs into this day.
                       // WD evening always carries into next morning.
                       // WE weekend carries into next day EXCEPT Mon→Tue (ends at wdEnd)
@@ -1579,12 +1587,12 @@ function RotaContent({
                           borderRadius: isHighlighted ? 6 : undefined,
                           transition:'background 0.4s, box-shadow 0.4s',
                           verticalAlign:'top' }}>
-                          {!active && !hol && !bh && (
+                          {!active && !hol && !bh && !toilUsed && (
                             <div style={{ background:'rgba(30,41,59,0.6)', borderRadius:5, padding:'4px 4px', fontSize:9, color:'#334155', fontStyle:'italic', minWidth:30 }}>
                               {status?.type==='terminated'?'left':status?.type==='not_started'?'tbc':'—'}
                             </div>
                           )}
-                          {(active || hol || bh) && (
+                          {(active || hol || bh || toilUsed) && (
                             <>
                               <div
                                 onMouseDown={e => {
@@ -1617,7 +1625,7 @@ function RotaContent({
                                   transition:'border-color 0.1s, background 0.1s',
                                   boxShadow: isEditTarget ? '0 0 0 3px rgba(148,163,184,0.2)' : 'none',
                                 }}>
-                                {hol ? 'H' : (SHIFT_ABBR[s]||'—')}
+                                {hol ? 'H' : toilUsed ? 'T' : (SHIFT_ABBR[s]||'—')}
                                 {bhOverlay && (
                                   <span style={{ position:'absolute', top:-4, right:upg&&!hol?12:-4, background:'#7f1d1d', color:'#fca5a5', fontSize:7, fontWeight:800, padding:'1px 3px', borderRadius:3, lineHeight:1.2, border:'1px solid rgba(0,0,0,0.3)' }}>BH</span>
                                 )}
@@ -1658,7 +1666,7 @@ function RotaContent({
 }
 
 // ── Rota Analytics ────────────────────────────────────────────────────────────
-function RotaAnalytics({ users, rota, holidays, UK_BANK_HOLIDAYS, upgrades, appSettings }) {
+function RotaAnalytics({ users, rota, holidays, UK_BANK_HOLIDAYS, upgrades, appSettings, toil }) {
   const today = (() => { const d=new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; })();
   const [report, setReport] = React.useState('heatmap');
   const [start, setStart]   = React.useState(() => { const d=new Date(); d.setMonth(d.getMonth()-3); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; });
@@ -1677,6 +1685,8 @@ function RotaAnalytics({ users, rota, holidays, UK_BANK_HOLIDAYS, upgrades, appS
   const getShift = (uid, ds) => {
     const hol = (holidays||[]).find(h=>h.userId===uid && ds>=h.start && ds<=h.end);
     if (hol) return 'holiday';
+    const toilR=(toil||[]).find(t=>t.userId===uid && t.type==='Used' && t.status==='approved' && t.date===ds);
+    if (toilR) return 'toil';
     const bh = (UK_BANK_HOLIDAYS||[]).find(b=>b.date===ds);
     const r  = rota[uid]?.[ds] || 'off';
     if (bh && r !== 'off') return r;
@@ -1693,7 +1703,7 @@ function RotaAnalytics({ users, rota, holidays, UK_BANK_HOLIDAYS, upgrades, appS
   const shiftHoursFor = (s, ds) => {
     if (s === 'daily')   return { display: 9, paid: 0 };
     if (s === 'upgrade') return { display: 8, paid: 8 };
-    if (s === 'holiday' || s === 'off' || !s) return { display: 0, paid: 0 };
+    if (s === 'holiday' || s === 'toil' || s === 'off' || !s) return { display: 0, paid: 0 };
     if (s === 'bankholiday') {
       const h = ds >= SCHEDULE_CUTOVER ? 24 : 22;
       return { display: h, paid: h };
@@ -1731,8 +1741,8 @@ function RotaAnalytics({ users, rota, holidays, UK_BANK_HOLIDAYS, upgrades, appS
     });
   }, [activeUsers, allDates]); // eslint-disable-line
 
-  const C   = { daily:'#1565c0', evening:'#166534', weekend:'#854d0e', upgrade:'#991b1b', holiday:'#92400e', bankholiday:'#7f1d1d', off:'transparent' };
-  const TXT = { daily:'#90caf9', evening:'#bbf7d0', weekend:'#fef08a', upgrade:'#fecaca', holiday:'#fde68a', bankholiday:'#fca5a5', off:'#334155' };
+  const C   = { daily:'#1565c0', evening:'#166534', weekend:'#854d0e', upgrade:'#991b1b', holiday:'#92400e', toil:'#5b21b6', bankholiday:'#7f1d1d', off:'transparent' };
+  const TXT = { daily:'#90caf9', evening:'#bbf7d0', weekend:'#fef08a', upgrade:'#fecaca', holiday:'#fde68a', toil:'#ddd6fe', bankholiday:'#fca5a5', off:'#334155' };
 
   const bhSet        = new Set((UK_BANK_HOLIDAYS||[]).map(b=>b.date));
   const weekdayDates = allDates.filter(ds => { const d=new Date(ds+'T12:00:00').getDay(); return d>=1&&d<=5; });
@@ -2036,7 +2046,8 @@ function RotaAnalytics({ users, rota, holidays, UK_BANK_HOLIDAYS, upgrades, appS
         const avgDaily=list.length?Math.round(list.reduce((s,e)=>s+e.daily,0)/list.length):0;
         const maxPaid=Math.max(...list.map(e=>e.paid),1), maxDaily=Math.max(...list.map(e=>e.daily),1);
         const sortedPaid=[...list].sort((a,b)=>b.paid-a.paid);
-        const gap=Math.max(...list.map(e=>e.paid))-Math.min(...list.filter(e=>e.paid>0).map(e=>e.paid));
+        const paidList=list.filter(e=>e.paid>0).map(e=>e.paid);
+        const gap=paidList.length>=2?Math.max(...paidList)-Math.min(...paidList):0;
         return (
           <div>
             <div className="grid-4 mb-16">
