@@ -423,7 +423,7 @@ function OnCallGapBanner({ users, rota, holidays, UK_BANK_HOLIDAYS, onCallGapLog
 }
 
 // ── Floating Cell Editor Popover ──────────────────────────────────────────────
-function CellEditorPopover({ cell, users, rota, holidays, UK_BANK_HOLIDAYS, upgrades,
+function CellEditorPopover({ cell, users, rota, holidays, UK_BANK_HOLIDAYS, upgrades, toil,
   onSetShift, onDelete, onClose, onToggleLock, isLockedFn }) {
   const ref = useRef(null);
   const [pos, setPos] = useState({ top: cell.y + 12, left: cell.x });
@@ -462,6 +462,7 @@ function CellEditorPopover({ cell, users, rota, holidays, UK_BANK_HOLIDAYS, upgr
   const locked = isLockedFn(userId, date);
   const hol = holidays.find(h => h.userId === userId && date >= h.start && date <= h.end);
   const bh  = (UK_BANK_HOLIDAYS||[]).find(b => b.date === date);
+  const toilEntry = (toil||[]).find(t => t.userId === userId && t.type === 'Used' && t.status === 'approved' && t.date === date);
   const d   = new Date(date + 'T12:00:00');
   const dayLabel = d.toLocaleDateString('en-GB', { weekday:'long', day:'numeric', month:'short', year:'numeric' });
 
@@ -509,6 +510,17 @@ function CellEditorPopover({ cell, users, rota, holidays, UK_BANK_HOLIDAYS, upgr
         <div style={{ padding:'6px 14px', background:'rgba(245,158,11,0.07)', borderBottom:'1px solid rgba(255,255,255,0.05)', fontSize:11, color:'#fcd34d', display:'flex', gap:8, alignItems:'center' }}>
           {hol && <span>🏖 Holiday period active</span>}
           {bh  && <span>🏦 {bh.title || 'Bank Holiday'}</span>}
+        </div>
+      )}
+
+      {/* ── TOIL indicator ── */}
+      {toilEntry && (
+        <div style={{ padding:'8px 14px', background:'rgba(91,33,182,0.15)', borderBottom:'1px solid rgba(91,33,182,0.3)', fontSize:11, display:'flex', gap:8, alignItems:'center' }}>
+          <div style={{ width:18, height:18, borderRadius:4, background:'#5b21b6', display:'flex', alignItems:'center', justifyContent:'center', fontSize:9, fontWeight:900, color:'#ddd6fe', flexShrink:0 }}>T</div>
+          <div>
+            <span style={{ color:'#a78bfa', fontWeight:700 }}>TOIL Used — {toilEntry.hours}h</span>
+            {toilEntry.reason && <span style={{ color:'#7c3aed', marginLeft:6 }}>· {toilEntry.reason}</span>}
+          </div>
         </div>
       )}
 
@@ -909,6 +921,7 @@ function RotaContent({
           cell={editCell}
           users={users} rota={rota} holidays={holidays}
           UK_BANK_HOLIDAYS={UK_BANK_HOLIDAYS} upgrades={upgrades}
+          toil={toil}
           onSetShift={(uid,date,shift) => { setCell(uid,date,shift); }}
           onDelete={deleteCell}
           onClose={() => setEditCell(null)}
@@ -1297,7 +1310,7 @@ function RotaContent({
                   if (!isOnCallActive(u, ds)) return null;
                   const hol = holidays.find(h=>h.userId===u.id && ds>=h.start && ds<=h.end);
                   const toilC=(toil||[]).find(t=>t.userId===u.id && t.type==='Used' && t.status==='approved' && t.date===ds);
-                  const shift = toilC ? 'toil' : hol ? 'holiday' : (rota[u.id]?.[ds] || 'off');
+                  const shift = hol ? 'holiday' : (rota[u.id]?.[ds] || 'off');
                   if (shift === 'off') return null;
                   return { user: u, shift };
                 }).filter(Boolean);
@@ -1372,7 +1385,7 @@ function RotaContent({
               const ds = d.toISOString().slice(0,10);
               const hol = holidays.find(h=>h.userId===u.id && ds>=h.start && ds<=h.end);
               const toilTL=(toil||[]).find(t=>t.userId===u.id && t.type==='Used' && t.status==='approved' && t.date===ds);
-              const shift = toilTL ? 'toil' : hol ? 'holiday' : (rota[u.id]?.[ds] || 'off');
+              const shift = hol ? 'holiday' : (rota[u.id]?.[ds] || 'off');
               return shift === filterShift;
             });
             if (!hasShift) return false;
@@ -1389,7 +1402,7 @@ function RotaContent({
           const bh   = (UK_BANK_HOLIDAYS||[]).find(b=>b.date===dateStr);
           const rotaEntry = rota[userId]?.[dateStr] || 'off';
           const toilCE=(toil||[]).find(t=>t.userId===userId && t.type==='Used' && t.status==='approved' && t.date===dateStr);
-          const thisShift = toilCE ? 'toil' : hol ? 'holiday' : bh ? (rotaEntry !== 'off' ? rotaEntry : 'bankholiday') : rotaEntry;
+          const thisShift = hol ? 'holiday' : bh ? (rotaEntry !== 'off' ? rotaEntry : 'bankholiday') : rotaEntry;
           if (hour>=7) {
             if (thisShift==='daily')   return hour<19?'daily':null;
             if (thisShift==='evening') return hour>=19?'evening':null;
@@ -1442,7 +1455,7 @@ function RotaContent({
                       const active= isOnCallActive(u, ds);
                       const status= getOnCallStatus(u, ds);
                       const toilRow=(toil||[]).find(t=>t.userId===u.id && t.type==='Used' && t.status==='approved' && t.date===ds);
-                      const shift = toilRow?'toil':hol?'holiday':bh?'bankholiday':(rota[u.id]?.[ds]||'off');
+                      const shift = hol?'holiday':bh?'bankholiday':(rota[u.id]?.[ds]||'off');
                       const col   = active?SHIFT_COLORS[shift]||{}:SHIFT_COLORS.inactive;
                       return (
                         <div key={u.id} style={{ display:'flex', alignItems:'center', marginBottom:2 }}>
@@ -1545,10 +1558,10 @@ function RotaContent({
                       const status=getOnCallStatus(u,ds);
                       const rotaShift = rota[u.id]?.[ds] || 'off';
                       const toilUsed = (toil||[]).find(t=>t.userId===u.id && t.type==='Used' && t.status==='approved' && t.date===ds);
-                      const s    = toilUsed ? 'toil' : hol ? 'holiday' : rotaShift;
+                      const s    = hol ? 'holiday' : rotaShift;
                       const col  = active ? (SHIFT_COLORS[s]||{}) : SHIFT_COLORS.inactive;
-                      const bhOverlay = bh && rotaShift !== 'off' && !hol && !toilUsed;
-                      const displayCol = (bh && rotaShift === 'off' && !hol && !toilUsed) ? SHIFT_COLORS.bankholiday : col;
+                      const bhOverlay = bh && rotaShift !== 'off' && !hol;
+                      const displayCol = (bh && rotaShift === 'off' && !hol) ? SHIFT_COLORS.bankholiday : col;
                       const key  = `${u.id}::${ds}`;
                       const isBulkSel=bulkSelected.has(key);
                       const dow=d.getDay(); const isWkd=dow===0||dow===6;
@@ -1558,10 +1571,10 @@ function RotaContent({
                       const prevHol=holidays.find(h=>h.userId===u.id && prevDs>=h.start && prevDs<=h.end);
                       const prevRotaShift = rota[u.id]?.[prevDs] || 'off';
                       const prevToilUsed = (toil||[]).find(t=>t.userId===u.id && t.type==='Used' && t.status==='approved' && t.date===prevDs);
-                      const prevS = prevToilUsed ? 'toil' : prevHol ? 'holiday' : prevRotaShift;
+                      const prevS = prevHol ? 'holiday' : prevRotaShift;
                       const prevDow = prevDate.getDay();
                       const prevIsBH = (UK_BANK_HOLIDAYS||[]).some(b => b.date === prevDs);
-                      const currentHasNoShift = (s==='off' || (bh && rotaShift==='off') || hol || toilUsed);
+                      const currentHasNoShift = (s==='off' || (bh && rotaShift==='off') || hol);
                       // Show carry-over when the previous overnight shift runs into this day.
                       // WD evening always carries into next morning.
                       // WE weekend carries into next day EXCEPT Mon→Tue (ends at wdEnd)
@@ -1587,12 +1600,12 @@ function RotaContent({
                           borderRadius: isHighlighted ? 6 : undefined,
                           transition:'background 0.4s, box-shadow 0.4s',
                           verticalAlign:'top' }}>
-                          {!active && !hol && !bh && !toilUsed && (
+                          {!active && !hol && !bh && (
                             <div style={{ background:'rgba(30,41,59,0.6)', borderRadius:5, padding:'4px 4px', fontSize:9, color:'#334155', fontStyle:'italic', minWidth:30 }}>
                               {status?.type==='terminated'?'left':status?.type==='not_started'?'tbc':'—'}
                             </div>
                           )}
-                          {(active || hol || bh || toilUsed) && (
+                          {(active || hol || bh) && (
                             <>
                               <div
                                 onMouseDown={e => {
@@ -1614,18 +1627,21 @@ function RotaContent({
                                   e.preventDefault();
                                   setEditCell(null); openCellEditor(u.id, ds, e);
                                 }}
-                                title={canEdit&&active ? `${displayCol.label||s}${bhOverlay?' + Bank Holiday':''}${upg&&!hol?' + Upgrade Day':''}${isLocked(u.id,ds)?' 🔒 Locked':''} — ${paintMode ? 'click/drag to paint, right-click for detailed editor' : 'click to edit, right-click for detailed editor, Ctrl+click to bulk select'}` : `${displayCol.label||s}`}
+                                title={canEdit&&active ? `${displayCol.label||s}${toilUsed?' + TOIL Used':''}${bhOverlay?' + Bank Holiday':''}${upg&&!hol?' + Upgrade Day':''}${isLocked(u.id,ds)?' 🔒 Locked':''} — ${paintMode ? 'click/drag to paint, right-click for detailed editor' : 'click to edit, right-click for detailed editor, Ctrl+click to bulk select'}` : `${displayCol.label||s}${toilUsed?' + TOIL Used':''}`}
                                 style={{
                                   background: isBulkSel ? 'rgba(59,130,246,0.25)' : displayCol.bg ? displayCol.bg+'55' : 'transparent',
                                   color: displayCol.text||'#475569',
-                                  border: isBulkSel ? '2px solid #3b82f6' : isEditTarget ? `2px solid #94a3b8` : displayCol.bg ? `1px solid ${displayCol.bg}88` : '1px solid transparent',
+                                  border: isBulkSel ? '2px solid #3b82f6' : isEditTarget ? `2px solid #94a3b8` : toilUsed ? `1px solid #7c3aed` : displayCol.bg ? `1px solid ${displayCol.bg}88` : '1px solid transparent',
                                   borderRadius:6, padding:'4px 4px', fontSize:9, fontWeight:800,
                                   cursor:canEdit&&active?'pointer':'default', userSelect:'none',
                                   lineHeight:1.3, minWidth:30, position:'relative',
                                   transition:'border-color 0.1s, background 0.1s',
-                                  boxShadow: isEditTarget ? '0 0 0 3px rgba(148,163,184,0.2)' : 'none',
+                                  boxShadow: toilUsed ? '0 0 0 2px rgba(124,58,237,0.35)' : isEditTarget ? '0 0 0 3px rgba(148,163,184,0.2)' : 'none',
                                 }}>
-                                {hol ? 'H' : toilUsed ? 'T' : (SHIFT_ABBR[s]||'—')}
+                                {hol ? 'H' : (SHIFT_ABBR[s]||'—')}
+                                {toilUsed && (
+                                  <span style={{ position:'absolute', top:-5, left:-5, background:'#5b21b6', color:'#ddd6fe', fontSize:7, fontWeight:900, padding:'1px 3px', borderRadius:3, lineHeight:1.2, border:'1px solid rgba(0,0,0,0.4)' }}>T</span>
+                                )}
                                 {bhOverlay && (
                                   <span style={{ position:'absolute', top:-4, right:upg&&!hol?12:-4, background:'#7f1d1d', color:'#fca5a5', fontSize:7, fontWeight:800, padding:'1px 3px', borderRadius:3, lineHeight:1.2, border:'1px solid rgba(0,0,0,0.3)' }}>BH</span>
                                 )}
@@ -1683,10 +1699,10 @@ function RotaAnalytics({ users, rota, holidays, UK_BANK_HOLIDAYS, upgrades, appS
   }, [start, end]);
 
   const getShift = (uid, ds) => {
-    const toilR=(toil||[]).find(t=>t.userId===uid && t.type==='Used' && t.status==='approved' && t.date===ds);
-    if (toilR) return 'toil';
     const hol = (holidays||[]).find(h=>h.userId===uid && ds>=h.start && ds<=h.end);
     if (hol) return 'holiday';
+    const toilR=(toil||[]).find(t=>t.userId===uid && t.type==='Used' && t.status==='approved' && t.date===ds);
+    if (toilR) return 'toil';
     const bh = (UK_BANK_HOLIDAYS||[]).find(b=>b.date===ds);
     const r  = rota[uid]?.[ds] || 'off';
     if (bh && r !== 'off') return r;
