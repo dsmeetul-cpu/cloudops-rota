@@ -4594,7 +4594,7 @@ export default function App() {
       if (data.swapRequests != null) setSwapRequests(data.swapRequests);
       if (data.toil         != null) setToil(Array.isArray(data.toil) ? data.toil : Object.values(data.toil));
       if (data.absences     != null) setAbsences(data.absences);
-      if (data.overtime     != null) setOvertime(data.overtime);
+      if (data.overtime     != null) setOvertime(Array.isArray(data.overtime) ? data.overtime : Object.values(data.overtime));
       if (data.payrollAdjustments != null) setPayrollAdjustments(data.payrollAdjustments);
       if (data.onCallGapLog != null) setOnCallGapLog(data.onCallGapLog);
       if (data.logbook      != null) setLogbook(data.logbook);
@@ -4846,7 +4846,7 @@ export default function App() {
     documents:     'shared',
     whatsappChats: 'shared',
     timesheets:    'engineer',
-    overtime:      'engineer',
+    overtime:      'shared',   // flat array keyed by record id (id + userId fields) — NOT by uid
     toil:          'shared',   // flat array keyed by record id — NOT by uid
     obsidianNotes: 'shared',   // flat array keyed by note id — NOT by uid
   };
@@ -5016,7 +5016,7 @@ export default function App() {
         if (data.swapRequests != null) setSwapRequests(data.swapRequests);
         if (data.toil != null) setToil(Array.isArray(data.toil) ? data.toil : Object.values(data.toil));
         if (data.absences != null) setAbsences(data.absences);
-        if (data.overtime != null) setOvertime(data.overtime);
+        if (data.overtime != null) setOvertime(Array.isArray(data.overtime) ? data.overtime : Object.values(data.overtime));
         if (data.payrollAdjustments != null) setPayrollAdjustments(data.payrollAdjustments);
         if (data.onCallGapLog != null) setOnCallGapLog(data.onCallGapLog);
         if (data.logbook != null) setLogbook(data.logbook);
@@ -5472,7 +5472,7 @@ export default function App() {
                       if (has(data.swapRequests))  setSwapRequests(data.swapRequests);
                       if (has(data.toil))          setToil(Array.isArray(data.toil) ? data.toil : Object.values(data.toil));
                       if (has(data.absences))      setAbsences(data.absences);
-                      if (has(data.overtime))      setOvertime(data.overtime);
+                      if (has(data.overtime))      setOvertime(Array.isArray(data.overtime) ? data.overtime : Object.values(data.overtime));
                       if (has(data.logbook))       setLogbook(data.logbook);
                       if (has(data.documents))     setDocuments(data.documents);
                       if (has(data.obsidianNotes)) setObsidianNotes(data.obsidianNotes);
