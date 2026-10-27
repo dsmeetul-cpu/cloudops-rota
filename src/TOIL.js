@@ -268,6 +268,9 @@ function EmptyState({ icon, msg, sub }) {
 
 // ── Main export ───────────────────────────────────────────────────────────────
 export default function TOIL({ users, timesheets, toil, setToil, currentUser, isManager }) {
+  // Only MBA47 (Meetul Bhundia) may add, edit, or delete any TOIL entry.
+  // All other users — including other managers if any — are read-only.
+  const canAdmin = currentUser === 'MBA47';
   const safeTimesheets = useMemo(() => {
     if (!timesheets || typeof timesheets !== 'object' || Array.isArray(timesheets)) return {};
     return timesheets;
@@ -438,16 +441,18 @@ export default function TOIL({ users, timesheets, toil, setToil, currentUser, is
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          {isManager && (
+          {canAdmin && (
             <button onClick={() => openManual()}
               style={{ padding: '8px 16px', background: T.bgCard2, border: `1px solid ${T.borderHi}`, borderRadius: 9, color: T.textSec, fontWeight: 600, fontSize: 13, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
               <span>＋</span> Manual Entry
             </button>
           )}
-          <button onClick={openBook}
-            style={{ padding: '9px 20px', background: T.accent, color: '#000', border: 'none', borderRadius: 9, fontWeight: 800, fontSize: 13, cursor: 'pointer', boxShadow: `0 0 18px rgba(0,194,255,0.3)`, display: 'flex', alignItems: 'center', gap: 6 }}>
-            📅 Book TOIL
-          </button>
+          {canAdmin && (
+            <button onClick={openBook}
+              style={{ padding: '9px 20px', background: T.accent, color: '#000', border: 'none', borderRadius: 9, fontWeight: 800, fontSize: 13, cursor: 'pointer', boxShadow: `0 0 18px rgba(0,194,255,0.3)`, display: 'flex', alignItems: 'center', gap: 6 }}>
+              📅 Book TOIL
+            </button>
+          )}
         </div>
       </div>
 
@@ -585,7 +590,7 @@ export default function TOIL({ users, timesheets, toil, setToil, currentUser, is
                 ? <EmptyState icon="📭" msg="No requests yet" sub="Use the Book TOIL button to submit a request." />
                 : myRequests.map(t => (
                     <RequestCard key={t.id} entry={t} users={users} isManager={false}
-                      onDelete={() => deleteEntry(t.id)} fmtDate={fmtDate} />
+                      onDelete={canAdmin ? () => deleteEntry(t.id) : null} fmtDate={fmtDate} />
                   ))
               }
             </>
@@ -605,7 +610,7 @@ export default function TOIL({ users, timesheets, toil, setToil, currentUser, is
                       <RequestCard key={t.id} entry={t} users={users} isManager={true}
                         onApprove={() => approve(t.id)}
                         onReject={() => { setShowReject(t.id); setRejectReason(''); }}
-                        onDelete={() => deleteEntry(t.id)}
+                        onDelete={canAdmin ? () => deleteEntry(t.id) : null}
                         fmtDate={fmtDate} />
                     ))}
                   </>
@@ -688,11 +693,11 @@ export default function TOIL({ users, timesheets, toil, setToil, currentUser, is
                           </td>
                           <td style={{ padding: '9px 12px' }}>
                             <div style={{ display: 'flex', gap: 4 }}>
-                              {isManager && (
+                              {canAdmin && (
                                 <button onClick={() => openManual(t)}
                                   style={{ padding: '3px 8px', background: T.bgCard2, border: `1px solid ${T.border}`, borderRadius: 5, color: T.textSec, fontSize: 11, cursor: 'pointer' }}>✏</button>
                               )}
-                              {(isManager || t.userId === currentUser) && (
+                              {canAdmin && (
                                 <button onClick={() => deleteEntry(t.id)}
                                   style={{ padding: '3px 8px', background: 'rgba(239,68,68,0.07)', border: `1px solid rgba(239,68,68,0.18)`, borderRadius: 5, color: T.red, fontSize: 11, cursor: 'pointer' }}>🗑</button>
                               )}
@@ -1046,7 +1051,7 @@ function RequestCard({ entry, users, isManager, onApprove, onReject, onDelete, f
               <button onClick={onReject}  style={{ padding: '5px 14px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 7, color: T.red,   fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>✗ Reject</button>
             </>
           )}
-          {(isManager || entry.status === 'pending') && (
+          {onDelete && (
             <button onClick={onDelete} style={{ padding: '5px 10px', background: T.bgCard2, border: `1px solid ${T.border}`, borderRadius: 7, color: T.textMuted, fontSize: 12, cursor: 'pointer' }}>🗑</button>
           )}
         </div>
