@@ -5192,7 +5192,7 @@ export default function App() {
       case 'rota':       return <RotaPage users={users} rota={rota} setRota={setRota} holidays={holidays} upgrades={upgrades} swapRequests={swapRequests} setSwapRequests={setSwapRequests} toil={toil} isManager={isManager} UK_BANK_HOLIDAYS={UK_BANK_HOLIDAYS} generateRota={generateRota} generateICalFeed={generateICalFeed} downloadIcal={downloadIcal} onCallGapLog={onCallGapLog} setOnCallGapLog={setOnCallGapLog} />;
       case 'incidents':  return <Incidents {...props} timesheets={timesheets} setTimesheets={setTimesheets} addLog={addLog} initialFilter={incidentsPrefilter} onConsumeInitialFilter={() => setIncidentsPrefilter(null)} />;
       case 'timesheets': return <Timesheets {...props} />;
-      case 'timekeeping': return <TimeKeeping users={users} holidays={holidays} currentUser={currentUser} isManager={isManager} bankHolidays={UK_BANK_HOLIDAYS} timekeeping={timekeeping} setTimekeeping={setTimekeeping} driveToken={driveToken} />;
+      case 'timekeeping': return <TimeKeeping users={users} holidays={holidays} currentUser={currentUser} isManager={isManager} bankHolidays={UK_BANK_HOLIDAYS} timekeeping={timekeeping} setTimekeeping={setTimekeeping} driveToken={driveToken} rota={rota} />;
       case 'holidays':   return <Holidays {...props} />;
       case 'logs':       return <Logs isManager={isManager} driveToken={driveToken} users={users} currentUser={currentUser} />;
       case 'swaps':      return <ShiftSwaps {...props} driveToken={driveToken} />;
