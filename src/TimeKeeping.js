@@ -11,6 +11,17 @@ const RTO_DAYS_REQUIRED = 3;
 const START_TIME        = '09:00';
 const STREAK_THRESHOLD  = 3;  // consecutive lates = pattern
 
+// ── On-call grace period config ───────────────────────────────────────────────
+// Engineers who finished an evening/weekend on-call shift the night before get
+// extra grace before they're counted late the next morning.
+// HEIDI_ONCALL_USER_ID: Heidi commutes from Northampton — 130 min grace (→11:10).
+// All other on-call engineers: 90 min grace (→10:30).
+const HEIDI_ONCALL_USER_ID = 'HCA'; // ← update if Heidi's trigram differs
+const DEFAULT_ONCALL_GRACE_MINS = 90;    // 09:00 + 90m = 10:30
+const HEIDI_ONCALL_GRACE_MINS   = 130;   // 09:00 + 130m = 11:10
+// Rota shift values that count as "on-call overnight" for the previous day
+const ONCALL_OVERNIGHT_SHIFTS = ['evening', 'weekend'];
+
 function DriveStatus({ token, saving }) {
   if (!token) return (
     <span style={{ fontSize: 11, color: '#ef4444', display: 'flex', alignItems: 'center', gap: 4 }}>
@@ -99,14 +110,56 @@ function parseTime(str) {
   const [h, m] = str.split(':').map(Number);
   return h * 60 + m;
 }
-function computeLateStatus(checkIn) {
+// computeLateStatus(checkIn, ctx?)
+// ctx = { userId, date, rota } — optional; enables on-call grace period logic.
+// If the user was on an evening/weekend on-call shift the PREVIOUS day they
+// get a grace window before being counted late:
+//   • Heidi (HEIDI_ONCALL_USER_ID): 130 min grace → threshold 11:10
+//   • All other on-call engineers:   90 min grace → threshold 10:30
+function computeLateStatus(checkIn, ctx) {
   const arr   = parseTime(checkIn);
   const start = parseTime(START_TIME);
   if (arr == null) return null;
-  const diff = arr - start;
-  if (diff <= 0) return { status: 'ontime', label: 'On Time', color: '#22c55e', diff };
-  // No grace period — any check-in after START_TIME counts as late immediately.
-  return { status: 'late', label: `+${diff}m`, color: '#ef4444', diff };
+
+  // ── Determine effective threshold ───────────────────────────────────────
+  let thresholdMins = start; // default: 09:00 sharp
+  let graceLabel    = null;
+
+  if (ctx && ctx.userId && ctx.date && ctx.rota) {
+    const { userId, date, rota } = ctx;
+    // Check if prev calendar day had an overnight on-call shift for this user
+    const prevDate    = addDays(date, -1);
+    const prevShift   = (rota[userId] || {})[prevDate] || 'off';
+    const wasOnCall   = ONCALL_OVERNIGHT_SHIFTS.includes(prevShift);
+
+    if (wasOnCall) {
+      const graceMins = userId === HEIDI_ONCALL_USER_ID
+        ? HEIDI_ONCALL_GRACE_MINS
+        : DEFAULT_ONCALL_GRACE_MINS;
+      thresholdMins = start + graceMins;
+      const h = Math.floor(thresholdMins / 60);
+      const m = thresholdMins % 60;
+      graceLabel = `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;
+    }
+  }
+
+  const diff = arr - thresholdMins;
+  if (diff <= 0) {
+    return {
+      status: 'ontime',
+      label: graceLabel ? `On Time (grace to ${graceLabel})` : 'On Time',
+      color: '#22c55e',
+      diff: arr - start,
+      graceLabel,
+    };
+  }
+  return {
+    status: 'late',
+    label: graceLabel ? `+${diff}m (after ${graceLabel} grace)` : `+${arr - start}m`,
+    color: '#ef4444',
+    diff: arr - start,
+    graceLabel,
+  };
 }
 function isWeekday(dateStr) {
   const d = new Date(dateStr + 'T12:00:00').getDay();
@@ -370,7 +423,8 @@ function Donut({ pct, color, size = 64, label }) {
 }
 
 // ── Heat map cell ─────────────────────────────────────────────────────────────
-function HeatCell({ entry, bankHol, holiday, isToday, isFuture }) {
+// lateCtx = { userId, date, rota } — optional; enables on-call grace
+function HeatCell({ entry, bankHol, holiday, isToday, isFuture, lateCtx }) {
   let bg    = 'rgba(255,255,255,0.03)';
   let title = 'No data';
   if (holiday)       { bg = 'rgba(139,92,246,0.18)';  title = 'Holiday'; }
@@ -378,9 +432,9 @@ function HeatCell({ entry, bankHol, holiday, isToday, isFuture }) {
   else if (isFuture) { bg = 'rgba(255,255,255,0.02)'; title = 'Future'; }
   else if (entry) {
     if (entry.status === 'office' || entry.status === 'wfh') {
-      const ls = computeLateStatus(entry.checkIn);
-      if (!ls || ls.status === 'ontime') { bg = 'rgba(34,197,94,0.28)'; title = `In: ${entry.checkIn || '?'}`; }
-      else                               { bg = 'rgba(239,68,68,0.3)';  title = `Late: ${entry.checkIn}`; }
+      const ls = computeLateStatus(entry.checkIn, lateCtx);
+      if (!ls || ls.status === 'ontime') { bg = 'rgba(34,197,94,0.28)'; title = `In: ${entry.checkIn || '?'}${ls?.graceLabel ? ` (grace to ${ls.graceLabel})` : ''}`; }
+      else                               { bg = 'rgba(239,68,68,0.3)';  title = `Late: ${entry.checkIn}${ls?.graceLabel ? ` (after ${ls.graceLabel} grace)` : ''}`; }
     } else if (entry.status === 'late')   { bg = 'rgba(239,68,68,0.3)';   title = `Late: ${entry.checkIn || '?'}`; }
     else if (entry.status === 'wfh')    { bg = 'rgba(59,130,246,0.22)'; title = 'WFH'; }
     else if (entry.status === 'absent') { bg = 'rgba(239,68,68,0.15)'; title = 'Absent'; }
@@ -602,7 +656,7 @@ function safeSheetName(name) {
   return (name || 'Sheet').replace(/[:\\/?*[\]]/g, ' ').slice(0, 31) || 'Sheet';
 }
 
-async function exportAttendanceExcel(users, timekeeping, bankHolidays, holidays, from, to) {
+async function exportAttendanceExcel(users, timekeeping, bankHolidays, holidays, from, to, rota) {
   let XLSX;
   try {
     XLSX = await loadXLSX();
@@ -612,8 +666,8 @@ async function exportAttendanceExcel(users, timekeeping, bankHolidays, holidays,
   }
   const bh  = (bankHolidays || []).map(b => b.date || b);
   const fmt = ds => new Date(ds + 'T12:00:00').toLocaleDateString('en-GB');
-  const hdrs = ['Date', 'Day', 'Status', 'Check In', 'Check Out', 'Hours', 'Late Status', 'Check-In Device', 'Check-Out Device', 'Confirmed', 'Notes'];
-  const colWidths = [12, 12, 14, 9, 10, 8, 12, 18, 18, 10, 30].map(w => ({ wch: w }));
+  const hdrs = ['Date', 'Day', 'Status', 'Check In', 'Check Out', 'Hours', 'Late Status', 'Late Reason', 'Notified MBA47', 'Check-In Device', 'Check-Out Device', 'Confirmed', 'Notes'];
+  const colWidths = [12, 12, 14, 9, 10, 8, 12, 30, 14, 18, 18, 10, 30].map(w => ({ wch: w }));
   const wb = XLSX.utils.book_new();
   const engineerList = users || [];
 
@@ -625,7 +679,7 @@ async function exportAttendanceExcel(users, timekeeping, bankHolidays, holidays,
     const office = entries.filter(e => e.status === 'office').length;
     const wfh    = entries.filter(e => e.status === 'wfh').length;
     const absent = entries.filter(e => e.status === 'absent').length;
-    const late   = entries.filter(e => e.checkIn && computeLateStatus(e.checkIn)?.status === 'late').length;
+    const late   = entries.filter(e => e.checkIn && computeLateStatus(e.checkIn, { userId: u.id, date: e.date, rota: rota || {} })?.status === 'late').length;
     return [u.name, office, wfh, absent, late, entries.length];
   });
   const summaryAoA = [
@@ -645,7 +699,7 @@ async function exportAttendanceExcel(users, timekeeping, bankHolidays, holidays,
       const day  = new Date(e.date + 'T12:00:00').toLocaleDateString('en-GB', { weekday: 'long' });
       const isBH = isBankHoliday(e.date, bh);
       const isH  = isOnHoliday(e.date, u.id, holidays);
-      const ls   = e.checkIn ? computeLateStatus(e.checkIn) : null;
+      const ls   = e.checkIn ? computeLateStatus(e.checkIn, { userId: u.id, date: e.date, rota: rota || {} }) : null;
       const hrs  = fmtHours(e.checkIn, e.checkOut) || '';
       const statusLabel = isBH ? 'Bank Holiday' : isH ? 'Holiday' : (e.status || '—');
       const lateLabel = ls ? ls.label : (e.status === 'wfh' ? 'WFH' : e.status === 'absent' ? 'Absent' : '—');
@@ -658,6 +712,8 @@ async function exportAttendanceExcel(users, timekeeping, bankHolidays, holidays,
         styleCell(e.checkOut || '—', XSTYLE.plain),
         styleCell(hrs, XSTYLE.plain),
         styleCell(lateLabel, ls?.status === 'late' ? XSTYLE.late : ls?.status === 'ontime' ? XSTYLE.ontime : XSTYLE.plain),
+        styleCell(e.lateReason || (ls?.status === 'late' ? '⚠ No reason given' : '—'), ls?.status === 'late' && !e.lateReason ? XSTYLE.late : XSTYLE.plain),
+        styleCell(e.lateNotifiedManager ? '✓ Yes' : (ls?.status === 'late' ? '✗ No' : '—'), e.lateNotifiedManager ? XSTYLE.ontime : (ls?.status === 'late' ? XSTYLE.late : XSTYLE.plain)),
         styleCell(e.device ? (DEVICE_META[e.device]?.label || e.device) : '—', XSTYLE.plain),
         styleCell(e.checkOutDevice ? (DEVICE_META[e.checkOutDevice]?.label || e.checkOutDevice) : '—', XSTYLE.plain),
         styleCell(e.confirmedByManager ? '✓' : '—', XSTYLE.plain),
@@ -814,6 +870,7 @@ export default function TimeKeeping({
   timekeeping,
   setTimekeeping,
   driveToken,
+  rota         = {},   // rota[userId][dateStr] — used for on-call grace period
   extraStatuses    = [],   // manager-defined custom check-in types (persisted by parent)
   setExtraStatuses,        // setter passed from App.js (saves to Drive via payconfig or dedicated key)
 }) {
@@ -850,6 +907,14 @@ export default function TimeKeeping({
   const [logForm,    setLogForm]    = useState({
     userId: currentUser, date: '', checkIn: '', checkOut: '', status: 'office', notes: '',
   });
+
+  // ── Late reason modal ────────────────────────────────────────────────────────
+  // Shown when an engineer checks in late (or saves a log entry that is late).
+  // The engineer must supply a reason AND confirm they notified Meetul before
+  // the entry is saved. Pending entry is held here until confirmed.
+  const [lateReasonModal, setLateReasonModal] = useState(false);
+  const [lateReasonForm,  setLateReasonForm]  = useState({ reason: '', notified: false });
+  const [pendingLateEntry, setPendingLateEntry] = useState(null); // { uid, entry }
 
   // ── Manager: add custom status type ───────────────────────────────────────
   const [showAddStatus, setShowAddStatus] = useState(false);
@@ -1033,7 +1098,7 @@ export default function TimeKeeping({
             const isLateStatus = false; // late is now computed from checkIn time, not a status
             if (isOfficeStat || isLateStatus) {
               officeDays++;
-              const ls = computeLateStatus(rec.checkIn);
+              const ls = computeLateStatus(rec.checkIn, { userId, date: cur, rota });
               const actuallyLate = isLateStatus || (ls && ls.status === 'late');
               if (actuallyLate) {
                 lateArrivals.push({ date: cur, checkIn: rec.checkIn, label: ls ? ls.label : 'Late', color: '#ef4444' });
@@ -1064,7 +1129,7 @@ export default function TimeKeeping({
         .filter(e => e.date >= thirtyAgo && e.date <= today)
         .sort((a, b) => (a.date || '').localeCompare(b.date || ''))
         .forEach(e => {
-          const isLate = e.status === 'late' || (e.checkIn && computeLateStatus(e.checkIn)?.status === 'late');
+          const isLate = e.status === 'late' || (e.checkIn && computeLateStatus(e.checkIn, { userId: u.id, date: e.date, rota })?.status === 'late');
           if (isLate) { streak++; if (streak > maxStreak) maxStreak = streak; }
           else streak = 0;
         });
@@ -1133,6 +1198,41 @@ export default function TimeKeeping({
     return entry?.status === statusFilter;
   });
 
+  // ── No-checkin alert (for MBA47 manager view on the Today tab) ─────────────
+  // Identifies engineers who should be in the office today but haven't checked
+  // in yet. "Should be in" = not on holiday, not a bank holiday, and it's a
+  // weekday. On-call engineers (evening/weekend shift yesterday) get extra grace
+  // before they appear in this list.
+  const noCheckInAlerts = useMemo(() => {
+    if (!isManager) return [];
+    const todayStr = today;
+    if (!isWeekday(todayStr)) return [];
+    const nowMins = parseTime(liveTime) ?? 0;
+
+    return (users || []).filter(u => {
+      const entry = todayEntry(u.id);
+      if (entry && entry.checkIn) return false; // already checked in
+      if (isBankHoliday(todayStr, bh)) return false;
+      if (isOnHoliday(todayStr, u.id, holidays)) return false;
+
+      // Determine grace threshold for this user today
+      const prevDate  = addDays(todayStr, -1);
+      const prevShift = (rota[u.id] || {})[prevDate] || 'off';
+      const wasOnCall = ONCALL_OVERNIGHT_SHIFTS.includes(prevShift);
+      const startMins = parseTime(START_TIME);
+
+      if (wasOnCall) {
+        const graceMins = u.id === HEIDI_ONCALL_USER_ID
+          ? HEIDI_ONCALL_GRACE_MINS
+          : DEFAULT_ONCALL_GRACE_MINS;
+        // Only alert once grace window has passed
+        return nowMins > startMins + graceMins;
+      }
+      // Normal day — alert after START_TIME
+      return nowMins > startMins;
+    });
+  }, [isManager, today, liveTime, users, todayEntry, bh, holidays, rota]);
+
   // ── Full log (all entries, all users, date desc) ────────────────────────────
   const allEntriesLog = useMemo(() =>
     (users || []).flatMap(u => userEntries(u.id).map(e => ({ ...e, user: u })))
@@ -1164,6 +1264,45 @@ export default function TimeKeeping({
     }, uid); // uid = targetUid — only this user's slice is written to Drive
   }, [mutate]);
 
+  // ── Check whether a check-in time is late for a given user/date ───────────
+  const isCheckInLate = useCallback((checkInTime, uid, date) => {
+    if (!checkInTime) return false;
+    const ls = computeLateStatus(checkInTime, { userId: uid, date, rota });
+    return ls?.status === 'late';
+  }, [rota]);
+
+  // ── Commit a (possibly late) entry — shows reason modal if late ─────────
+  // engineerMaySkipReason: managers editing entries on behalf of engineers
+  // can save without the reason modal (they can type a note manually instead).
+  const commitEntry = useCallback((uid, entry, engineerMaySkipReason = false) => {
+    const isLate = isCheckInLate(entry.checkIn, uid, entry.date);
+    if (isLate && !engineerMaySkipReason && !entry.lateReason) {
+      // Hold the entry and show the reason modal
+      setPendingLateEntry({ uid, entry });
+      setLateReasonForm({ reason: '', notified: false });
+      setLateReasonModal(true);
+      return;
+    }
+    upsertEntry(uid, entry);
+  }, [isCheckInLate, upsertEntry]);
+
+  // ── Confirm late reason and save pending entry ──────────────────────────
+  const confirmLateReason = () => {
+    if (!pendingLateEntry) return;
+    const { uid, entry } = pendingLateEntry;
+    upsertEntry(uid, {
+      ...entry,
+      lateReason: lateReasonForm.reason.trim(),
+      lateNotifiedManager: lateReasonForm.notified,
+    });
+    setPendingLateEntry(null);
+    setLateReasonModal(false);
+    setLateReasonForm({ reason: '', notified: false });
+    // Also close the log modal if it was open
+    setLogModal(false);
+    setEditEntry(null);
+  };
+
   const handleCheckIn = () => {
     const entry  = todayEntry(currentUser);
     const time   = londonTimeStr();   // fresh call — mutation, not display
@@ -1172,10 +1311,10 @@ export default function TimeKeeping({
       // ── FIX: preserve existing status — only stamp the check-in time & device.
       // Previously this hard-coded status:'office', overriding any WFH / custom
       // status the engineer had already set via the log modal.
-      upsertEntry(currentUser, { ...entry, checkIn: time, device });
+      commitEntry(currentUser, { ...entry, checkIn: time, device });
     } else {
       // New entry — use whatever status the engineer selected in the dropdown
-      upsertEntry(currentUser, {
+      commitEntry(currentUser, {
         id: `ck-${currentUser}-${Date.now()}`,
         date: today, checkIn: time, checkOut: null,
         status: checkInStatus,
@@ -1195,7 +1334,7 @@ export default function TimeKeeping({
     if (!logForm.date || !logForm.checkIn) return;
     const uid = isManager ? (logForm.userId || currentUser) : currentUser;
     const id  = editEntry?.id || `ck-${uid}-${Date.now()}`;
-    upsertEntry(uid, {
+    const entry = {
       id, date: logForm.date,
       checkIn: logForm.checkIn, checkOut: logForm.checkOut || null,
       status: logForm.status, notes: logForm.notes || '',
@@ -1204,9 +1343,25 @@ export default function TimeKeeping({
       // preserve device on edit; stamp current device on new manual entries
       device: editEntry?.device || detectDevice(),
       checkOutDevice: editEntry?.checkOutDevice || null,
-    });
-    setLogModal(false);
-    setEditEntry(null);
+      // preserve existing late reason on edit
+      lateReason: editEntry?.lateReason || null,
+      lateNotifiedManager: editEntry?.lateNotifiedManager || false,
+    };
+    // Managers editing any entry skip the reason modal (they note it in Notes).
+    // Engineers saving their own entries must go through commitEntry so the
+    // late-reason modal fires when required.
+    if (isManager) {
+      upsertEntry(uid, entry);
+      setLogModal(false);
+      setEditEntry(null);
+    } else {
+      commitEntry(uid, entry);
+      // Modal will be closed by confirmLateReason, or immediately if not late
+      if (!isCheckInLate(entry.checkIn, uid, entry.date)) {
+        setLogModal(false);
+        setEditEntry(null);
+      }
+    }
   };
 
   const openEditEntry = (uid, entry) => {
@@ -1360,6 +1515,17 @@ export default function TimeKeeping({
                   </div>
                   {myTodayEntry.notes && (
                     <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 8 }}>📝 {myTodayEntry.notes}</div>
+                  )}
+                  {/* Late reason (shown if submitted) */}
+                  {myTodayEntry.lateReason && (
+                    <div style={{ marginTop: 10, padding: '8px 12px', borderRadius: 8, fontSize: 12,
+                      background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)' }}>
+                      <span style={{ color: '#fca5a5', fontWeight: 600 }}>⏰ Late reason: </span>
+                      <span style={{ color: 'var(--text-secondary)' }}>{myTodayEntry.lateReason}</span>
+                      {myTodayEntry.lateNotifiedManager && (
+                        <span style={{ marginLeft: 8, fontSize: 11, color: '#34d399' }}>✓ Meetul notified</span>
+                      )}
+                    </div>
                   )}
                   {/* Device that was used to check in */}
                   {myTodayEntry.device && (
@@ -1602,6 +1768,75 @@ export default function TimeKeeping({
         })()}
 
         {logModal && renderLogModal()}
+
+        {/* ── Late reason modal (engineer view) ── */}
+        {lateReasonModal && (
+          <Modal title="⏰ You're late — a quick note is required" onClose={() => {
+            setPendingLateEntry(null);
+            setLateReasonModal(false);
+            setLateReasonForm({ reason: '', notified: false });
+          }}>
+            <div style={{ marginBottom: 14, padding: '10px 14px', background: 'rgba(239,68,68,0.08)',
+              border: '1px solid rgba(239,68,68,0.25)', borderRadius: 8, fontSize: 13, color: '#fca5a5' }}>
+              Your check-in time is <strong style={{ color: '#f87171' }}>after your expected start time</strong>
+              {pendingLateEntry && (() => {
+                const ls = computeLateStatus(pendingLateEntry.entry.checkIn, { userId: pendingLateEntry.uid, date: pendingLateEntry.entry.date, rota });
+                return ls ? <> — <span style={{ fontFamily: 'DM Mono', fontWeight: 700 }}>{ls.label}</span></> : null;
+              })()}.
+              Please provide a brief reason and confirm you've let Meetul know.
+            </div>
+            <FormGroup label="Reason for late arrival">
+              <textarea
+                className="textarea"
+                rows={3}
+                placeholder="e.g. Train delay, appointment overran, traffic…"
+                value={lateReasonForm.reason}
+                onChange={e => setLateReasonForm(f => ({ ...f, reason: e.target.value }))}
+                autoFocus
+              />
+            </FormGroup>
+            <div style={{
+              marginTop: 10, marginBottom: 16,
+              padding: '12px 14px', borderRadius: 8,
+              background: lateReasonForm.notified ? 'rgba(16,185,129,0.1)' : 'rgba(245,158,11,0.08)',
+              border: `1px solid ${lateReasonForm.notified ? 'rgba(16,185,129,0.3)' : 'rgba(245,158,11,0.3)'}`,
+              cursor: 'pointer',
+              display: 'flex', alignItems: 'center', gap: 12,
+            }} onClick={() => setLateReasonForm(f => ({ ...f, notified: !f.notified }))}>
+              <div style={{
+                width: 20, height: 20, borderRadius: 4, flexShrink: 0,
+                background: lateReasonForm.notified ? '#10b981' : 'transparent',
+                border: `2px solid ${lateReasonForm.notified ? '#10b981' : 'rgba(245,158,11,0.6)'}`,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 13, color: '#fff',
+              }}>
+                {lateReasonForm.notified ? '✓' : ''}
+              </div>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: lateReasonForm.notified ? '#34d399' : '#fcd34d' }}>
+                  I have messaged or called Meetul (MBA47) to let them know
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+                  Required before you can submit — tap to confirm
+                </div>
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button className="btn btn-secondary" onClick={() => {
+                setPendingLateEntry(null);
+                setLateReasonModal(false);
+                setLateReasonForm({ reason: '', notified: false });
+              }}>Cancel</button>
+              <button
+                className="btn btn-primary"
+                disabled={!lateReasonForm.reason.trim() || !lateReasonForm.notified}
+                onClick={confirmLateReason}
+              >
+                Submit &amp; Check In
+              </button>
+            </div>
+          </Modal>
+        )}
       </div>
     );
   }
@@ -1676,6 +1911,47 @@ export default function TimeKeeping({
         )}
       </div>
 
+      {/* ══ TODAY — MBA47 no-check-in alert banner ══ */}
+      {tab === 'today' && isManager && noCheckInAlerts.length > 0 && (
+        <div style={{
+          marginBottom: 16, padding: '12px 16px',
+          background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.35)',
+          borderRadius: 10, display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center',
+        }}>
+          <span style={{ fontSize: 18 }}>🔔</span>
+          <div style={{ flex: 1, minWidth: 200 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: '#fca5a5', marginBottom: 4 }}>
+              No check-in yet — {noCheckInAlerts.length} engineer{noCheckInAlerts.length !== 1 ? 's' : ''}
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {noCheckInAlerts.map(u => {
+                const prevDate  = addDays(today, -1);
+                const prevShift = (rota[u.id] || {})[prevDate] || 'off';
+                const wasOnCall = ONCALL_OVERNIGHT_SHIFTS.includes(prevShift);
+                const graceMins = wasOnCall
+                  ? (u.id === HEIDI_ONCALL_USER_ID ? HEIDI_ONCALL_GRACE_MINS : DEFAULT_ONCALL_GRACE_MINS)
+                  : 0;
+                const threshMins = parseTime(START_TIME) + graceMins;
+                const th = Math.floor(threshMins / 60);
+                const tm = threshMins % 60;
+                const graceStr = wasOnCall
+                  ? ` (on-call grace to ${String(th).padStart(2,'0')}:${String(tm).padStart(2,'0')})`
+                  : '';
+                return (
+                  <span key={u.id} style={{
+                    fontSize: 11, fontWeight: 600, padding: '3px 9px', borderRadius: 20,
+                    background: 'rgba(239,68,68,0.15)', color: '#fca5a5',
+                    border: '1px solid rgba(239,68,68,0.3)',
+                  }} title={`Expected from ${String(th).padStart(2,'0')}:${String(tm).padStart(2,'0')}${graceStr}`}>
+                    {u.name}{wasOnCall ? ' 🌙' : ''}
+                  </span>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ══ TODAY ══ */}
       {tab === 'today' && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 12 }}>
@@ -1684,6 +1960,7 @@ export default function TimeKeeping({
             const checkedOut = entry && entry.checkIn && entry.checkOut;
             const s          = entry ? statusCfg(entry.status) : null;
             const hrs        = entry ? fmtHours(entry.checkIn, entry.checkOut) : null;
+            const todayLs    = entry?.checkIn ? computeLateStatus(entry.checkIn, { userId: u.id, date: today, rota }) : null;
             return (
               <div key={u.id} style={{
                 background: 'var(--bg-card)', borderRadius: 12, padding: '14px 16px',
@@ -1722,7 +1999,35 @@ export default function TimeKeeping({
                         </div>
                       )}
                     </div>
+                    {todayLs && (
+                      <div style={{ marginBottom: 8 }}>
+                        <span style={{
+                          fontSize: 11, fontWeight: 600, padding: '2px 9px', borderRadius: 20,
+                          background: todayLs.status === 'late' ? 'rgba(239,68,68,0.15)' : 'rgba(34,197,94,0.15)',
+                          color: todayLs.status === 'late' ? '#fca5a5' : '#86efac',
+                          border: `1px solid ${todayLs.status === 'late' ? 'rgba(239,68,68,0.3)' : 'rgba(34,197,94,0.3)'}`,
+                        }}>
+                          {todayLs.status === 'late' ? '⏰ ' : '✓ '}{todayLs.label}
+                        </span>
+                      </div>
+                    )}
                     {entry.notes && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>📝 {entry.notes}</div>}
+                    {/* Late reason (manager view) */}
+                    {entry.lateReason && (
+                      <div style={{ marginBottom: 8, padding: '6px 10px', borderRadius: 7, fontSize: 11,
+                        background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)' }}>
+                        <span style={{ color: '#fca5a5', fontWeight: 600 }}>⏰ Reason: </span>
+                        <span style={{ color: 'var(--text-secondary)' }}>{entry.lateReason}</span>
+                        {entry.lateNotifiedManager
+                          ? <span style={{ marginLeft: 8, color: '#34d399', fontWeight: 600 }}>✓ Notified MBA47</span>
+                          : <span style={{ marginLeft: 8, color: '#f59e0b', fontWeight: 600 }}>⚠ Not confirmed notified</span>}
+                      </div>
+                    )}
+                    {todayLs?.status === 'late' && !entry.lateReason && (
+                      <div style={{ marginBottom: 8, fontSize: 11, color: '#f59e0b' }}>
+                        ⚠ No late reason provided yet
+                      </div>
+                    )}
                     {/* Device row */}
                     {(entry.device || entry.checkOutDevice) && (
                       <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap' }}>
@@ -2165,6 +2470,7 @@ export default function TimeKeeping({
                             holiday={isOnHoliday(d, u.id, holidays)}
                             isToday={d === today}
                             isFuture={d > today}
+                            lateCtx={{ userId: u.id, date: d, rota }}
                           />
                         </td>
                       ))
@@ -2276,14 +2582,14 @@ export default function TimeKeeping({
                 <tr>
                   <th>Engineer</th><th>Date</th><th>Status</th>
                   <th>In</th><th>Out</th><th>Duration</th><th>Late</th>
-                  <th>Device</th><th>Notes</th><th>Confirmed</th><th></th>
+                  <th>Late Reason</th><th>Device</th><th>Notes</th><th>Confirmed</th><th></th>
                 </tr>
               </thead>
               <tbody>
                 {allEntriesLog
                   .filter(e => (filterUser === 'all' || e.user.id === filterUser) && (locationFilter === 'all' || normStatus(e.status) === locationFilter))
                   .map(e => {
-                    const ls = e.checkIn ? computeLateStatus(e.checkIn) : null;
+                    const ls = e.checkIn ? computeLateStatus(e.checkIn, { userId: e.user.id, date: e.date, rota }) : null;
                     return (
                       <tr key={e.id}>
                         <td>
@@ -2302,6 +2608,18 @@ export default function TimeKeeping({
                             ? <span style={{ fontSize: 11, color: ls.color, fontFamily: 'DM Mono', fontWeight: 600 }}>{ls.label}</span>
                             : ls ? <span style={{ fontSize: 11, color: '#22c55e' }}>✓</span>
                             : <span style={{ color: 'var(--text-muted)' }}>—</span>}
+                        </td>
+                        <td style={{ maxWidth: 180 }}>
+                          {e.lateReason ? (
+                            <div style={{ fontSize: 11 }}>
+                              <div style={{ color: 'var(--text-secondary)', marginBottom: 2 }}>{e.lateReason}</div>
+                              {e.lateNotifiedManager
+                                ? <span style={{ color: '#34d399', fontSize: 10, fontWeight: 600 }}>✓ MBA47 notified</span>
+                                : ls?.status === 'late' ? <span style={{ color: '#f59e0b', fontSize: 10, fontWeight: 600 }}>⚠ Not confirmed</span> : null}
+                            </div>
+                          ) : ls?.status === 'late' ? (
+                            <span style={{ fontSize: 10, color: '#f59e0b' }}>⚠ No reason</span>
+                          ) : <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>—</span>}
                         </td>
                         <td>
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
@@ -2343,6 +2661,79 @@ export default function TimeKeeping({
       {/* ── Log modal ── */}
       {logModal && renderLogModal()}
 
+      {/* ── Late reason modal ── */}
+      {lateReasonModal && (
+        <Modal title="⏰ You're late — a quick note is required" onClose={() => {
+          // Dismissing without confirming cancels the check-in entirely
+          setPendingLateEntry(null);
+          setLateReasonModal(false);
+          setLateReasonForm({ reason: '', notified: false });
+        }}>
+          <div style={{ marginBottom: 14, padding: '10px 14px', background: 'rgba(239,68,68,0.08)',
+            border: '1px solid rgba(239,68,68,0.25)', borderRadius: 8, fontSize: 13, color: '#fca5a5' }}>
+            Your check-in time is <strong style={{ color: '#f87171' }}>after your expected start time</strong>
+            {pendingLateEntry && (() => {
+              const ls = computeLateStatus(pendingLateEntry.entry.checkIn, { userId: pendingLateEntry.uid, date: pendingLateEntry.entry.date, rota });
+              return ls ? <> — <span style={{ fontFamily: 'DM Mono', fontWeight: 700 }}>{ls.label}</span></> : null;
+            })()}.
+            Please provide a brief reason and confirm you've let Meetul know.
+          </div>
+
+          <FormGroup label="Reason for late arrival">
+            <textarea
+              className="textarea"
+              rows={3}
+              placeholder="e.g. Train delay, appointment overran, traffic…"
+              value={lateReasonForm.reason}
+              onChange={e => setLateReasonForm(f => ({ ...f, reason: e.target.value }))}
+              autoFocus
+            />
+          </FormGroup>
+
+          <div style={{
+            marginTop: 10, marginBottom: 16,
+            padding: '12px 14px', borderRadius: 8,
+            background: lateReasonForm.notified ? 'rgba(16,185,129,0.1)' : 'rgba(245,158,11,0.08)',
+            border: `1px solid ${lateReasonForm.notified ? 'rgba(16,185,129,0.3)' : 'rgba(245,158,11,0.3)'}`,
+            cursor: 'pointer',
+            display: 'flex', alignItems: 'center', gap: 12,
+          }} onClick={() => setLateReasonForm(f => ({ ...f, notified: !f.notified }))}>
+            <div style={{
+              width: 20, height: 20, borderRadius: 4, flexShrink: 0,
+              background: lateReasonForm.notified ? '#10b981' : 'transparent',
+              border: `2px solid ${lateReasonForm.notified ? '#10b981' : 'rgba(245,158,11,0.6)'}`,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontSize: 13, color: '#fff',
+            }}>
+              {lateReasonForm.notified ? '✓' : ''}
+            </div>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: lateReasonForm.notified ? '#34d399' : '#fcd34d' }}>
+                I have messaged or called Meetul (MBA47) to let them know
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+                Required before you can submit — tap to confirm
+              </div>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <button className="btn btn-secondary" onClick={() => {
+              setPendingLateEntry(null);
+              setLateReasonModal(false);
+              setLateReasonForm({ reason: '', notified: false });
+            }}>Cancel</button>
+            <button
+              className="btn btn-primary"
+              disabled={!lateReasonForm.reason.trim() || !lateReasonForm.notified}
+              onClick={confirmLateReason}
+            >
+              Submit &amp; Check In
+            </button>
+          </div>
+        </Modal>
+      )}
+
       {/* ── Export modal ── */}
       {showExport && (
         <Modal title="📥 Export Attendance to Excel" onClose={() => setShowExport(false)}>
@@ -2375,7 +2766,7 @@ export default function TimeKeeping({
             <button className="btn btn-primary" disabled={exporting} onClick={async () => {
               setExporting(true);
               const scopedUsers = exportUser === 'all' ? (users || []) : (users || []).filter(u => u.id === exportUser);
-              await exportAttendanceExcel(scopedUsers, timekeeping || {}, bankHolidays || [], holidays || [], exportFrom, exportTo);
+              await exportAttendanceExcel(scopedUsers, timekeeping || {}, bankHolidays || [], holidays || [], exportFrom, exportTo, rota);
               setExporting(false);
               setShowExport(false);
             }}>
