@@ -1294,6 +1294,7 @@ export default function TimeKeeping({
       ...entry,
       lateReason: lateReasonForm.reason.trim(),
       lateNotifiedManager: lateReasonForm.notified,
+      managerConfirmedNotification: false,
     });
     setPendingLateEntry(null);
     setLateReasonModal(false);
@@ -1302,6 +1303,14 @@ export default function TimeKeeping({
     setLogModal(false);
     setEditEntry(null);
   };
+
+  // ── MBA47: confirm they received the engineer's notification ──────────────
+  const confirmNotificationReceipt = useCallback((uid, entryId) => {
+    const entries = userEntries(uid);
+    const entry   = entries.find(e => e.id === entryId);
+    if (!entry) return;
+    upsertEntry(uid, { ...entry, managerConfirmedNotification: true });
+  }, [upsertEntry, userEntries]);
 
   const handleCheckIn = () => {
     const entry  = todayEntry(currentUser);
@@ -1844,6 +1853,8 @@ export default function TimeKeeping({
   // ═══════════════════════════════════════════════════════════════════════════
   // MANAGER VIEW
   // ═══════════════════════════════════════════════════════════════════════════
+  const [engTab, setEngTab] = useState('overview'); // sub-tab inside per-engineer view
+
   const mgTabs = [
     { id: 'today',     label: "📍 Today" },
     { id: 'dashboard', label: '◈ Dashboard' },
@@ -1853,6 +1864,17 @@ export default function TimeKeeping({
     { id: 'heatmap',   label: '🔥 Heat Map' },
     { id: 'alerts',    label: `🚨 Alerts${patternAlerts.filter(a => a.hasPattern).length > 0 ? ` (${patternAlerts.filter(a => a.hasPattern).length})` : ''}` },
     { id: 'log',       label: '📋 Log' },
+    // ── Per-engineer tabs ──
+    ...engineers.map(u => {
+      const pa = patternAlerts.find(a => a.user.id === u.id);
+      const needsAttention = (pa && pa.hasPattern) ||
+        userEntries(u.id).some(e => e.lateNotifiedManager && !e.managerConfirmedNotification);
+      return {
+        id: `eng-${u.id}`,
+        label: `👤 ${u.name.split(' ')[0]}${needsAttention ? ' ●' : ''}`,
+        userId: u.id,
+      };
+    }),
   ];
 
   return (
@@ -1882,7 +1904,8 @@ export default function TimeKeeping({
       <div style={{ display: 'flex', gap: 4, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
         {mgTabs.map(t => (
           <button key={t.id} className={`btn btn-sm ${tab === t.id ? 'btn-primary' : 'btn-secondary'}`}
-            onClick={() => setTab(t.id)}>{t.label}</button>
+            style={t.id.startsWith('eng-') ? { borderLeft: tab === t.id ? undefined : '2px solid rgba(99,102,241,0.4)' } : undefined}
+            onClick={() => { setTab(t.id); if (t.id.startsWith('eng-')) setEngTab('overview'); }}>{t.label}</button>
         ))}
         {(tab === 'week' || tab === 'month') && (
           <>
@@ -2018,9 +2041,14 @@ export default function TimeKeeping({
                         background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)' }}>
                         <span style={{ color: '#fca5a5', fontWeight: 600 }}>⏰ Reason: </span>
                         <span style={{ color: 'var(--text-secondary)' }}>{entry.lateReason}</span>
-                        {entry.lateNotifiedManager
-                          ? <span style={{ marginLeft: 8, color: '#34d399', fontWeight: 600 }}>✓ Notified MBA47</span>
-                          : <span style={{ marginLeft: 8, color: '#f59e0b', fontWeight: 600 }}>⚠ Not confirmed notified</span>}
+                        {entry.lateNotifiedManager ? (
+                          entry.managerConfirmedNotification
+                            ? <span style={{ marginLeft: 8, color: '#34d399', fontWeight: 600 }}>✓ Notified &amp; confirmed</span>
+                            : <button className="btn btn-success btn-sm" style={{ marginLeft: 8 }}
+                                onClick={() => confirmNotificationReceipt(u.id, entry.id)}>
+                                ✓ Confirm received
+                              </button>
+                        ) : <span style={{ marginLeft: 8, color: '#f59e0b', fontWeight: 600 }}>⚠ Not confirmed notified</span>}
                       </div>
                     )}
                     {todayLs?.status === 'late' && !entry.lateReason && (
@@ -2066,6 +2094,69 @@ export default function TimeKeeping({
       {/* ══ DASHBOARD ══ */}
       {tab === 'dashboard' && (
         <div>
+          {/* ── Needs attention banner ── */}
+          {(() => {
+            const allUnconfirmedNotifs = engineers.flatMap(u =>
+              userEntries(u.id)
+                .filter(e => e.lateNotifiedManager && !e.managerConfirmedNotification)
+                .map(e => ({ user: u, entry: e }))
+            );
+            const allMissReasons = engineers.flatMap(u =>
+              userEntries(u.id)
+                .filter(e => {
+                  const ls = e.checkIn ? computeLateStatus(e.checkIn, { userId: u.id, date: e.date, rota }) : null;
+                  return ls?.status === 'late' && !e.lateReason;
+                })
+                .map(e => ({ user: u, entry: e }))
+            );
+            if (allUnconfirmedNotifs.length === 0 && allMissReasons.length === 0) return null;
+            return (
+              <div style={{ marginBottom: 20 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 12 }}>
+                  🔔 Needs Your Attention
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {allUnconfirmedNotifs.map(({ user: u, entry: e }) => (
+                    <div key={e.id} style={{ padding: '10px 14px', borderRadius: 10, display: 'flex',
+                      alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10,
+                      background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.3)' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <Avatar user={u} size={28} />
+                        <div>
+                          <div style={{ fontSize: 12, fontWeight: 600, color: '#fcd34d' }}>
+                            {u.name} — {fmtDate(e.date)}
+                          </div>
+                          <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+                            📩 Said they notified you · Reason: {e.lateReason}
+                          </div>
+                        </div>
+                      </div>
+                      <button className="btn btn-success btn-sm" onClick={() => confirmNotificationReceipt(u.id, e.id)}>
+                        ✓ Confirm
+                      </button>
+                    </div>
+                  ))}
+                  {allMissReasons.map(({ user: u, entry: e }) => (
+                    <div key={e.id} style={{ padding: '10px 14px', borderRadius: 10, display: 'flex',
+                      alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10,
+                      background: 'rgba(239,68,68,0.07)', border: '1px solid rgba(239,68,68,0.3)' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <Avatar user={u} size={28} />
+                        <div>
+                          <div style={{ fontSize: 12, fontWeight: 600, color: '#fca5a5' }}>
+                            {u.name} — {fmtDate(e.date)} · {e.checkIn}
+                          </div>
+                          <div style={{ fontSize: 11, color: '#f59e0b' }}>⚠ Late with no reason logged</div>
+                        </div>
+                      </div>
+                      <button className="btn btn-secondary btn-sm" onClick={() => openEditEntry(u.id, e)}>✏ Edit</button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
+
           {/* This-week RTO per engineer */}
           <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 12 }}>
             This Week — RTO Compliance ({curWeekStart} → {addDays(curWeekStart, 4)})
@@ -2613,9 +2704,14 @@ export default function TimeKeeping({
                           {e.lateReason ? (
                             <div style={{ fontSize: 11 }}>
                               <div style={{ color: 'var(--text-secondary)', marginBottom: 2 }}>{e.lateReason}</div>
-                              {e.lateNotifiedManager
-                                ? <span style={{ color: '#34d399', fontSize: 10, fontWeight: 600 }}>✓ MBA47 notified</span>
-                                : ls?.status === 'late' ? <span style={{ color: '#f59e0b', fontSize: 10, fontWeight: 600 }}>⚠ Not confirmed</span> : null}
+                              {e.lateNotifiedManager ? (
+                                e.managerConfirmedNotification
+                                  ? <span style={{ color: '#34d399', fontSize: 10, fontWeight: 600 }}>✓ Notified &amp; confirmed</span>
+                                  : <button className="btn btn-success btn-sm" style={{ marginTop: 3 }}
+                                      onClick={() => confirmNotificationReceipt(e.user.id, e.id)}>
+                                      ✓ Confirm
+                                    </button>
+                              ) : ls?.status === 'late' ? <span style={{ color: '#f59e0b', fontSize: 10, fontWeight: 600 }}>⚠ Not confirmed</span> : null}
                             </div>
                           ) : ls?.status === 'late' ? (
                             <span style={{ fontSize: 10, color: '#f59e0b' }}>⚠ No reason</span>
@@ -2657,6 +2753,392 @@ export default function TimeKeeping({
           </div>
         </div>
       )}
+
+      {/* ══ PER-ENGINEER TAB ══ */}
+      {tab.startsWith('eng-') && (() => {
+        const engUserId = tab.replace('eng-', '');
+        const engUser   = (users || []).find(u => u.id === engUserId);
+        if (!engUser) return null;
+        const eEntries  = userEntries(engUserId);
+        const eStats30  = getUserStats(engUserId, addDays(today, -29), today);
+        const eStats90  = getUserStats(engUserId, addDays(today, -89), today);
+        const todayEnt  = todayEntry(engUserId);
+        const todayLs   = todayEnt?.checkIn
+          ? computeLateStatus(todayEnt.checkIn, { userId: engUserId, date: today, rota }) : null;
+        const lateUnconfirmed = eEntries.filter(e =>
+          e.lateNotifiedManager && !e.managerConfirmedNotification);
+        const missReason = eEntries.filter(e => {
+          const ls = e.checkIn ? computeLateStatus(e.checkIn, { userId: engUserId, date: e.date, rota }) : null;
+          return ls?.status === 'late' && !e.lateReason;
+        });
+        const pAlert = patternAlerts.find(a => a.user.id === engUserId);
+        const engSubTabs = [
+          { id: 'overview', label: '📊 Overview' },
+          { id: 'history',  label: '📋 History' },
+          { id: 'late',     label: `⏰ Late${eStats30.lateArrivals.length > 0 ? ` (${eStats30.lateArrivals.length})` : ''}` },
+          { id: 'oncall',   label: '🌙 On-Call' },
+        ];
+
+        return (
+          <div>
+            {/* Engineer header */}
+            <div className="card" style={{ marginBottom: 16, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                <Avatar user={engUser} size={52} />
+                <div>
+                  <div style={{ fontSize: 19, fontWeight: 700 }}>{engUser.name}</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', fontFamily: 'DM Mono' }}>{engUser.id}</div>
+                  {todayEnt ? (
+                    <div style={{ marginTop: 4, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <StatusPill status={todayEnt.status} small />
+                      {todayEnt.checkIn && <span style={{ fontSize: 11, fontFamily: 'DM Mono', color: '#6ee7b7' }}>in {todayEnt.checkIn}</span>}
+                      {todayEnt.checkOut && <span style={{ fontSize: 11, fontFamily: 'DM Mono', color: '#fcd34d' }}>out {todayEnt.checkOut}</span>}
+                      {todayLs && <span style={{ fontSize: 11, color: todayLs.color, fontWeight: 600 }}>{todayLs.label}</span>}
+                    </div>
+                  ) : (
+                    <div style={{ marginTop: 4, fontSize: 12, color: 'var(--text-muted)' }}>Not checked in today</div>
+                  )}
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button className="btn btn-secondary btn-sm" onClick={() => openNewLog(engUserId)}>+ Log Day</button>
+                <button className="btn btn-secondary btn-sm" onClick={() => { setFilterUser(engUserId); setTab('log'); }}>📋 Full Log</button>
+              </div>
+            </div>
+
+            {/* Attention banners */}
+            {lateUnconfirmed.length > 0 && (
+              <div style={{ marginBottom: 12, padding: '10px 14px', borderRadius: 10,
+                background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.35)',
+                display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span style={{ fontSize: 18 }}>📩</span>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: '#fcd34d', marginBottom: 4 }}>
+                    {lateUnconfirmed.length} notification{lateUnconfirmed.length !== 1 ? 's' : ''} awaiting your confirmation
+                  </div>
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                    {lateUnconfirmed.map(e => (
+                      <div key={e.id} style={{ display: 'flex', alignItems: 'center', gap: 8,
+                        background: 'rgba(245,158,11,0.12)', border: '1px solid rgba(245,158,11,0.3)',
+                        borderRadius: 8, padding: '4px 10px', fontSize: 12 }}>
+                        <span style={{ fontFamily: 'DM Mono', color: 'var(--text-muted)' }}>{fmtDate(e.date)}</span>
+                        <span style={{ color: 'var(--text-secondary)', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.lateReason}</span>
+                        <button className="btn btn-success btn-sm" onClick={() => confirmNotificationReceipt(engUserId, e.id)}>✓ Confirm</button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+            {missReason.length > 0 && (
+              <div style={{ marginBottom: 12, padding: '10px 14px', borderRadius: 10,
+                background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.3)',
+                fontSize: 13, color: '#fca5a5' }}>
+                ⚠ {missReason.length} late arrival{missReason.length !== 1 ? 's' : ''} with no reason logged — action required
+              </div>
+            )}
+            {pAlert?.hasPattern && (
+              <div style={{ marginBottom: 12, padding: '10px 14px', borderRadius: 10,
+                background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.3)',
+                fontSize: 13, color: '#fca5a5' }}>
+                🚨 Late pattern flag: {pAlert.maxStreak >= STREAK_THRESHOLD
+                  ? `${pAlert.maxStreak} consecutive late arrivals`
+                  : `${pAlert.lateCount} late arrivals this month`}
+              </div>
+            )}
+
+            {/* Sub-tabs */}
+            <div style={{ display: 'flex', gap: 4, marginBottom: 16, flexWrap: 'wrap' }}>
+              {engSubTabs.map(t => (
+                <button key={t.id} className={`btn btn-sm ${engTab === t.id ? 'btn-primary' : 'btn-secondary'}`}
+                  onClick={() => setEngTab(t.id)}>{t.label}</button>
+              ))}
+            </div>
+
+            {/* ── Overview sub-tab ── */}
+            {engTab === 'overview' && (
+              <div>
+                {/* KPI row */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 10, marginBottom: 20 }}>
+                  {[
+                    ['RTO (30d)',     `${eStats30.rtoCompliance}%`,  eStats30.rtoCompliance >= 80 ? '#22c55e' : eStats30.rtoCompliance < 60 ? '#ef4444' : '#f59e0b'],
+                    ['Office (30d)',  eStats30.officeDays,            '#10b981'],
+                    ['WFH (30d)',     eStats30.wfhDays,               '#60a5fa'],
+                    ['Late (30d)',    eStats30.lateArrivals.length,   eStats30.lateArrivals.length > 0 ? '#ef4444' : '#22c55e'],
+                    ['RTO (90d)',     `${eStats90.rtoCompliance}%`,  eStats90.rtoCompliance >= 80 ? '#22c55e' : eStats90.rtoCompliance < 60 ? '#ef4444' : '#f59e0b'],
+                    ['Late streak',  eStats30.maxLateStreak,          eStats30.maxLateStreak >= STREAK_THRESHOLD ? '#ef4444' : '#22c55e'],
+                  ].map(([label, val, color]) => (
+                    <div key={label} style={{ padding: '14px 16px', borderRadius: 12, background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+                      <div style={{ fontSize: 22, fontWeight: 700, color, fontFamily: 'DM Mono' }}>{val}</div>
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{label}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* 4-week mini heat strip */}
+                <div style={{ marginBottom: 20 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 10 }}>
+                    Last 4 Weeks
+                  </div>
+                  <div style={{ overflowX: 'auto' }}>
+                    <table><thead><tr>
+                      {heatWeeks.slice(-4).map(ws =>
+                        getAllWeekdays(ws).map((d, di) => (
+                          <th key={d} style={{ padding: '1px 1px', minWidth: 22, fontSize: 9, color: 'var(--text-muted)', textAlign: 'center' }}>
+                            {di === 0 ? new Date(d + 'T12:00:00').toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) : ''}
+                          </th>
+                        ))
+                      )}
+                    </tr></thead>
+                    <tbody><tr>
+                      {heatWeeks.slice(-4).map(ws =>
+                        getAllWeekdays(ws).map(d => (
+                          <td key={d} style={{ padding: '1px 1px' }}>
+                            <HeatCell
+                              entry={eEntries.find(e => e.date === d)}
+                              bankHol={isBankHoliday(d, bh)}
+                              holiday={isOnHoliday(d, engUserId, holidays)}
+                              isToday={d === today}
+                              isFuture={d > today}
+                              lateCtx={{ userId: engUserId, date: d, rota }}
+                            />
+                          </td>
+                        ))
+                      )}
+                    </tr></tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* Late reasons needing attention */}
+                {lateUnconfirmed.length > 0 && (
+                  <div>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 10 }}>
+                      Pending Your Confirmation
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      {lateUnconfirmed.map(e => (
+                        <div key={e.id} style={{ padding: '10px 14px', borderRadius: 10,
+                          background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.25)',
+                          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+                          <div>
+                            <div style={{ fontSize: 12, fontWeight: 600, color: '#fcd34d', marginBottom: 3 }}>
+                              {fmtDate(e.date)} — {e.checkIn || '?'}
+                            </div>
+                            <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{e.lateReason}</div>
+                          </div>
+                          <button className="btn btn-success btn-sm" onClick={() => confirmNotificationReceipt(engUserId, e.id)}>
+                            ✓ Confirm received
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ── History sub-tab ── */}
+            {engTab === 'history' && (
+              <div className="card" style={{ overflowX: 'auto' }}>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Date</th><th>Status</th><th>In</th><th>Out</th><th>Duration</th>
+                      <th>Late</th><th>Late Reason</th><th>Confirmed</th><th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[...eEntries].sort((a, b) => (b.date || '').localeCompare(a.date || '')).map(e => {
+                      const ls = e.checkIn ? computeLateStatus(e.checkIn, { userId: engUserId, date: e.date, rota }) : null;
+                      return (
+                        <tr key={e.id}>
+                          <td style={{ fontFamily: 'DM Mono', fontSize: 11 }}>{fmtDate(e.date)}</td>
+                          <td><StatusPill status={e.status} small /></td>
+                          <td style={{ fontFamily: 'DM Mono', color: '#6ee7b7', fontSize: 12 }}>{e.checkIn || '—'}</td>
+                          <td style={{ fontFamily: 'DM Mono', color: '#fcd34d', fontSize: 12 }}>{e.checkOut || '—'}</td>
+                          <td style={{ fontFamily: 'DM Mono', color: '#a78bfa', fontSize: 12 }}>{fmtHours(e.checkIn, e.checkOut) || '—'}</td>
+                          <td>
+                            {ls?.status === 'late'
+                              ? <span style={{ color: ls.color, fontFamily: 'DM Mono', fontSize: 11, fontWeight: 600 }}>{ls.label}</span>
+                              : ls ? <span style={{ color: '#22c55e', fontSize: 11 }}>✓</span>
+                              : <span style={{ color: 'var(--text-muted)' }}>—</span>}
+                          </td>
+                          <td style={{ maxWidth: 180 }}>
+                            {e.lateReason ? (
+                              <div style={{ fontSize: 11 }}>
+                                <div style={{ color: 'var(--text-secondary)', marginBottom: 2 }}>{e.lateReason}</div>
+                                {e.lateNotifiedManager ? (
+                                  e.managerConfirmedNotification
+                                    ? <span style={{ color: '#34d399', fontSize: 10, fontWeight: 600 }}>✓ Confirmed</span>
+                                    : <button className="btn btn-success btn-sm" onClick={() => confirmNotificationReceipt(engUserId, e.id)}>✓ Confirm</button>
+                                ) : <span style={{ color: '#f59e0b', fontSize: 10 }}>⚠ Not notified</span>}
+                              </div>
+                            ) : ls?.status === 'late'
+                              ? <span style={{ fontSize: 10, color: '#f59e0b' }}>⚠ No reason</span>
+                              : <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>—</span>}
+                          </td>
+                          <td>
+                            {e.confirmedByManager
+                              ? <Tag label="✓" type="green" />
+                              : <button className="btn btn-success btn-sm" onClick={() => confirmEntry(engUserId, e.id)}>✓</button>}
+                          </td>
+                          <td>
+                            <div style={{ display: 'flex', gap: 4 }}>
+                              <button className="btn btn-secondary btn-sm" onClick={() => openEditEntry(engUserId, e)}>✏</button>
+                              <button className="btn btn-danger btn-sm" onClick={() => deleteEntry(engUserId, e.id)}>🗑</button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {eEntries.length === 0 && (
+                      <tr><td colSpan={9} style={{ textAlign: 'center', padding: 24, color: 'var(--text-muted)' }}>No entries logged yet.</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {/* ── Late sub-tab ── */}
+            {engTab === 'late' && (
+              <div>
+                {eStats30.lateArrivals.length === 0 ? (
+                  <div className="card" style={{ textAlign: 'center', padding: 48 }}>
+                    <div style={{ fontSize: 36, marginBottom: 10 }}>✅</div>
+                    <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 6 }}>No late arrivals in last 30 days</div>
+                    <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>This engineer is arriving on time</div>
+                  </div>
+                ) : (
+                  <div>
+                    <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}>
+                      {[
+                        ['Late arrivals (30d)', eStats30.lateArrivals.length, '#ef4444'],
+                        ['Longest streak', eStats30.maxLateStreak, eStats30.maxLateStreak >= STREAK_THRESHOLD ? '#ef4444' : '#f59e0b'],
+                        ['Unconfirmed notifs', lateUnconfirmed.length, lateUnconfirmed.length > 0 ? '#f59e0b' : '#22c55e'],
+                        ['Missing reasons', missReason.length, missReason.length > 0 ? '#ef4444' : '#22c55e'],
+                      ].map(([label, val, color]) => (
+                        <div key={label} style={{ flex: '1 1 140px', padding: '14px 16px', borderRadius: 12, background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+                          <div style={{ fontSize: 22, fontWeight: 700, color, fontFamily: 'DM Mono' }}>{val}</div>
+                          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{label}</div>
+                        </div>
+                      ))}
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      {eStats30.lateArrivals.sort((a, b) => (b.date || '').localeCompare(a.date || '')).map(l => {
+                        const e = eEntries.find(e => e.date === l.date);
+                        return (
+                          <div key={l.date} style={{ padding: '12px 16px', borderRadius: 10, background: 'var(--bg-card)',
+                            border: '1px solid var(--border)', borderLeft: `3px solid ${e?.lateReason ? (e.managerConfirmedNotification ? '#22c55e' : '#f59e0b') : '#ef4444'}` }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 10 }}>
+                              <div>
+                                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>
+                                  {fmtDate(l.date)}
+                                  <span style={{ fontFamily: 'DM Mono', fontSize: 12, color: '#ef4444', marginLeft: 10 }}>
+                                    {e?.checkIn || '?'} — {computeLateStatus(e?.checkIn, { userId: engUserId, date: l.date, rota })?.label || ''}
+                                  </span>
+                                </div>
+                                {e?.lateReason ? (
+                                  <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 4 }}>
+                                    📝 {e.lateReason}
+                                  </div>
+                                ) : (
+                                  <div style={{ fontSize: 12, color: '#ef4444', marginBottom: 4 }}>⚠ No reason provided</div>
+                                )}
+                                {e?.lateNotifiedManager ? (
+                                  e.managerConfirmedNotification
+                                    ? <span style={{ fontSize: 11, color: '#34d399', fontWeight: 600 }}>✓ You confirmed receipt</span>
+                                    : <span style={{ fontSize: 11, color: '#fcd34d' }}>📩 Engineer notified you — awaiting confirmation</span>
+                                ) : (
+                                  <span style={{ fontSize: 11, color: '#94a3b8' }}>Engineer did not confirm they notified you</span>
+                                )}
+                              </div>
+                              {e?.lateNotifiedManager && !e.managerConfirmedNotification && (
+                                <button className="btn btn-success btn-sm" onClick={() => confirmNotificationReceipt(engUserId, e.id)}>
+                                  ✓ Confirm receipt
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ── On-call sub-tab ── */}
+            {engTab === 'oncall' && (() => {
+              const last8Weeks = Array.from({ length: 56 }, (_, i) => addDays(today, -55 + i));
+              const onCallDates = last8Weeks.filter(d => ONCALL_OVERNIGHT_SHIFTS.includes((rota[engUserId] || {})[d] || 'off'));
+              const onCallCount = onCallDates.length;
+              return (
+                <div>
+                  <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}>
+                    {[
+                      ['On-call shifts (8w)', onCallCount, '#818cf8'],
+                      ['With grace benefit', onCallDates.filter(d => {
+                        const nextDay = addDays(d, 1);
+                        const entry   = eEntries.find(e => e.date === nextDay);
+                        return entry && computeLateStatus(entry.checkIn, { userId: engUserId, date: nextDay, rota })?.graceLabel;
+                      }).length, '#a78bfa'],
+                    ].map(([label, val, color]) => (
+                      <div key={label} style={{ flex: '1 1 160px', padding: '14px 16px', borderRadius: 12, background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+                        <div style={{ fontSize: 22, fontWeight: 700, color, fontFamily: 'DM Mono' }}>{val}</div>
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{label}</div>
+                      </div>
+                    ))}
+                    <div style={{ flex: '1 1 160px', padding: '14px 16px', borderRadius: 12, background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+                      <div style={{ fontSize: 14, fontWeight: 700, color: '#818cf8', fontFamily: 'DM Mono' }}>
+                        {engUserId === HEIDI_ONCALL_USER_ID ? '11:10' : '10:30'}
+                      </div>
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>Grace threshold (after on-call)</div>
+                    </div>
+                  </div>
+                  {onCallDates.length === 0 ? (
+                    <div className="card" style={{ textAlign: 'center', padding: 36, color: 'var(--text-muted)', fontSize: 13 }}>
+                      No on-call shifts found in the last 8 weeks
+                    </div>
+                  ) : (
+                    <div className="card" style={{ overflowX: 'auto' }}>
+                      <table>
+                        <thead>
+                          <tr><th>On-Call Date</th><th>Shift</th><th>Next Day Check-in</th><th>Grace applied?</th></tr>
+                        </thead>
+                        <tbody>
+                          {onCallDates.sort((a, b) => b.localeCompare(a)).map(d => {
+                            const shift   = (rota[engUserId] || {})[d] || 'off';
+                            const nextDay = addDays(d, 1);
+                            const nEntry  = eEntries.find(e => e.date === nextDay);
+                            const nLs     = nEntry?.checkIn ? computeLateStatus(nEntry.checkIn, { userId: engUserId, date: nextDay, rota }) : null;
+                            return (
+                              <tr key={d}>
+                                <td style={{ fontFamily: 'DM Mono', fontSize: 12 }}>{fmtDate(d)}</td>
+                                <td><span style={{ fontSize: 12, color: '#818cf8', fontWeight: 600 }}>🌙 {shift}</span></td>
+                                <td style={{ fontFamily: 'DM Mono', color: '#6ee7b7', fontSize: 12 }}>
+                                  {nEntry?.checkIn || <span style={{ color: 'var(--text-muted)' }}>—</span>}
+                                </td>
+                                <td>
+                                  {nLs?.graceLabel
+                                    ? <span style={{ fontSize: 11, color: '#a78bfa', fontWeight: 600 }}>✓ grace to {nLs.graceLabel}</span>
+                                    : nEntry?.checkIn
+                                    ? <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>On time, no grace needed</span>
+                                    : <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>—</span>}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+          </div>
+        );
+      })()}
 
       {/* ── Log modal ── */}
       {logModal && renderLogModal()}
