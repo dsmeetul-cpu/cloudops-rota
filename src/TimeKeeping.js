@@ -16,7 +16,7 @@ const STREAK_THRESHOLD  = 3;  // consecutive lates = pattern
 // extra grace before they're counted late the next morning.
 // HEIDI_ONCALL_USER_ID: Heidi commutes from Northampton — 130 min grace (→11:10).
 // All other on-call engineers: 90 min grace (→10:30).
-const HEIDI_ONCALL_USER_ID = 'HCA'; // ← update if Heidi's trigram differs
+const HEIDI_ONCALL_USER_ID = 'HHL4'; // Heidi HILL — confirmed from screenshot
 const DEFAULT_ONCALL_GRACE_MINS = 90;    // 09:00 + 90m = 10:30
 const HEIDI_ONCALL_GRACE_MINS   = 130;   // 09:00 + 130m = 11:10
 // Rota shift values that count as "on-call overnight" for the previous day
@@ -1660,7 +1660,9 @@ export default function TimeKeeping({
               {amCheckedOut && (
                 <button className="btn btn-secondary btn-sm" onClick={() => openEditEntry(currentUser, myTodayEntry)}>✏ Edit Today</button>
               )}
-            </div>
+              </div>
+              );
+            })()}
           </div>
         </div>
 
@@ -2092,177 +2094,190 @@ export default function TimeKeeping({
         </div>
       )}
 
-      {/* ══ TODAY ══ */}
+      {/* ══ TODAY — manager table view ══ */}
       {tab === 'today' && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 14 }}>
-          {filteredToday.map(({ user: u, entry }) => {
-            const checkedIn   = entry && entry.checkIn && !entry.checkOut;
-            const checkedOut  = entry && entry.checkIn && entry.checkOut;
-            const s           = entry ? statusCfg(entry.status, extraStatuses) : null;
-            const hrs         = entry ? fmtHours(entry.checkIn, entry.checkOut) : null;
-            const todayLs     = entry?.checkIn ? computeLateStatus(entry.checkIn, { userId: u.id, date: today, rota }) : null;
-            const prevDate    = addDays(today, -1);
-            const prevShift   = (rota[u.id] || {})[prevDate] || 'off';
-            const wasOnCall   = ONCALL_OVERNIGHT_SHIFTS.includes(prevShift);
-            const isHolidayToday = isOnHoliday(today, u.id, holidays) || isBankHoliday(today, bh);
-            const isExpectedIn = !isHolidayToday && isWeekday(today);
+        <div className="card" style={{ overflowX: 'auto', padding: 0 }}>
+          <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 13 }}>
+            <thead>
+              <tr style={{ background: 'rgba(255,255,255,0.03)', borderBottom: '2px solid var(--border)' }}>
+                <th style={{ padding: '11px 16px', textAlign: 'left', fontWeight: 700, fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.7 }}>Engineer</th>
+                <th style={{ padding: '11px 10px', textAlign: 'left', fontWeight: 700, fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.7 }}>Status</th>
+                <th style={{ padding: '11px 10px', textAlign: 'center', fontWeight: 700, fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.7 }}>In</th>
+                <th style={{ padding: '11px 10px', textAlign: 'center', fontWeight: 700, fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.7 }}>Out</th>
+                <th style={{ padding: '11px 10px', textAlign: 'center', fontWeight: 700, fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.7 }}>Total</th>
+                <th style={{ padding: '11px 10px', textAlign: 'left', fontWeight: 700, fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.7 }}>Punctuality</th>
+                <th style={{ padding: '11px 10px', textAlign: 'left', fontWeight: 700, fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.7 }}>Late Reason</th>
+                <th style={{ padding: '11px 10px', textAlign: 'center', fontWeight: 700, fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.7 }}>Device</th>
+                <th style={{ padding: '11px 16px', textAlign: 'right', fontWeight: 700, fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.7 }}>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredToday.map(({ user: u, entry }, rowIdx) => {
+                const checkedIn       = entry && entry.checkIn && !entry.checkOut;
+                const checkedOut      = entry && entry.checkIn && entry.checkOut;
+                const hrs             = entry ? fmtHours(entry.checkIn, entry.checkOut) : null;
+                const todayLs         = entry?.checkIn ? computeLateStatus(entry.checkIn, { userId: u.id, date: today, rota }) : null;
+                const prevDate        = addDays(today, -1);
+                const prevShift       = (rota[u.id] || {})[prevDate] || 'off';
+                const wasOnCall       = ONCALL_OVERNIGHT_SHIFTS.includes(prevShift);
+                const isHolidayToday  = isOnHoliday(today, u.id, holidays) || isBankHoliday(today, bh);
+                const isToilToday     = (toil || []).some(t => (t.userId === u.id || t.uid === u.id) && t.date === today);
+                const isDayOff        = isHolidayToday || isToilToday;
+                const isExpectedIn    = !isDayOff && isWeekday(today);
 
-            // Card left-border colour logic
-            const cardAccent = checkedOut   ? '#10b981'
-                             : checkedIn    ? '#f59e0b'
-                             : isExpectedIn ? '#ef4444'
-                             : '#475569';
+                const rowBg = rowIdx % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.015)';
+                const leftAccent = checkedOut   ? '#10b981'
+                                 : checkedIn    ? '#f59e0b'
+                                 : isDayOff     ? '#6366f1'
+                                 : isExpectedIn ? '#ef4444'
+                                 : '#475569';
 
-            return (
-              <div key={u.id} style={{
-                background: 'var(--bg-card)', borderRadius: 14, overflow: 'hidden',
-                border: '1px solid var(--border)', borderLeft: `4px solid ${cardAccent}`,
-                display: 'flex', flexDirection: 'column', minHeight: 200,
-              }}>
-                {/* Card header */}
-                <div style={{
-                  padding: '14px 16px 12px', display: 'flex',
-                  justifyContent: 'space-between', alignItems: 'center',
-                  borderBottom: '1px solid var(--border)',
-                  background: 'rgba(255,255,255,0.02)',
-                }}>
-                  <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-                    <Avatar user={u} size={38} />
-                    <div>
-                      <div style={{ fontSize: 14, fontWeight: 700 }}>{u.name}</div>
-                      <div style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'DM Mono' }}>
-                        {u.id}
-                        {wasOnCall && <span style={{ marginLeft: 6, color: '#a78bfa' }}>🌙 on-call grace</span>}
-                      </div>
-                    </div>
-                  </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
-                    {entry
-                      ? <StatusPill status={entry.status} extraStatuses={extraStatuses} small />
-                      : <span style={{ fontSize: 11, color: isExpectedIn ? '#f59e0b' : 'var(--text-muted)', fontWeight: 600 }}>
-                          {isExpectedIn ? '⚠ Not logged' : isHolidayToday ? '🏖 Holiday' : '—'}
-                        </span>}
-                    {entry?.confirmedByManager &&
-                      <span style={{ fontSize: 10, color: '#34d399', fontWeight: 600 }}>✓ Confirmed</span>}
-                  </div>
-                </div>
+                // Late reason status indicator
+                const lateReasonStatus = !entry?.lateReason ? null
+                  : entry.lateReasonApproved === true  ? 'approved'
+                  : entry.lateReasonApproved === false ? 'rejected'
+                  : 'pending';
 
-                {/* Card body */}
-                <div style={{ padding: '12px 16px', flex: 1 }}>
-                  {entry ? (
-                    <>
-                      {/* Time row */}
-                      <div style={{ display: 'flex', gap: 20, marginBottom: 10 }}>
+                return (
+                  <tr key={u.id} style={{
+                    background: rowBg,
+                    borderLeft: `3px solid ${leftAccent}`,
+                    borderBottom: '1px solid var(--border)',
+                    transition: 'background 0.1s',
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.background = 'rgba(99,102,241,0.06)'}
+                  onMouseLeave={e => e.currentTarget.style.background = rowBg}
+                  >
+                    {/* Engineer */}
+                    <td style={{ padding: '12px 16px', whiteSpace: 'nowrap' }}>
+                      <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                        <Avatar user={u} size={34} />
                         <div>
-                          <div style={{ fontSize: 9, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.5 }}>IN</div>
-                          <div style={{ fontFamily: 'DM Mono', fontSize: 20, fontWeight: 800, color: '#6ee7b7', lineHeight: 1.1 }}>
-                            {entry.checkIn || '—'}
+                          <div style={{ fontWeight: 700, fontSize: 13 }}>{u.name}</div>
+                          <div style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'DM Mono' }}>
+                            {u.id}
+                            {wasOnCall && <span style={{ marginLeft: 5, color: '#a78bfa', fontSize: 10 }}>🌙 grace</span>}
                           </div>
                         </div>
-                        <div>
-                          <div style={{ fontSize: 9, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.5 }}>OUT</div>
-                          <div style={{ fontFamily: 'DM Mono', fontSize: 20, fontWeight: 800, color: entry.checkOut ? '#fcd34d' : 'var(--text-muted)', lineHeight: 1.1 }}>
-                            {entry.checkOut || (checkedIn ? '…' : '—')}
-                          </div>
-                        </div>
-                        {hrs && (
-                          <div>
-                            <div style={{ fontSize: 9, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.5 }}>TOTAL</div>
-                            <div style={{ fontFamily: 'DM Mono', fontSize: 20, fontWeight: 800, color: '#a78bfa', lineHeight: 1.1 }}>{hrs}</div>
-                          </div>
-                        )}
                       </div>
+                    </td>
 
-                      {/* Late badge */}
-                      {todayLs && (
-                        <div style={{ marginBottom: 8 }}>
-                          <span style={{
-                            fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 20,
-                            background: todayLs.status === 'late' ? 'rgba(239,68,68,0.18)' : 'rgba(34,197,94,0.15)',
-                            color: todayLs.status === 'late' ? '#fca5a5' : '#86efac',
-                            border: `1px solid ${todayLs.status === 'late' ? 'rgba(239,68,68,0.35)' : 'rgba(34,197,94,0.3)'}`,
-                          }}>
-                            {todayLs.status === 'late' ? '⏰ ' : '✓ '}{todayLs.label}
-                          </span>
-                        </div>
+                    {/* Status */}
+                    <td style={{ padding: '12px 10px' }}>
+                      {isDayOff ? (
+                        <span style={{ fontSize: 11, color: '#818cf8', fontWeight: 600 }}>
+                          {isHolidayToday ? '🏖 Holiday' : '🔄 TOIL'}
+                        </span>
+                      ) : entry ? (
+                        <StatusPill status={entry.status} extraStatuses={extraStatuses} small />
+                      ) : (
+                        <span style={{ fontSize: 11, color: isExpectedIn ? '#f59e0b' : 'var(--text-muted)', fontWeight: 600 }}>
+                          {isExpectedIn ? '⚠ Not logged' : '—'}
+                        </span>
                       )}
+                    </td>
 
-                      {/* Late reason callout */}
-                      {entry.lateReason && (
-                        <div style={{ marginBottom: 8, padding: '8px 11px', borderRadius: 8, fontSize: 11,
-                          background: entry.lateReasonApproved === false ? 'rgba(239,68,68,0.1)' : 'rgba(245,158,11,0.1)',
-                          border: `1px solid ${entry.lateReasonApproved === false ? 'rgba(239,68,68,0.3)' : 'rgba(245,158,11,0.3)'}` }}>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
-                            <div style={{ flex: 1 }}>
-                              <div style={{ color: '#fcd34d', fontWeight: 700, marginBottom: 3 }}>⏰ Late Reason</div>
-                              <div style={{ color: 'var(--text-secondary)' }}>{entry.lateReason}</div>
-                              <div style={{ marginTop: 4, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                                {entry.lateNotifiedManager ? (
-                                  entry.managerConfirmedNotification
-                                    ? <span style={{ color: '#34d399', fontWeight: 600 }}>✓ Notified &amp; confirmed</span>
-                                    : <span style={{ color: '#f59e0b', fontWeight: 600 }}>📩 Awaiting confirmation</span>
-                                ) : <span style={{ color: '#94a3b8' }}>Did not confirm contact</span>}
-                                {entry.lateReasonApproved === true && <span style={{ color: '#34d399', fontWeight: 600 }}>✓ Reason approved</span>}
-                                {entry.lateReasonApproved === false && <span style={{ color: '#fca5a5', fontWeight: 600 }}>✗ Reason rejected</span>}
-                              </div>
-                            </div>
-                            <button className="btn btn-secondary btn-sm" style={{ whiteSpace: 'nowrap', flexShrink: 0 }}
-                              onClick={() => openReviewEntry(u.id, entry, u)}>🔍 Review</button>
+                    {/* Check In */}
+                    <td style={{ padding: '12px 10px', textAlign: 'center' }}>
+                      <span style={{ fontFamily: 'DM Mono', fontSize: 14, fontWeight: 700,
+                        color: entry?.checkIn ? '#6ee7b7' : 'var(--text-muted)' }}>
+                        {entry?.checkIn || '—'}
+                      </span>
+                    </td>
+
+                    {/* Check Out */}
+                    <td style={{ padding: '12px 10px', textAlign: 'center' }}>
+                      <span style={{ fontFamily: 'DM Mono', fontSize: 14, fontWeight: 700,
+                        color: entry?.checkOut ? '#fcd34d' : checkedIn ? '#f59e0b' : 'var(--text-muted)' }}>
+                        {entry?.checkOut || (checkedIn ? '…' : '—')}
+                      </span>
+                    </td>
+
+                    {/* Total hours */}
+                    <td style={{ padding: '12px 10px', textAlign: 'center' }}>
+                      <span style={{ fontFamily: 'DM Mono', fontSize: 13, color: hrs ? '#a78bfa' : 'var(--text-muted)' }}>
+                        {hrs || '—'}
+                      </span>
+                    </td>
+
+                    {/* Punctuality */}
+                    <td style={{ padding: '12px 10px', minWidth: 140 }}>
+                      {todayLs ? (
+                        <span style={{
+                          display: 'inline-flex', alignItems: 'center', gap: 4,
+                          fontSize: 11, fontWeight: 700, padding: '3px 9px', borderRadius: 20,
+                          background: todayLs.status === 'late' ? 'rgba(239,68,68,0.15)' : 'rgba(34,197,94,0.12)',
+                          color: todayLs.status === 'late' ? '#fca5a5' : '#86efac',
+                          border: `1px solid ${todayLs.status === 'late' ? 'rgba(239,68,68,0.35)' : 'rgba(34,197,94,0.3)'}`,
+                        }}>
+                          {todayLs.status === 'late' ? '⏰' : '✓'} {todayLs.label}
+                        </span>
+                      ) : <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>}
+                      {entry?.confirmedByManager && (
+                        <div style={{ marginTop: 3, fontSize: 10, color: '#34d399' }}>✓ Confirmed</div>
+                      )}
+                    </td>
+
+                    {/* Late reason */}
+                    <td style={{ padding: '12px 10px', maxWidth: 220 }}>
+                      {entry?.lateReason ? (
+                        <div style={{ fontSize: 11 }}>
+                          <div style={{ color: 'var(--text-secondary)', marginBottom: 4, lineHeight: 1.4,
+                            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 200 }}
+                            title={entry.lateReason}>
+                            {entry.lateReason}
+                          </div>
+                          <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', alignItems: 'center' }}>
+                            {/* Notification status */}
+                            {entry.lateNotifiedManager ? (
+                              entry.managerConfirmedNotification === true
+                                ? <span style={{ fontSize: 10, color: '#34d399', fontWeight: 600 }}>✓ Contact confirmed</span>
+                                : entry.managerConfirmedNotification === false
+                                ? <span style={{ fontSize: 10, color: '#ef4444', fontWeight: 600 }}>✗ No contact</span>
+                                : <span style={{ fontSize: 10, color: '#f59e0b', fontWeight: 600 }}>📩 Awaiting</span>
+                            ) : <span style={{ fontSize: 10, color: '#94a3b8' }}>Did not confirm</span>}
+                            {/* Reason decision */}
+                            {lateReasonStatus === 'approved' && <span style={{ fontSize: 10, color: '#34d399', fontWeight: 600 }}>✓ Approved</span>}
+                            {lateReasonStatus === 'rejected' && <span style={{ fontSize: 10, color: '#fca5a5', fontWeight: 600 }}>✗ Rejected</span>}
+                            {lateReasonStatus === 'pending'  && <span style={{ fontSize: 10, color: '#f59e0b', fontWeight: 600 }}>⏳ Pending</span>}
                           </div>
                         </div>
-                      )}
-                      {todayLs?.status === 'late' && !entry.lateReason && (
-                        <div style={{ marginBottom: 8, fontSize: 11, color: '#f59e0b', fontWeight: 600 }}>
-                          ⚠ Late — no reason provided yet
-                        </div>
-                      )}
+                      ) : todayLs?.status === 'late' ? (
+                        <span style={{ fontSize: 11, color: '#f59e0b', fontWeight: 600 }}>⚠ No reason</span>
+                      ) : <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>—</span>}
+                    </td>
 
-                      {/* Notes */}
-                      {entry.notes && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>📝 {entry.notes}</div>}
+                    {/* Device */}
+                    <td style={{ padding: '12px 10px', textAlign: 'center' }}>
+                      {entry?.device
+                        ? <DevicePill device={entry.device} small />
+                        : <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>—</span>}
+                    </td>
 
-                      {/* Device */}
-                      {(entry.device || entry.checkOutDevice) && (
-                        <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginBottom: 4 }}>
-                          {entry.device && <div style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 11, color: 'var(--text-muted)' }}>
-                            <span style={{ fontSize: 10 }}>In</span><DevicePill device={entry.device} small />
-                          </div>}
-                          {entry.checkOutDevice && <div style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 11, color: 'var(--text-muted)' }}>
-                            <span style={{ fontSize: 10 }}>Out</span><DevicePill device={entry.checkOutDevice} small />
-                          </div>}
-                        </div>
-                      )}
-                    </>
-                  ) : (
-                    <div style={{ color: 'var(--text-muted)', fontSize: 12, fontStyle: 'italic' }}>
-                      {isHolidayToday ? '🏖 On holiday today' : 'No attendance logged for today.'}
-                    </div>
-                  )}
-                </div>
-
-                {/* Card footer — action strip */}
-                <div style={{
-                  padding: '10px 16px', borderTop: '1px solid var(--border)',
-                  display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap',
-                  background: 'rgba(255,255,255,0.015)',
-                }}>
-                  {entry ? (
-                    <>
-                      {!entry.confirmedByManager
-                        ? <button className="btn btn-success btn-sm" onClick={() => confirmEntry(u.id, entry.id)}>✓ Confirm</button>
-                        : <button className="btn btn-secondary btn-sm" onClick={() => unconfirmEntry(u.id, entry.id)} title="Click to un-confirm">✓ Confirmed</button>}
-                      <button className="btn btn-secondary btn-sm" onClick={() => openEditEntry(u.id, entry)}>✏ Edit</button>
-                      {entry.lateReason && (
-                        <button className="btn btn-secondary btn-sm" onClick={() => openReviewEntry(u.id, entry, u)}>🔍 Review</button>
-                      )}
-                      <button className="btn btn-danger btn-sm" style={{ marginLeft: 'auto' }} onClick={() => deleteEntry(u.id, entry.id)}>🗑</button>
-                    </>
-                  ) : (
-                    <button className="btn btn-secondary btn-sm" onClick={() => openNewLog(u.id)}>+ Log for {u.name.split(' ')[0]}</button>
-                  )}
-                </div>
-              </div>
-            );
-          })}
+                    {/* Actions */}
+                    <td style={{ padding: '12px 16px', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                      <div style={{ display: 'inline-flex', gap: 5, alignItems: 'center' }}>
+                        {entry ? (
+                          <>
+                            {!entry.confirmedByManager
+                              ? <button className="btn btn-success btn-sm" onClick={() => confirmEntry(u.id, entry.id)} title="Confirm entry">✓</button>
+                              : <button className="btn btn-secondary btn-sm" onClick={() => unconfirmEntry(u.id, entry.id)} title="Un-confirm" style={{ color: '#34d399' }}>✓</button>}
+                            {(entry.lateReason || todayLs?.status === 'late') && (
+                              <button className="btn btn-secondary btn-sm" onClick={() => openReviewEntry(u.id, entry, u)} title="Review late entry">🔍</button>
+                            )}
+                            <button className="btn btn-secondary btn-sm" onClick={() => openEditEntry(u.id, entry)} title="Edit">✏</button>
+                            <button className="btn btn-danger btn-sm" onClick={() => deleteEntry(u.id, entry.id)} title="Delete">🗑</button>
+                          </>
+                        ) : !isDayOff ? (
+                          <button className="btn btn-secondary btn-sm" onClick={() => openNewLog(u.id)}>+ Log</button>
+                        ) : null}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
       )}
 
@@ -3387,6 +3402,133 @@ export default function TimeKeeping({
             >
               Submit &amp; Check In
             </button>
+          </div>
+        </Modal>
+      )}
+
+      {/* ── Review Late Entry modal (manager only) ── */}
+      {reviewModal && reviewEntry && (
+        <Modal title={`🔍 Review Late Entry — ${reviewEntry.user.name}`} onClose={() => { setReviewModal(false); setReviewEntry(null); }} wide>
+          {/* Entry summary */}
+          <div style={{ marginBottom: 16, padding: '12px 16px', borderRadius: 10,
+            background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+            <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap', marginBottom: 10 }}>
+              <div>
+                <div style={{ fontSize: 9, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 2 }}>DATE</div>
+                <div style={{ fontFamily: 'DM Mono', fontSize: 15, fontWeight: 700 }}>{fmtDate(reviewEntry.entry.date)}</div>
+              </div>
+              <div>
+                <div style={{ fontSize: 9, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 2 }}>CHECK IN</div>
+                <div style={{ fontFamily: 'DM Mono', fontSize: 15, fontWeight: 700, color: '#6ee7b7' }}>{reviewEntry.entry.checkIn || '—'}</div>
+              </div>
+              {reviewEntry.entry.checkOut && (
+                <div>
+                  <div style={{ fontSize: 9, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 2 }}>CHECK OUT</div>
+                  <div style={{ fontFamily: 'DM Mono', fontSize: 15, fontWeight: 700, color: '#fcd34d' }}>{reviewEntry.entry.checkOut}</div>
+                </div>
+              )}
+              {(() => {
+                const ls = reviewEntry.entry.checkIn
+                  ? computeLateStatus(reviewEntry.entry.checkIn, { userId: reviewEntry.uid, date: reviewEntry.entry.date, rota }) : null;
+                return ls ? (
+                  <div>
+                    <div style={{ fontSize: 9, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 2 }}>LATE BY</div>
+                    <div style={{ fontFamily: 'DM Mono', fontSize: 15, fontWeight: 700, color: '#ef4444' }}>{ls.label}</div>
+                  </div>
+                ) : null;
+              })()}
+            </div>
+            {reviewEntry.entry.notes && (
+              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>📝 {reviewEntry.entry.notes}</div>
+            )}
+          </div>
+
+          {/* Reason provided by engineer */}
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8 }}>
+              Reason Given by Engineer
+            </div>
+            {reviewEntry.entry.lateReason ? (
+              <div style={{ padding: '12px 16px', borderRadius: 10, background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.25)', fontSize: 13 }}>
+                {reviewEntry.entry.lateReason}
+              </div>
+            ) : (
+              <div style={{ padding: '12px 16px', borderRadius: 10, background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', fontSize: 13, color: '#fca5a5' }}>
+                ⚠ No reason provided
+              </div>
+            )}
+          </div>
+
+          {/* Approve / Reject reason */}
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8 }}>
+              Reason Decision
+            </div>
+            <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+              {[
+                { val: true,  label: '✓ Accept reason',  active: '#22c55e', activeBg: 'rgba(34,197,94,0.15)',  activeBorder: 'rgba(34,197,94,0.4)' },
+                { val: false, label: '✗ Reject reason',  active: '#ef4444', activeBg: 'rgba(239,68,68,0.15)', activeBorder: 'rgba(239,68,68,0.4)' },
+                { val: null,  label: '— Pending',         active: '#94a3b8', activeBg: 'rgba(148,163,184,0.1)', activeBorder: 'rgba(148,163,184,0.3)' },
+              ].map(({ val, label, active, activeBg, activeBorder }) => {
+                const isChosen = reviewForm.approvedReason === val;
+                return (
+                  <button key={String(val)} onClick={() => setReviewForm(f => ({ ...f, approvedReason: val }))}
+                    style={{ flex: 1, padding: '10px 12px', borderRadius: 10, border: `2px solid ${isChosen ? activeBorder : 'var(--border)'}`,
+                      background: isChosen ? activeBg : 'transparent', color: isChosen ? active : 'var(--text-secondary)',
+                      fontWeight: 700, fontSize: 13, cursor: 'pointer', transition: 'all 0.15s' }}>
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+            {reviewForm.approvedReason === false && (
+              <FormGroup label="Rejection note (optional — shown to engineer)">
+                <textarea className="textarea" rows={2} placeholder="e.g. Please bring supporting documentation…"
+                  value={reviewForm.rejectedNote}
+                  onChange={e => setReviewForm(f => ({ ...f, rejectedNote: e.target.value }))} />
+              </FormGroup>
+            )}
+          </div>
+
+          {/* Notification confirmation */}
+          <div style={{ marginBottom: 20 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8 }}>
+              Did {reviewEntry.user.name.split(' ')[0]} contact you?
+            </div>
+            <div style={{ padding: '12px 14px', borderRadius: 10, background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border)', fontSize: 12, marginBottom: 10 }}>
+              Engineer stated: {reviewEntry.entry.lateNotifiedManager
+                ? <span style={{ color: '#34d399', fontWeight: 700 }}>✓ Yes, they confirmed contact</span>
+                : <span style={{ color: '#f59e0b', fontWeight: 700 }}>✗ Did not tick confirmation</span>}
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              {[
+                { val: true,  label: '✓ Yes, they contacted me',  active: '#22c55e', activeBg: 'rgba(34,197,94,0.12)',  activeBorder: 'rgba(34,197,94,0.4)' },
+                { val: false, label: '✗ They did NOT contact me', active: '#ef4444', activeBg: 'rgba(239,68,68,0.12)', activeBorder: 'rgba(239,68,68,0.4)' },
+                { val: null,  label: '— Not reviewed yet',         active: '#94a3b8', activeBg: 'rgba(148,163,184,0.1)', activeBorder: 'rgba(148,163,184,0.3)' },
+              ].map(({ val, label, active, activeBg, activeBorder }) => {
+                const isChosen = reviewForm.confirmedNotif === val;
+                return (
+                  <button key={String(val)} onClick={() => setReviewForm(f => ({ ...f, confirmedNotif: val }))}
+                    style={{ flex: 1, padding: '10px 12px', borderRadius: 10, border: `2px solid ${isChosen ? activeBorder : 'var(--border)'}`,
+                      background: isChosen ? activeBg : 'transparent', color: isChosen ? active : 'var(--text-secondary)',
+                      fontWeight: 700, fontSize: 12, cursor: 'pointer', transition: 'all 0.15s' }}>
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Manager private note */}
+          <FormGroup label="Your private note (not visible to engineer)">
+            <textarea className="textarea" rows={2} placeholder="Internal notes, actions taken…"
+              value={reviewForm.managerNote}
+              onChange={e => setReviewForm(f => ({ ...f, managerNote: e.target.value }))} />
+          </FormGroup>
+
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
+            <button className="btn btn-secondary" onClick={() => { setReviewModal(false); setReviewEntry(null); }}>Cancel</button>
+            <button className="btn btn-primary" onClick={saveReview}>Save Review</button>
           </div>
         </Modal>
       )}
