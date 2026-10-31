@@ -1614,7 +1614,7 @@ export default function TimeKeeping({
               const isToilToday = (toil || []).some(t =>
                 (t.userId === currentUser || t.uid === currentUser) && t.date === today
               );
-              const blockedReason = isHolToday ? '🏖 You're on holiday today'
+              const blockedReason = isHolToday ? "🏖 You're on holiday today"
                                   : isBHolToday ? '🏦 Bank holiday — no check-in needed'
                                   : isToilToday ? '🔄 TOIL day — no check-in needed'
                                   : null;
