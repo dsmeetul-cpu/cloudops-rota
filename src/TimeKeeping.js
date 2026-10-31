@@ -871,6 +871,7 @@ export default function TimeKeeping({
   setTimekeeping,
   driveToken,
   rota         = {},   // rota[userId][dateStr] — used for on-call grace period
+  toil         = [],   // TOIL entries — used to warn before logging on TOIL days
   extraStatuses    = [],   // manager-defined custom check-in types (persisted by parent)
   setExtraStatuses,        // setter passed from App.js (saves to Drive via payconfig or dedicated key)
 }) {
@@ -915,6 +916,11 @@ export default function TimeKeeping({
   const [lateReasonModal, setLateReasonModal] = useState(false);
   const [lateReasonForm,  setLateReasonForm]  = useState({ reason: '', notified: false });
   const [pendingLateEntry, setPendingLateEntry] = useState(null); // { uid, entry }
+
+  // ── Manager: review late entry modal ────────────────────────────────────────
+  const [reviewModal, setReviewModal] = useState(false);
+  const [reviewEntry, setReviewEntry] = useState(null); // { uid, entry, user }
+  const [reviewForm,  setReviewForm]  = useState({ approvedReason: null, rejectedNote: '', confirmedNotif: null, managerNote: '' });
 
   // ── Manager: add custom status type ───────────────────────────────────────
   const [showAddStatus, setShowAddStatus] = useState(false);
@@ -1313,6 +1319,17 @@ export default function TimeKeeping({
   }, [upsertEntry, userEntries]);
 
   const handleCheckIn = () => {
+    // ── Holiday / Bank Holiday / TOIL guard ─────────────────────────────────
+    const isHolToday  = isOnHoliday(today, currentUser, holidays);
+    const isBHolToday = isBankHoliday(today, bh);
+    const isToilToday = (toil || []).some(t =>
+      (t.userId === currentUser || t.uid === currentUser) && t.date === today
+    );
+    if (isHolToday || isBHolToday || isToilToday) {
+      const reason = isHolToday ? 'on holiday' : isBHolToday ? 'a bank holiday' : 'a TOIL day';
+      if (!window.confirm(`Today is ${reason}. Check in anyway?`)) return;
+    }
+
     const entry  = todayEntry(currentUser);
     const time   = londonTimeStr();   // fresh call — mutation, not display
     const device = detectDevice();
@@ -1342,6 +1359,19 @@ export default function TimeKeeping({
   const saveLogEntry = () => {
     if (!logForm.date || !logForm.checkIn) return;
     const uid = isManager ? (logForm.userId || currentUser) : currentUser;
+
+    // ── Holiday / Bank Holiday / TOIL guard ─────────────────────────────────
+    const isHol  = isOnHoliday(logForm.date, uid, holidays);
+    const isBHol = isBankHoliday(logForm.date, bh);
+    const isToilDay = (toil || []).some(t =>
+      (t.userId === uid || t.uid === uid) && t.date === logForm.date
+    );
+    if ((isHol || isBHol || isToilDay) && !editEntry) {
+      const u = (users || []).find(x => x.id === uid);
+      const reason = isHol ? 'holiday' : isBHol ? 'bank holiday' : 'TOIL day';
+      if (!window.confirm(`⚠ ${u?.name || uid} is on ${reason} on ${logForm.date}. Log anyway?`)) return;
+    }
+
     const id  = editEntry?.id || `ck-${uid}-${Date.now()}`;
     const entry = {
       id, date: logForm.date,
@@ -1384,6 +1414,32 @@ export default function TimeKeeping({
     setLogForm({ userId: uid || currentUser, date: today, checkIn: '', checkOut: '', status: 'office', notes: '' });
     setEditEntry(null);
     setLogModal(true);
+  };
+
+  const openReviewEntry = (uid, entry, user) => {
+    setReviewEntry({ uid, entry, user });
+    setReviewForm({
+      approvedReason: entry.lateReasonApproved ?? null,
+      rejectedNote:   entry.lateReasonRejectedNote || '',
+      confirmedNotif: entry.managerConfirmedNotification ?? null,
+      managerNote:    entry.managerNote || '',
+    });
+    setReviewModal(true);
+  };
+
+  const saveReview = () => {
+    if (!reviewEntry) return;
+    const { uid, entry } = reviewEntry;
+    upsertEntry(uid, {
+      ...entry,
+      lateReasonApproved:          reviewForm.approvedReason,
+      lateReasonRejectedNote:      reviewForm.rejectedNote,
+      managerConfirmedNotification: reviewForm.confirmedNotif ?? entry.managerConfirmedNotification,
+      managerNote:                 reviewForm.managerNote,
+    });
+    setReviewModal(false);
+    setReviewEntry(null);
+    setReviewForm({ approvedReason: null, rejectedNote: '', confirmedNotif: null, managerNote: '' });
   };
 
   const deleteEntry = (uid, entryId) => {
@@ -1552,8 +1608,24 @@ export default function TimeKeeping({
             </div>
 
             {/* Check-in / check-out buttons */}
-            <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-              {!amCheckedIn && !amCheckedOut && (
+            {(() => {
+              const isHolToday  = isOnHoliday(today, currentUser, holidays);
+              const isBHolToday = isBankHoliday(today, bh);
+              const isToilToday = (toil || []).some(t =>
+                (t.userId === currentUser || t.uid === currentUser) && t.date === today
+              );
+              const blockedReason = isHolToday ? '🏖 You're on holiday today'
+                                  : isBHolToday ? '🏦 Bank holiday — no check-in needed'
+                                  : isToilToday ? '🔄 TOIL day — no check-in needed'
+                                  : null;
+              return (
+              <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+              {blockedReason ? (
+                <div style={{ padding: '10px 16px', borderRadius: 10, fontSize: 13, fontWeight: 600, color: '#a78bfa',
+                  background: 'rgba(167,139,250,0.1)', border: '1px solid rgba(167,139,250,0.3)' }}>
+                  {blockedReason}
+                </div>
+              ) : !amCheckedIn && !amCheckedOut && (
                 <>
                   {/* ── FIX: status selector shown BEFORE first check-in so engineers
                       can choose WFH / Office / custom type without needing the log modal.
@@ -1892,46 +1964,91 @@ export default function TimeKeeping({
         }
       />
 
-      {/* Stat cards */}
-      <div className="grid-4 mb-16">
-        <StatCard label="Present Today"   value={presentToday}   sub="in office / hybrid" accent="#10b981" icon="✅" />
-        <StatCard label="WFH Today"       value={wfhToday}       sub="working remotely"   accent="#818cf8" icon="🏠" />
-        <StatCard label="Absent Today"    value={absentToday}    sub="unaccounted"        accent="#ef4444" icon="❌" />
-        <StatCard label="Pending Confirm" value={pendingConfirm} sub="awaiting review"    accent="#f59e0b" icon="⏳" />
+      {/* ── Enhanced Stat Cards ── */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 12, marginBottom: 20 }}>
+        {[
+          { label: 'Present Today',   value: presentToday,   sub: 'in office / hybrid', accent: '#10b981', icon: '✅' },
+          { label: 'WFH Today',       value: wfhToday,       sub: 'working remotely',   accent: '#818cf8', icon: '🏠' },
+          { label: 'Absent Today',    value: absentToday,    sub: 'unaccounted',         accent: '#ef4444', icon: '❌' },
+          { label: 'Pending Confirm', value: pendingConfirm, sub: 'awaiting review',     accent: '#f59e0b', icon: '⏳' },
+        ].map(({ label, value, sub, accent, icon }) => (
+          <div key={label} style={{
+            background: 'var(--bg-card)', borderRadius: 14, padding: '20px 20px',
+            border: '1px solid var(--border)', borderTop: `3px solid ${accent}`,
+            display: 'flex', flexDirection: 'column', gap: 4,
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+              <div style={{ fontSize: 32, fontWeight: 800, color: accent, fontFamily: 'DM Mono', lineHeight: 1 }}>{value}</div>
+              <span style={{ fontSize: 22, opacity: 0.7 }}>{icon}</span>
+            </div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)', marginTop: 4 }}>{label}</div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{sub}</div>
+          </div>
+        ))}
       </div>
 
-      {/* Tab bar */}
-      <div style={{ display: 'flex', gap: 4, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
-        {mgTabs.map(t => (
-          <button key={t.id} className={`btn btn-sm ${tab === t.id ? 'btn-primary' : 'btn-secondary'}`}
-            style={t.id.startsWith('eng-') ? { borderLeft: tab === t.id ? undefined : '2px solid rgba(99,102,241,0.4)' } : undefined}
-            onClick={() => { setTab(t.id); if (t.id.startsWith('eng-')) setEngTab('overview'); }}>{t.label}</button>
-        ))}
-        {(tab === 'week' || tab === 'month') && (
-          <>
-            <select className="select" value={filterUser} onChange={e => setFilterUser(e.target.value)}
-              style={{ width: 180, marginLeft: 'auto' }}>
-              <option value="all">All Engineers</option>
-              {(users || []).map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+      {/* ── Two-row tab bar ── */}
+      <div style={{ marginBottom: 16 }}>
+        {/* Row 1 — Main views */}
+        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center', marginBottom: 6 }}>
+          {mgTabs.filter(t => !t.id.startsWith('eng-')).map(t => (
+            <button key={t.id} className={`btn btn-sm ${tab === t.id ? 'btn-primary' : 'btn-secondary'}`}
+              onClick={() => setTab(t.id)}>{t.label}</button>
+          ))}
+          {(tab === 'week' || tab === 'month') && (
+            <>
+              <select className="select" value={filterUser} onChange={e => setFilterUser(e.target.value)}
+                style={{ width: 180, marginLeft: 'auto' }}>
+                <option value="all">All Engineers</option>
+                {(users || []).map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+              </select>
+              <select className="select" value={locationFilter} onChange={e => setLocationFilter(e.target.value)}
+                style={{ width: 150 }}>
+                <option value="all">All Locations</option>
+                <option value="office">🏢 Office</option>
+                <option value="wfh">🏠 WFH</option>
+              </select>
+            </>
+          )}
+          {tab === 'today' && (
+            <select className="select" value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
+              style={{ width: 164, marginLeft: 'auto' }}>
+              <option value="all">All ({(users || []).length})</option>
+              <option value="in">Checked In</option>
+              <option value="out">Checked Out</option>
+              <option value="not-logged">Not Logged</option>
+              {buildStatusOptions(extraStatuses).map(s => <option key={s.value} value={s.value}>{s.icon} {s.label}</option>)}
             </select>
-            <select className="select" value={locationFilter} onChange={e => setLocationFilter(e.target.value)}
-              style={{ width: 150 }}>
-              <option value="all">All Locations</option>
-              <option value="office">🏢 Office</option>
-              <option value="wfh">🏠 WFH</option>
-            </select>
-          </>
-        )}
-        {tab === 'today' && (
-          <select className="select" value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
-            style={{ width: 164, marginLeft: 'auto' }}>
-            <option value="all">All ({(users || []).length})</option>
-            <option value="in">Checked In</option>
-            <option value="out">Checked Out</option>
-            <option value="not-logged">Not Logged</option>
-            {buildStatusOptions(extraStatuses).map(s => <option key={s.value} value={s.value}>{s.icon} {s.label}</option>)}
-          </select>
-        )}
+          )}
+        </div>
+        {/* Row 2 — Per-engineer tabs */}
+        <div style={{
+          display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center',
+          borderTop: '1px solid var(--border)', paddingTop: 6,
+        }}>
+          <span style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5, marginRight: 4, whiteSpace: 'nowrap' }}>
+            Engineers ▾
+          </span>
+          {mgTabs.filter(t => t.id.startsWith('eng-')).map(t => {
+            const isActive = tab === t.id;
+            const hasAlert = t.label.endsWith('●');
+            return (
+              <button key={t.id}
+                onClick={() => { setTab(t.id); setEngTab('overview'); }}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 4,
+                  padding: '4px 12px', borderRadius: 20, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                  border: isActive ? '1px solid #6366f1' : '1px solid rgba(99,102,241,0.35)',
+                  background: isActive ? '#6366f1' : 'rgba(99,102,241,0.08)',
+                  color: isActive ? '#fff' : 'var(--text-secondary)',
+                  borderLeft: isActive ? undefined : '3px solid rgba(99,102,241,0.5)',
+                }}>
+                {t.label.replace(' ●', '')}
+                {hasAlert && <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#ef4444', flexShrink: 0 }} />}
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       {/* ══ TODAY — MBA47 no-check-in alert banner ══ */}
@@ -1977,114 +2094,172 @@ export default function TimeKeeping({
 
       {/* ══ TODAY ══ */}
       {tab === 'today' && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 14 }}>
           {filteredToday.map(({ user: u, entry }) => {
-            const checkedIn  = entry && entry.checkIn && !entry.checkOut;
-            const checkedOut = entry && entry.checkIn && entry.checkOut;
-            const s          = entry ? statusCfg(entry.status) : null;
-            const hrs        = entry ? fmtHours(entry.checkIn, entry.checkOut) : null;
-            const todayLs    = entry?.checkIn ? computeLateStatus(entry.checkIn, { userId: u.id, date: today, rota }) : null;
+            const checkedIn   = entry && entry.checkIn && !entry.checkOut;
+            const checkedOut  = entry && entry.checkIn && entry.checkOut;
+            const s           = entry ? statusCfg(entry.status, extraStatuses) : null;
+            const hrs         = entry ? fmtHours(entry.checkIn, entry.checkOut) : null;
+            const todayLs     = entry?.checkIn ? computeLateStatus(entry.checkIn, { userId: u.id, date: today, rota }) : null;
+            const prevDate    = addDays(today, -1);
+            const prevShift   = (rota[u.id] || {})[prevDate] || 'off';
+            const wasOnCall   = ONCALL_OVERNIGHT_SHIFTS.includes(prevShift);
+            const isHolidayToday = isOnHoliday(today, u.id, holidays) || isBankHoliday(today, bh);
+            const isExpectedIn = !isHolidayToday && isWeekday(today);
+
+            // Card left-border colour logic
+            const cardAccent = checkedOut   ? '#10b981'
+                             : checkedIn    ? '#f59e0b'
+                             : isExpectedIn ? '#ef4444'
+                             : '#475569';
+
             return (
               <div key={u.id} style={{
-                background: 'var(--bg-card)', borderRadius: 12, padding: '14px 16px',
-                border: `1px solid ${checkedIn ? 'rgba(245,158,11,0.4)' : checkedOut ? 'rgba(16,185,129,0.35)' : 'var(--border)'}`,
-                borderLeft: `4px solid ${s ? s.color : 'var(--border)'}`,
+                background: 'var(--bg-card)', borderRadius: 14, overflow: 'hidden',
+                border: '1px solid var(--border)', borderLeft: `4px solid ${cardAccent}`,
+                display: 'flex', flexDirection: 'column', minHeight: 200,
               }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                {/* Card header */}
+                <div style={{
+                  padding: '14px 16px 12px', display: 'flex',
+                  justifyContent: 'space-between', alignItems: 'center',
+                  borderBottom: '1px solid var(--border)',
+                  background: 'rgba(255,255,255,0.02)',
+                }}>
                   <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-                    <Avatar user={u} size={36} />
+                    <Avatar user={u} size={38} />
                     <div>
-                      <div style={{ fontSize: 13, fontWeight: 600 }}>{u.name}</div>
-                      <div style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'DM Mono' }}>{u.id}</div>
+                      <div style={{ fontSize: 14, fontWeight: 700 }}>{u.name}</div>
+                      <div style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'DM Mono' }}>
+                        {u.id}
+                        {wasOnCall && <span style={{ marginLeft: 6, color: '#a78bfa' }}>🌙 on-call grace</span>}
+                      </div>
                     </div>
                   </div>
-                  {entry
-                    ? <StatusPill status={entry.status} small />
-                    : <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Not logged</span>}
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
+                    {entry
+                      ? <StatusPill status={entry.status} extraStatuses={extraStatuses} small />
+                      : <span style={{ fontSize: 11, color: isExpectedIn ? '#f59e0b' : 'var(--text-muted)', fontWeight: 600 }}>
+                          {isExpectedIn ? '⚠ Not logged' : isHolidayToday ? '🏖 Holiday' : '—'}
+                        </span>}
+                    {entry?.confirmedByManager &&
+                      <span style={{ fontSize: 10, color: '#34d399', fontWeight: 600 }}>✓ Confirmed</span>}
+                  </div>
                 </div>
-                {entry ? (
-                  <div>
-                    <div style={{ display: 'flex', gap: 16, marginBottom: 8 }}>
-                      <div>
-                        <div style={{ fontSize: 9, color: 'var(--text-muted)', marginBottom: 1 }}>IN</div>
-                        <div style={{ fontFamily: 'DM Mono', fontSize: 16, fontWeight: 700, color: '#6ee7b7' }}>{entry.checkIn || '—'}</div>
-                      </div>
-                      <div>
-                        <div style={{ fontSize: 9, color: 'var(--text-muted)', marginBottom: 1 }}>OUT</div>
-                        <div style={{ fontFamily: 'DM Mono', fontSize: 16, fontWeight: 700, color: entry.checkOut ? '#fcd34d' : 'var(--text-muted)' }}>
-                          {entry.checkOut || (checkedIn ? '…' : '—')}
-                        </div>
-                      </div>
-                      {hrs && (
+
+                {/* Card body */}
+                <div style={{ padding: '12px 16px', flex: 1 }}>
+                  {entry ? (
+                    <>
+                      {/* Time row */}
+                      <div style={{ display: 'flex', gap: 20, marginBottom: 10 }}>
                         <div>
-                          <div style={{ fontSize: 9, color: 'var(--text-muted)', marginBottom: 1 }}>TOTAL</div>
-                          <div style={{ fontFamily: 'DM Mono', fontSize: 16, fontWeight: 700, color: '#a78bfa' }}>{hrs}</div>
+                          <div style={{ fontSize: 9, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.5 }}>IN</div>
+                          <div style={{ fontFamily: 'DM Mono', fontSize: 20, fontWeight: 800, color: '#6ee7b7', lineHeight: 1.1 }}>
+                            {entry.checkIn || '—'}
+                          </div>
+                        </div>
+                        <div>
+                          <div style={{ fontSize: 9, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.5 }}>OUT</div>
+                          <div style={{ fontFamily: 'DM Mono', fontSize: 20, fontWeight: 800, color: entry.checkOut ? '#fcd34d' : 'var(--text-muted)', lineHeight: 1.1 }}>
+                            {entry.checkOut || (checkedIn ? '…' : '—')}
+                          </div>
+                        </div>
+                        {hrs && (
+                          <div>
+                            <div style={{ fontSize: 9, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.5 }}>TOTAL</div>
+                            <div style={{ fontFamily: 'DM Mono', fontSize: 20, fontWeight: 800, color: '#a78bfa', lineHeight: 1.1 }}>{hrs}</div>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Late badge */}
+                      {todayLs && (
+                        <div style={{ marginBottom: 8 }}>
+                          <span style={{
+                            fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 20,
+                            background: todayLs.status === 'late' ? 'rgba(239,68,68,0.18)' : 'rgba(34,197,94,0.15)',
+                            color: todayLs.status === 'late' ? '#fca5a5' : '#86efac',
+                            border: `1px solid ${todayLs.status === 'late' ? 'rgba(239,68,68,0.35)' : 'rgba(34,197,94,0.3)'}`,
+                          }}>
+                            {todayLs.status === 'late' ? '⏰ ' : '✓ '}{todayLs.label}
+                          </span>
                         </div>
                       )}
+
+                      {/* Late reason callout */}
+                      {entry.lateReason && (
+                        <div style={{ marginBottom: 8, padding: '8px 11px', borderRadius: 8, fontSize: 11,
+                          background: entry.lateReasonApproved === false ? 'rgba(239,68,68,0.1)' : 'rgba(245,158,11,0.1)',
+                          border: `1px solid ${entry.lateReasonApproved === false ? 'rgba(239,68,68,0.3)' : 'rgba(245,158,11,0.3)'}` }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+                            <div style={{ flex: 1 }}>
+                              <div style={{ color: '#fcd34d', fontWeight: 700, marginBottom: 3 }}>⏰ Late Reason</div>
+                              <div style={{ color: 'var(--text-secondary)' }}>{entry.lateReason}</div>
+                              <div style={{ marginTop: 4, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                                {entry.lateNotifiedManager ? (
+                                  entry.managerConfirmedNotification
+                                    ? <span style={{ color: '#34d399', fontWeight: 600 }}>✓ Notified &amp; confirmed</span>
+                                    : <span style={{ color: '#f59e0b', fontWeight: 600 }}>📩 Awaiting confirmation</span>
+                                ) : <span style={{ color: '#94a3b8' }}>Did not confirm contact</span>}
+                                {entry.lateReasonApproved === true && <span style={{ color: '#34d399', fontWeight: 600 }}>✓ Reason approved</span>}
+                                {entry.lateReasonApproved === false && <span style={{ color: '#fca5a5', fontWeight: 600 }}>✗ Reason rejected</span>}
+                              </div>
+                            </div>
+                            <button className="btn btn-secondary btn-sm" style={{ whiteSpace: 'nowrap', flexShrink: 0 }}
+                              onClick={() => openReviewEntry(u.id, entry, u)}>🔍 Review</button>
+                          </div>
+                        </div>
+                      )}
+                      {todayLs?.status === 'late' && !entry.lateReason && (
+                        <div style={{ marginBottom: 8, fontSize: 11, color: '#f59e0b', fontWeight: 600 }}>
+                          ⚠ Late — no reason provided yet
+                        </div>
+                      )}
+
+                      {/* Notes */}
+                      {entry.notes && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>📝 {entry.notes}</div>}
+
+                      {/* Device */}
+                      {(entry.device || entry.checkOutDevice) && (
+                        <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginBottom: 4 }}>
+                          {entry.device && <div style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 11, color: 'var(--text-muted)' }}>
+                            <span style={{ fontSize: 10 }}>In</span><DevicePill device={entry.device} small />
+                          </div>}
+                          {entry.checkOutDevice && <div style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 11, color: 'var(--text-muted)' }}>
+                            <span style={{ fontSize: 10 }}>Out</span><DevicePill device={entry.checkOutDevice} small />
+                          </div>}
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div style={{ color: 'var(--text-muted)', fontSize: 12, fontStyle: 'italic' }}>
+                      {isHolidayToday ? '🏖 On holiday today' : 'No attendance logged for today.'}
                     </div>
-                    {todayLs && (
-                      <div style={{ marginBottom: 8 }}>
-                        <span style={{
-                          fontSize: 11, fontWeight: 600, padding: '2px 9px', borderRadius: 20,
-                          background: todayLs.status === 'late' ? 'rgba(239,68,68,0.15)' : 'rgba(34,197,94,0.15)',
-                          color: todayLs.status === 'late' ? '#fca5a5' : '#86efac',
-                          border: `1px solid ${todayLs.status === 'late' ? 'rgba(239,68,68,0.3)' : 'rgba(34,197,94,0.3)'}`,
-                        }}>
-                          {todayLs.status === 'late' ? '⏰ ' : '✓ '}{todayLs.label}
-                        </span>
-                      </div>
-                    )}
-                    {entry.notes && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>📝 {entry.notes}</div>}
-                    {/* Late reason (manager view) */}
-                    {entry.lateReason && (
-                      <div style={{ marginBottom: 8, padding: '6px 10px', borderRadius: 7, fontSize: 11,
-                        background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)' }}>
-                        <span style={{ color: '#fca5a5', fontWeight: 600 }}>⏰ Reason: </span>
-                        <span style={{ color: 'var(--text-secondary)' }}>{entry.lateReason}</span>
-                        {entry.lateNotifiedManager ? (
-                          entry.managerConfirmedNotification
-                            ? <span style={{ marginLeft: 8, color: '#34d399', fontWeight: 600 }}>✓ Notified &amp; confirmed</span>
-                            : <button className="btn btn-success btn-sm" style={{ marginLeft: 8 }}
-                                onClick={() => confirmNotificationReceipt(u.id, entry.id)}>
-                                ✓ Confirm received
-                              </button>
-                        ) : <span style={{ marginLeft: 8, color: '#f59e0b', fontWeight: 600 }}>⚠ Not confirmed notified</span>}
-                      </div>
-                    )}
-                    {todayLs?.status === 'late' && !entry.lateReason && (
-                      <div style={{ marginBottom: 8, fontSize: 11, color: '#f59e0b' }}>
-                        ⚠ No late reason provided yet
-                      </div>
-                    )}
-                    {/* Device row */}
-                    {(entry.device || entry.checkOutDevice) && (
-                      <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap' }}>
-                        {entry.device && (
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--text-muted)' }}>
-                            In: <DevicePill device={entry.device} small />
-                          </div>
-                        )}
-                        {entry.checkOutDevice && (
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--text-muted)' }}>
-                            Out: <DevicePill device={entry.checkOutDevice} small />
-                          </div>
-                        )}
-                      </div>
-                    )}
-                    <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                  )}
+                </div>
+
+                {/* Card footer — action strip */}
+                <div style={{
+                  padding: '10px 16px', borderTop: '1px solid var(--border)',
+                  display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap',
+                  background: 'rgba(255,255,255,0.015)',
+                }}>
+                  {entry ? (
+                    <>
                       {!entry.confirmedByManager
                         ? <button className="btn btn-success btn-sm" onClick={() => confirmEntry(u.id, entry.id)}>✓ Confirm</button>
                         : <button className="btn btn-secondary btn-sm" onClick={() => unconfirmEntry(u.id, entry.id)} title="Click to un-confirm">✓ Confirmed</button>}
-                      <button className="btn btn-secondary btn-sm" onClick={() => openEditEntry(u.id, entry)}>✏</button>
-                      <button className="btn btn-danger btn-sm" onClick={() => deleteEntry(u.id, entry.id)}>🗑</button>
-                    </div>
-                  </div>
-                ) : (
-                  <div>
-                    <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>No attendance logged for today.</div>
+                      <button className="btn btn-secondary btn-sm" onClick={() => openEditEntry(u.id, entry)}>✏ Edit</button>
+                      {entry.lateReason && (
+                        <button className="btn btn-secondary btn-sm" onClick={() => openReviewEntry(u.id, entry, u)}>🔍 Review</button>
+                      )}
+                      <button className="btn btn-danger btn-sm" style={{ marginLeft: 'auto' }} onClick={() => deleteEntry(u.id, entry.id)}>🗑</button>
+                    </>
+                  ) : (
                     <button className="btn btn-secondary btn-sm" onClick={() => openNewLog(u.id)}>+ Log for {u.name.split(' ')[0]}</button>
-                  </div>
-                )}
+                  )}
+                </div>
               </div>
             );
           })}
