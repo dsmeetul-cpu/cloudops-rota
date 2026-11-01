@@ -916,6 +916,14 @@ export default function TimeKeeping({
   const [lateReasonModal, setLateReasonModal] = useState(false);
   const [lateReasonForm,  setLateReasonForm]  = useState({ reason: '', notified: false });
   const [pendingLateEntry, setPendingLateEntry] = useState(null); // { uid, entry }
+  // Engineer "respond to rejection" modal
+  const [rejectResponseModal, setRejectResponseModal] = useState(false);
+  const [rejectResponseEntry, setRejectResponseEntry] = useState(null); // entry being responded to
+  const [rejectResponseForm,  setRejectResponseForm]  = useState({
+    updatedReason: '',
+    noContactReason: '',  // why they didn't contact Meetul (if applicable)
+    confirmedFormalEmail: false, // engineer confirms they've replied to the formal email
+  });
 
   // ── Manager: review late entry modal ────────────────────────────────────────
   const [reviewModal, setReviewModal] = useState(false);
@@ -1310,6 +1318,37 @@ export default function TimeKeeping({
     setEditEntry(null);
   };
 
+  // ── Engineer: open "respond to rejection" modal ───────────────────────────
+  const openRejectResponse = (entry) => {
+    setRejectResponseEntry(entry);
+    setRejectResponseForm({
+      updatedReason: entry.lateReason || '',
+      noContactReason: entry.noContactReason || '',
+      confirmedFormalEmail: entry.confirmedFormalEmail || false,
+    });
+    setRejectResponseModal(true);
+  };
+
+  const saveRejectResponse = () => {
+    if (!rejectResponseEntry) return;
+    if (!rejectResponseForm.updatedReason.trim()) return;
+    upsertEntry(currentUser, {
+      ...rejectResponseEntry,
+      lateReason:            rejectResponseForm.updatedReason.trim(),
+      noContactReason:       rejectResponseForm.noContactReason.trim(),
+      confirmedFormalEmail:  rejectResponseForm.confirmedFormalEmail,
+      // Reset approval so manager reviews again
+      lateReasonApproved:       null,
+      lateReasonRejectedNote:   '',
+      managerConfirmedNotification: rejectResponseEntry.lateNotifiedManager
+        ? rejectResponseEntry.managerConfirmedNotification
+        : false,
+    });
+    setRejectResponseModal(false);
+    setRejectResponseEntry(null);
+    setRejectResponseForm({ updatedReason: '', noContactReason: '', confirmedFormalEmail: false });
+  };
+
   // ── MBA47: confirm they received the engineer's notification ──────────────
   const confirmNotificationReceipt = useCallback((uid, entryId) => {
     const entries = userEntries(uid);
@@ -1581,17 +1620,76 @@ export default function TimeKeeping({
                   {myTodayEntry.notes && (
                     <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 8 }}>📝 {myTodayEntry.notes}</div>
                   )}
-                  {/* Late reason (shown if submitted) */}
-                  {myTodayEntry.lateReason && (
-                    <div style={{ marginTop: 10, padding: '8px 12px', borderRadius: 8, fontSize: 12,
-                      background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)' }}>
-                      <span style={{ color: '#fca5a5', fontWeight: 600 }}>⏰ Late reason: </span>
-                      <span style={{ color: 'var(--text-secondary)' }}>{myTodayEntry.lateReason}</span>
-                      {myTodayEntry.lateNotifiedManager && (
-                        <span style={{ marginLeft: 8, fontSize: 11, color: '#34d399' }}>✓ Meetul notified</span>
-                      )}
-                    </div>
-                  )}
+                  {/* Late reason status panel */}
+                  {myTodayEntry.lateReason && (() => {
+                    const approved  = myTodayEntry.lateReasonApproved === true;
+                    const rejected  = myTodayEntry.lateReasonApproved === false;
+                    const pending   = myTodayEntry.lateReasonApproved == null;
+                    const notified  = myTodayEntry.lateNotifiedManager;
+                    const mgConfirm = myTodayEntry.managerConfirmedNotification;
+                    const formalEmailConfirmed = myTodayEntry.confirmedFormalEmail;
+                    const borderCol = rejected ? '#ef4444' : approved ? '#10b981' : '#f59e0b';
+                    const bgCol     = rejected ? 'rgba(239,68,68,0.08)' : approved ? 'rgba(16,185,129,0.07)' : 'rgba(245,158,11,0.07)';
+                    return (
+                      <div style={{ marginTop: 12, borderRadius: 10, overflow: 'hidden',
+                        border: `1px solid ${borderCol}`, background: bgCol }}>
+                        {/* Header bar */}
+                        <div style={{ padding: '8px 14px', borderBottom: `1px solid ${borderCol}`,
+                          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                          background: rejected ? 'rgba(239,68,68,0.12)' : approved ? 'rgba(16,185,129,0.1)' : 'rgba(245,158,11,0.1)' }}>
+                          <span style={{ fontSize: 12, fontWeight: 700,
+                            color: rejected ? '#fca5a5' : approved ? '#6ee7b7' : '#fcd34d' }}>
+                            {rejected ? '✗ Late reason rejected by Meetul'
+                            : approved ? '✓ Late reason approved'
+                            : '⏳ Late reason pending review'}
+                          </span>
+                          {rejected && (
+                            <button className="btn btn-sm" style={{
+                              background: 'rgba(239,68,68,0.2)', color: '#fca5a5',
+                              border: '1px solid rgba(239,68,68,0.4)', fontWeight: 700, fontSize: 11 }}
+                              onClick={() => openRejectResponse(myTodayEntry)}>
+                              ✏ Update &amp; Resubmit
+                            </button>
+                          )}
+                        </div>
+
+                        {/* Body */}
+                        <div style={{ padding: '10px 14px' }}>
+                          {/* Rejection note from manager */}
+                          {rejected && myTodayEntry.lateReasonRejectedNote && (
+                            <div style={{ marginBottom: 10, padding: '8px 11px', borderRadius: 7,
+                              background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)',
+                              fontSize: 12, color: '#fca5a5' }}>
+                              <div style={{ fontWeight: 700, marginBottom: 3, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>Meetul's note:</div>
+                              {myTodayEntry.lateReasonRejectedNote}
+                            </div>
+                          )}
+
+                          {/* Their submitted reason */}
+                          <div style={{ fontSize: 12, marginBottom: 8 }}>
+                            <span style={{ color: 'var(--text-muted)', fontWeight: 600 }}>Your reason: </span>
+                            <span style={{ color: 'var(--text-secondary)' }}>{myTodayEntry.lateReason}</span>
+                          </div>
+
+                          {/* Contact status */}
+                          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', fontSize: 11 }}>
+                            {notified ? (
+                              mgConfirm === true
+                                ? <span style={{ color: '#34d399', fontWeight: 600 }}>✓ Contact confirmed by Meetul</span>
+                                : mgConfirm === false
+                                ? <span style={{ color: '#fca5a5', fontWeight: 600 }}>✗ Contact denied by Meetul</span>
+                                : <span style={{ color: '#f59e0b', fontWeight: 600 }}>📩 Contact awaiting confirmation</span>
+                            ) : (
+                              <span style={{ color: '#94a3b8' }}>You did not confirm contact with Meetul</span>
+                            )}
+                            {formalEmailConfirmed && (
+                              <span style={{ color: '#34d399', fontWeight: 600 }}>✓ Formal email acknowledged</span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
                   {/* Device that was used to check in */}
                   {myTodayEntry.device && (
                     <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-muted)' }}>
@@ -1916,6 +2014,93 @@ export default function TimeKeeping({
                 onClick={confirmLateReason}
               >
                 Submit &amp; Check In
+              </button>
+            </div>
+          </Modal>
+        )}
+
+        {/* ── Reject-response modal (engineer responds to manager's rejection) ── */}
+        {rejectResponseModal && rejectResponseEntry && (
+          <Modal title="✏ Update your late reason" onClose={() => {
+            setRejectResponseModal(false);
+            setRejectResponseEntry(null);
+            setRejectResponseForm({ updatedReason: '', noContactReason: '', confirmedFormalEmail: false });
+          }}>
+            {/* Show manager's rejection note */}
+            {rejectResponseEntry.lateReasonRejectedNote && (
+              <div style={{ marginBottom: 16, padding: '10px 14px', borderRadius: 8, fontSize: 12,
+                background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)' }}>
+                <div style={{ fontWeight: 700, color: '#fca5a5', marginBottom: 4, fontSize: 11,
+                  textTransform: 'uppercase', letterSpacing: 0.5 }}>Meetul's reason for rejection:</div>
+                <div style={{ color: 'var(--text-secondary)' }}>{rejectResponseEntry.lateReasonRejectedNote}</div>
+              </div>
+            )}
+
+            {/* Updated reason */}
+            <FormGroup label="Updated reason for late arrival *">
+              <textarea
+                className="textarea"
+                rows={3}
+                placeholder="Please provide a clearer or corrected reason…"
+                value={rejectResponseForm.updatedReason}
+                onChange={e => setRejectResponseForm(f => ({ ...f, updatedReason: e.target.value }))}
+                autoFocus
+              />
+            </FormGroup>
+
+            {/* If they had NOT contacted Meetul — explain why */}
+            {!rejectResponseEntry.lateNotifiedManager && (
+              <FormGroup label="Why didn't you contact Meetul at the time?">
+                <textarea
+                  className="textarea"
+                  rows={2}
+                  placeholder="e.g. It was very early, no signal, emergency…"
+                  value={rejectResponseForm.noContactReason}
+                  onChange={e => setRejectResponseForm(f => ({ ...f, noContactReason: e.target.value }))}
+                />
+              </FormGroup>
+            )}
+
+            {/* Confirm formal email responded to */}
+            <div style={{
+              marginTop: 4, marginBottom: 18,
+              padding: '12px 14px', borderRadius: 8, cursor: 'pointer',
+              background: rejectResponseForm.confirmedFormalEmail ? 'rgba(16,185,129,0.1)' : 'rgba(99,102,241,0.07)',
+              border: `1px solid ${rejectResponseForm.confirmedFormalEmail ? 'rgba(16,185,129,0.35)' : 'rgba(99,102,241,0.3)'}`,
+              display: 'flex', alignItems: 'flex-start', gap: 12,
+            }} onClick={() => setRejectResponseForm(f => ({ ...f, confirmedFormalEmail: !f.confirmedFormalEmail }))}>
+              <div style={{
+                width: 20, height: 20, borderRadius: 4, flexShrink: 0, marginTop: 1,
+                background: rejectResponseForm.confirmedFormalEmail ? '#10b981' : 'transparent',
+                border: `2px solid ${rejectResponseForm.confirmedFormalEmail ? '#10b981' : 'rgba(99,102,241,0.6)'}`,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 13, color: '#fff',
+              }}>
+                {rejectResponseForm.confirmedFormalEmail ? '✓' : ''}
+              </div>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600,
+                  color: rejectResponseForm.confirmedFormalEmail ? '#34d399' : '#a5b4fc' }}>
+                  I confirm I have read and responded to the formal email from Meetul
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+                  You must acknowledge the formal email before resubmitting
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button className="btn btn-secondary" onClick={() => {
+                setRejectResponseModal(false);
+                setRejectResponseEntry(null);
+                setRejectResponseForm({ updatedReason: '', noContactReason: '', confirmedFormalEmail: false });
+              }}>Cancel</button>
+              <button
+                className="btn btn-primary"
+                disabled={!rejectResponseForm.updatedReason.trim() || !rejectResponseForm.confirmedFormalEmail}
+                onClick={saveRejectResponse}
+              >
+                Resubmit for Review
               </button>
             </div>
           </Modal>
