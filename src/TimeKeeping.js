@@ -925,6 +925,21 @@ export default function TimeKeeping({
     confirmedFormalEmail: false, // engineer confirms they've replied to the formal email
   });
 
+  // ── Engineer: missed entry banner + explain modal ────────────────────────────
+  const [missedBannerOpen,  setMissedBannerOpen]  = useState(true);
+  const [missedReasonModal, setMissedReasonModal] = useState(false);
+  const [missedReasonTarget,setMissedReasonTarget]= useState(null); // date string
+  const [missedReasonText,  setMissedReasonText]  = useState('');
+
+  // ── Manager: Attention tab state ──────────────────────────────────────────
+  const [attentionFilter,  setAttentionFilter]  = useState('all');
+  const [dismissedItems,   setDismissedItems]   = useState({});
+  const [itemDetailId,     setItemDetailId]     = useState(null);
+  const [formalEmailDraft, setFormalEmailDraft] = useState({});
+  const [meetingMinutes,   setMeetingMinutes]   = useState({});
+  const [inlineRejectId,   setInlineRejectId]   = useState(null);
+  const [inlineRejectNote, setInlineRejectNote] = useState('');
+
   // ── Manager: review late entry modal ────────────────────────────────────────
   const [reviewModal, setReviewModal] = useState(false);
   const [reviewEntry, setReviewEntry] = useState(null); // { uid, entry, user }
@@ -1764,6 +1779,67 @@ export default function TimeKeeping({
           </div>
         </div>
 
+        {/* ── Missed entries banner (engineer view) ── */}
+        {(() => {
+          const past30 = Array.from({length:30},(_,i)=>addDays(today,-i-1));
+          const myMissedDates = past30.filter(d =>
+            isWeekday(d)
+            && !isOnHoliday(d, currentUser, holidays)
+            && !isBankHoliday(d, bh)
+            && !(toil||[]).some(t=>(t.userId===currentUser||t.uid===currentUser)&&t.date===d)
+            && !myEntries.some(e=>e.date===d)
+          );
+          if (myMissedDates.length === 0) return null;
+          return (
+            <div style={{ marginBottom: 14, borderRadius: 10, overflow: 'hidden',
+              border: '1px solid rgba(245,158,11,0.4)', background: 'rgba(245,158,11,0.06)' }}>
+              <div style={{ padding: '10px 16px', display: 'flex', alignItems: 'center',
+                justifyContent: 'space-between', cursor: 'pointer',
+                background: 'rgba(245,158,11,0.1)', borderBottom: missedBannerOpen ? '1px solid rgba(245,158,11,0.3)' : 'none' }}
+                onClick={() => setMissedBannerOpen(o => !o)}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: '#fcd34d' }}>
+                  ⚠ You have {myMissedDates.length} missed log entr{myMissedDates.length === 1 ? 'y' : 'ies'}
+                </span>
+                <span style={{ color: '#fcd34d', fontSize: 16 }}>{missedBannerOpen ? '▲' : '▼'}</span>
+              </div>
+              {missedBannerOpen && (
+                <div style={{ padding: '10px 16px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {myMissedDates.map(d => {
+                    const stubEntry = myEntries.find(e => e.date === d && e._isMissed);
+                    return (
+                      <div key={d} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                        flexWrap: 'wrap', gap: 8, padding: '8px 12px', borderRadius: 8,
+                        background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(245,158,11,0.2)' }}>
+                        <div>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)' }}>
+                            {new Date(d).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })}
+                          </div>
+                          {stubEntry?.missedEntryReason && (
+                            <div style={{ fontSize: 11, color: '#f59e0b', marginTop: 2 }}>
+                              Reason: {stubEntry.missedEntryReason}
+                            </div>
+                          )}
+                        </div>
+                        <div style={{ display: 'flex', gap: 6 }}>
+                          <button className="btn btn-secondary btn-sm" onClick={() => openNewLog(currentUser)}>
+                            + Log entry
+                          </button>
+                          {!stubEntry?.missedEntryReason && (
+                            <button className="btn btn-secondary btn-sm" style={{ color: '#fcd34d' }}
+                              onClick={() => { setMissedReasonTarget(d); setMissedReasonText(''); setMissedReasonModal(true); }}>
+                              Explain absence
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
         {/* Tab bar — week / month / my stats (today card is always shown above) */}
         <div style={{ display: 'flex', gap: 4, marginBottom: 16 }}>
           {[{ id: 'week', label: '📅 Weekly View' }, { id: 'month', label: '📆 Monthly View' }, { id: 'stats', label: '📊 My Stats' }].map(t => (
@@ -2105,6 +2181,42 @@ export default function TimeKeeping({
             </div>
           </Modal>
         )}
+
+        {/* ── Missed entry explain modal ── */}
+        {missedReasonModal && missedReasonTarget && (
+          <Modal title={`Explain missed entry — ${fmtDate(missedReasonTarget)}`}
+            onClose={() => { setMissedReasonModal(false); setMissedReasonTarget(null); setMissedReasonText(''); }}>
+            <div style={{ marginBottom: 12, fontSize: 13, color: 'var(--text-muted)' }}>
+              Provide a reason why you didn't log an entry for this day. This will be visible to Meetul.
+            </div>
+            <textarea
+              className="textarea"
+              rows={3}
+              placeholder="e.g. Working from home but forgot to log, unwell but didn't record sick leave…"
+              value={missedReasonText}
+              onChange={e => setMissedReasonText(e.target.value)}
+              autoFocus
+            />
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 14 }}>
+              <button className="btn btn-secondary" onClick={() => { setMissedReasonModal(false); setMissedReasonTarget(null); setMissedReasonText(''); }}>Cancel</button>
+              <button className="btn btn-primary" disabled={!missedReasonText.trim()}
+                onClick={() => {
+                  upsertEntry(currentUser, {
+                    id: `missed-${currentUser}-${missedReasonTarget}-${Date.now()}`,
+                    date: missedReasonTarget,
+                    missedEntryReason: missedReasonText.trim(),
+                    status: 'absent',
+                    _isMissed: true,
+                  });
+                  setMissedReasonModal(false);
+                  setMissedReasonTarget(null);
+                  setMissedReasonText('');
+                }}>
+                Submit Reason
+              </button>
+            </div>
+          </Modal>
+        )}
       </div>
     );
   }
@@ -2131,7 +2243,18 @@ export default function TimeKeeping({
       userEntries(u.id).filter(e => e.lateReason && e.lateReasonApproved == null)
         .map(e => ({ kind: 'pending_review', user: u, entry: e }))
     );
-    return [...unconfirmedNotifs, ...missReasons, ...pendingReviews];
+    const missedEntries = engineers.flatMap(u => {
+      const past30 = Array.from({length:30},(_,i)=>addDays(today,-i-1));
+      return past30
+        .filter(d => isWeekday(d)
+          && !isOnHoliday(d, u.id, holidays)
+          && !isBankHoliday(d, bh)
+          && !(toil||[]).some(t=>(t.userId===u.id||t.uid===u.id)&&t.date===d)
+          && !userEntries(u.id).some(e=>e.date===d)
+        )
+        .map(d => ({ kind: 'missed_entry', user: u, entry: { id: `missed-${u.id}-${d}`, date: d, _isMissed: true } }));
+    });
+    return [...unconfirmedNotifs, ...missReasons, ...pendingReviews, ...missedEntries];
   }, [engineers, userEntries, rota]);
 
   const mgTabs = [
@@ -2488,176 +2611,282 @@ export default function TimeKeeping({
       )}
 
       {/* ══ ATTENTION ══ */}
-      {tab === 'attention' && (
-        <div>
-          {attentionItems.length === 0 ? (
-            <div style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--text-muted)' }}>
-              <div style={{ fontSize: 40, marginBottom: 12 }}>✅</div>
-              <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 6 }}>All clear</div>
-              <div style={{ fontSize: 13 }}>No items need your attention right now.</div>
+      {tab === 'attention' && (() => {
+        const kindCfg = {
+          unconfirmed_notif: { label: '📩 Notifications',   color: '#f59e0b', bg: 'rgba(245,158,11,0.08)',  border: 'rgba(245,158,11,0.35)',  accent: '#f59e0b' },
+          pending_review:    { label: '⏳ Pending Review',  color: '#a78bfa', bg: 'rgba(167,139,250,0.07)', border: 'rgba(167,139,250,0.35)', accent: '#a78bfa' },
+          missing_reason:    { label: '⚠ No Reason',       color: '#ef4444', bg: 'rgba(239,68,68,0.06)',   border: 'rgba(239,68,68,0.35)',   accent: '#ef4444' },
+          missed_entry:      { label: '📅 Missed Entry',   color: '#fb923c', bg: 'rgba(251,146,60,0.06)',  border: 'rgba(251,146,60,0.35)',  accent: '#fb923c' },
+        };
+        const counts = {
+          unconfirmed_notif: attentionItems.filter(i => i.kind === 'unconfirmed_notif' && !dismissedItems[i.entry.id]).length,
+          pending_review:    attentionItems.filter(i => i.kind === 'pending_review'    && !dismissedItems[i.entry.id]).length,
+          missing_reason:    attentionItems.filter(i => i.kind === 'missing_reason'    && !dismissedItems[i.entry.id]).length,
+          missed_entry:      attentionItems.filter(i => i.kind === 'missed_entry'      && !dismissedItems[i.entry.id]).length,
+          dismissed:         Object.values(dismissedItems).filter(Boolean).length,
+        };
+        const totalActive = counts.unconfirmed_notif + counts.pending_review + counts.missing_reason + counts.missed_entry;
+
+        const visibleItems = attentionItems.filter(i => {
+          const isDismissed = dismissedItems[i.entry.id];
+          if (attentionFilter === 'dismissed') return isDismissed;
+          if (isDismissed) return false;
+          if (attentionFilter === 'all') return true;
+          return i.kind === attentionFilter;
+        });
+
+        return (
+          <div>
+            {/* ── Summary stat chips ── */}
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
+              {totalActive === 0 && attentionFilter !== 'dismissed' ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 18px',
+                  borderRadius: 20, background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.3)',
+                  color: '#34d399', fontWeight: 700, fontSize: 13 }}>
+                  ✅ All clear — nothing needs attention
+                </div>
+              ) : Object.entries(counts).filter(([k]) => k !== 'dismissed').map(([kind, cnt]) => {
+                const cfg = kindCfg[kind];
+                const active = attentionFilter === kind;
+                return cnt > 0 ? (
+                  <button key={kind} onClick={() => setAttentionFilter(active ? 'all' : kind)}
+                    style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 14px',
+                      borderRadius: 20, cursor: 'pointer', fontWeight: 700, fontSize: 12,
+                      background: active ? cfg.bg : 'rgba(255,255,255,0.04)',
+                      border: `1px solid ${active ? cfg.border : 'var(--border)'}`,
+                      color: active ? cfg.color : 'var(--text-muted)', transition: 'all 0.15s' }}>
+                    {cfg.label}
+                    <span style={{ background: active ? cfg.color : 'rgba(255,255,255,0.1)',
+                      color: active ? '#000' : 'var(--text-secondary)', borderRadius: 20,
+                      padding: '1px 7px', fontSize: 10, fontWeight: 800 }}>{cnt}</span>
+                  </button>
+                ) : null;
+              })}
+              {/* Filter pills row */}
+              <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+                <button onClick={() => setAttentionFilter('all')}
+                  className={`btn btn-sm ${attentionFilter === 'all' ? 'btn-primary' : 'btn-secondary'}`}>All ({totalActive})</button>
+                {counts.dismissed > 0 && (
+                  <button onClick={() => setAttentionFilter(attentionFilter === 'dismissed' ? 'all' : 'dismissed')}
+                    className={`btn btn-sm ${attentionFilter === 'dismissed' ? 'btn-primary' : 'btn-secondary'}`}>
+                    Dismissed ({counts.dismissed})
+                  </button>
+                )}
+              </div>
             </div>
-          ) : (
-            <>
-              {/* ── Unconfirmed notification claims ── */}
-              {attentionItems.filter(i => i.kind === 'unconfirmed_notif').length > 0 && (
-                <div style={{ marginBottom: 24 }}>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: '#f59e0b', textTransform: 'uppercase',
-                    letterSpacing: 1, marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
-                    📩 Notification claims awaiting your confirmation
-                    <span style={{ background: 'rgba(245,158,11,0.2)', color: '#fcd34d', borderRadius: 20,
-                      padding: '1px 8px', fontSize: 10 }}>
-                      {attentionItems.filter(i => i.kind === 'unconfirmed_notif').length}
-                    </span>
-                  </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    {attentionItems.filter(i => i.kind === 'unconfirmed_notif').map(({ user: u, entry: e }) => (
-                      <div key={e.id} onClick={() => openReviewEntry(u.id, e, u)}
-                        style={{ padding: '14px 16px', borderRadius: 10, cursor: 'pointer',
-                          background: 'rgba(245,158,11,0.07)', border: '1px solid rgba(245,158,11,0.3)',
-                          transition: 'background 0.15s' }}
-                        onMouseEnter={el => el.currentTarget.style.background = 'rgba(245,158,11,0.14)'}
-                        onMouseLeave={el => el.currentTarget.style.background = 'rgba(245,158,11,0.07)'}>
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                            <Avatar user={u} size={36} />
-                            <div>
-                              <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 2 }}>
-                                {u.name} <span style={{ color: 'var(--text-muted)', fontWeight: 400, fontFamily: 'DM Mono', fontSize: 11 }}>{u.id}</span>
-                              </div>
-                              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>
-                                {fmtDate(e.date)} · Checked in {e.checkIn}
-                              </div>
-                              <div style={{ fontSize: 12, color: '#fcd34d', fontWeight: 600, marginBottom: 3 }}>
-                                📩 Claims they notified you
-                              </div>
-                              {e.lateReason && (
-                                <div style={{ fontSize: 11, color: 'var(--text-secondary)',
-                                  background: 'rgba(255,255,255,0.04)', borderRadius: 6, padding: '4px 8px', marginTop: 4 }}>
-                                  Reason: {e.lateReason}
-                                </div>
-                              )}
+
+            {/* ── Item cards ── */}
+            {visibleItems.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '50px 20px', color: 'var(--text-muted)' }}>
+                <div style={{ fontSize: 32, marginBottom: 10 }}>✅</div>
+                <div style={{ fontSize: 14, fontWeight: 600 }}>
+                  {attentionFilter === 'dismissed' ? 'No dismissed items' : 'Nothing in this category'}
+                </div>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {visibleItems.map(({ user: u, entry: e, kind }) => {
+                  const cfg = kindCfg[kind] || kindCfg.missed_entry;
+                  const isDismissed = dismissedItems[e.id];
+                  const isExpanded  = itemDetailId === e.id;
+                  const ls = e.checkIn ? computeLateStatus(e.checkIn, { userId: u.id, date: e.date, rota }) : null;
+                  const isRejectingThis = inlineRejectId === e.id;
+
+                  return (
+                    <div key={e.id} style={{
+                      borderRadius: 12, overflow: 'hidden',
+                      border: `1px solid ${isDismissed ? 'var(--border)' : cfg.border}`,
+                      borderLeft: `4px solid ${isDismissed ? '#475569' : cfg.accent}`,
+                      background: isDismissed ? 'rgba(255,255,255,0.02)' : cfg.bg,
+                      opacity: isDismissed ? 0.65 : 1,
+                    }}>
+                      {/* Card header */}
+                      <div style={{ padding: '13px 16px', display: 'flex', alignItems: 'flex-start',
+                        justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+                        {/* Left: avatar + info */}
+                        <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', flex: 1, minWidth: 0 }}>
+                          <Avatar user={u} size={38} />
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 2 }}>
+                              {u.name}
+                              <span style={{ marginLeft: 8, fontFamily: 'DM Mono', fontSize: 11,
+                                color: 'var(--text-muted)', fontWeight: 400 }}>{u.id}</span>
                             </div>
+                            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>
+                              {fmtDate(e.date)}
+                              {e.checkIn && <span style={{ marginLeft: 8 }}>· In <span style={{ fontFamily: 'DM Mono', color: '#6ee7b7' }}>{e.checkIn}</span></span>}
+                              {ls && <span style={{ marginLeft: 8, color: '#fca5a5', fontWeight: 600 }}>⏰ {ls.label}</span>}
+                            </div>
+
+                            {/* Kind-specific detail */}
+                            {kind === 'unconfirmed_notif' && (
+                              <div style={{ fontSize: 12 }}>
+                                <span style={{ color: '#fcd34d', fontWeight: 600 }}>📩 Claims they notified you</span>
+                                {e.lateReason && (
+                                  <div style={{ marginTop: 5, padding: '5px 9px', borderRadius: 6,
+                                    background: 'rgba(255,255,255,0.04)', fontSize: 11, color: 'var(--text-secondary)' }}>
+                                    Reason: {e.lateReason}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                            {kind === 'pending_review' && (
+                              <div style={{ fontSize: 12 }}>
+                                {e.lateReason && (
+                                  <div style={{ padding: '5px 9px', borderRadius: 6, marginBottom: 5,
+                                    background: 'rgba(167,139,250,0.1)', color: '#c4b5fd', fontStyle: 'italic' }}>
+                                    "{e.lateReason}"
+                                  </div>
+                                )}
+                                <span style={{ color: e.lateNotifiedManager ? '#f59e0b' : '#94a3b8', fontWeight: 600 }}>
+                                  {e.lateNotifiedManager ? '📩 Claims they notified you' : 'Did not claim to notify you'}
+                                </span>
+                                {e.confirmedFormalEmail && (
+                                  <span style={{ marginLeft: 8, color: '#34d399', fontWeight: 600 }}>✓ Formal email acknowledged</span>
+                                )}
+                              </div>
+                            )}
+                            {kind === 'missing_reason' && (
+                              <div style={{ fontSize: 12, color: '#fca5a5', fontWeight: 600 }}>⚠ Late but no reason given</div>
+                            )}
+                            {kind === 'missed_entry' && (
+                              <div style={{ fontSize: 12, color: '#fb923c', fontWeight: 600 }}>📅 No entry logged for this day</div>
+                            )}
+
+                            {/* Inline reject form */}
+                            {isRejectingThis && (
+                              <div style={{ marginTop: 10 }}>
+                                <textarea className="textarea" rows={2}
+                                  placeholder="Reason for rejection (shown to engineer)…"
+                                  value={inlineRejectNote}
+                                  onChange={ev => setInlineRejectNote(ev.target.value)}
+                                  style={{ fontSize: 12, marginBottom: 6 }} />
+                                <div style={{ display: 'flex', gap: 6 }}>
+                                  <button className="btn btn-danger btn-sm"
+                                    disabled={!inlineRejectNote.trim()}
+                                    onClick={() => {
+                                      upsertEntry(u.id, { ...e, lateReasonApproved: false, lateReasonRejectedNote: inlineRejectNote.trim() });
+                                      setInlineRejectId(null); setInlineRejectNote('');
+                                    }}>Confirm Reject</button>
+                                  <button className="btn btn-secondary btn-sm"
+                                    onClick={() => { setInlineRejectId(null); setInlineRejectNote(''); }}>Cancel</button>
+                                </div>
+                              </div>
+                            )}
                           </div>
-                          <div style={{ display: 'flex', gap: 6 }}>
-                            <button className="btn btn-success btn-sm"
-                              onClick={ev => { ev.stopPropagation(); confirmNotificationReceipt(u.id, e.id); }}
-                              title="Confirm you received notification">✓ Confirm</button>
-                            <button className="btn btn-danger btn-sm"
-                              onClick={ev => { ev.stopPropagation(); openReviewEntry(u.id, e, u); }}
-                              title="Deny / review">✗ Review</button>
-                          </div>
+                        </div>
+
+                        {/* Right: action buttons */}
+                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', flexShrink: 0 }}>
+                          {!isDismissed && kind === 'unconfirmed_notif' && (
+                            <>
+                              <button className="btn btn-success btn-sm"
+                                onClick={() => confirmNotificationReceipt(u.id, e.id)}>✓ Confirm</button>
+                              <button className="btn btn-danger btn-sm"
+                                onClick={() => { upsertEntry(u.id, { ...e, managerConfirmedNotification: false }); }}>✗ Deny</button>
+                              <button className="btn btn-secondary btn-sm"
+                                onClick={() => openReviewEntry(u.id, e, u)}>🔍 Full Review</button>
+                            </>
+                          )}
+                          {!isDismissed && kind === 'pending_review' && (
+                            <>
+                              <button className="btn btn-success btn-sm"
+                                onClick={() => upsertEntry(u.id, { ...e, lateReasonApproved: true })}>✓ Approve</button>
+                              <button className="btn btn-danger btn-sm"
+                                onClick={() => { setInlineRejectId(e.id); setInlineRejectNote(''); }}>✗ Reject</button>
+                              <button className="btn btn-secondary btn-sm"
+                                onClick={() => openReviewEntry(u.id, e, u)}>🔍 Full Review</button>
+                            </>
+                          )}
+                          {!isDismissed && kind === 'missing_reason' && (
+                            <button className="btn btn-secondary btn-sm"
+                              onClick={() => openEditEntry(u.id, e)}>✏ Open Entry</button>
+                          )}
+                          {!isDismissed && kind === 'missed_entry' && (
+                            <button className="btn btn-secondary btn-sm"
+                              onClick={() => openNewLog(u.id)}>+ Log Entry</button>
+                          )}
+                          {/* Dismiss / Restore */}
+                          {isDismissed ? (
+                            <button className="btn btn-secondary btn-sm"
+                              onClick={() => setDismissedItems(d => { const n={...d}; delete n[e.id]; return n; })}>↩ Restore</button>
+                          ) : (
+                            <button className="btn btn-secondary btn-sm" style={{ color: 'var(--text-muted)' }}
+                              onClick={() => setDismissedItems(d => ({ ...d, [e.id]: true }))}>Dismiss</button>
+                          )}
+                          {/* Expand toggle */}
+                          <button className="btn btn-secondary btn-sm"
+                            onClick={() => setItemDetailId(id => id === e.id ? null : e.id)}
+                            title="Notes / formal email / meeting minutes">
+                            {isExpanded ? '▲' : '▼'}
+                          </button>
                         </div>
                       </div>
-                    ))}
-                  </div>
-                </div>
-              )}
 
-              {/* ── Pending reason reviews ── */}
-              {attentionItems.filter(i => i.kind === 'pending_review').length > 0 && (
-                <div style={{ marginBottom: 24 }}>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: '#a78bfa', textTransform: 'uppercase',
-                    letterSpacing: 1, marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
-                    ⏳ Late reasons pending your review
-                    <span style={{ background: 'rgba(167,139,250,0.2)', color: '#c4b5fd', borderRadius: 20,
-                      padding: '1px 8px', fontSize: 10 }}>
-                      {attentionItems.filter(i => i.kind === 'pending_review').length}
-                    </span>
-                  </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    {attentionItems.filter(i => i.kind === 'pending_review').map(({ user: u, entry: e }) => {
-                      const ls = e.checkIn ? computeLateStatus(e.checkIn, { userId: u.id, date: e.date, rota }) : null;
-                      return (
-                        <div key={e.id} onClick={() => openReviewEntry(u.id, e, u)}
-                          style={{ padding: '14px 16px', borderRadius: 10, cursor: 'pointer',
-                            background: 'rgba(167,139,250,0.07)', border: '1px solid rgba(167,139,250,0.3)',
-                            transition: 'background 0.15s' }}
-                          onMouseEnter={el => el.currentTarget.style.background = 'rgba(167,139,250,0.14)'}
-                          onMouseLeave={el => el.currentTarget.style.background = 'rgba(167,139,250,0.07)'}>
-                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                              <Avatar user={u} size={36} />
-                              <div>
-                                <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 2 }}>
-                                  {u.name} <span style={{ color: 'var(--text-muted)', fontWeight: 400, fontFamily: 'DM Mono', fontSize: 11 }}>{u.id}</span>
-                                </div>
-                                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>
-                                  {fmtDate(e.date)} · In {e.checkIn}
-                                  {ls && <span style={{ marginLeft: 8, color: '#fca5a5', fontWeight: 600 }}>⏰ {ls.label}</span>}
-                                </div>
-                                <div style={{ fontSize: 12, color: '#c4b5fd',
-                                  background: 'rgba(255,255,255,0.04)', borderRadius: 6, padding: '4px 8px' }}>
-                                  "{e.lateReason}"
-                                </div>
-                                <div style={{ marginTop: 5, fontSize: 11, color: e.lateNotifiedManager ? '#f59e0b' : '#94a3b8' }}>
-                                  {e.lateNotifiedManager ? '📩 Claims they notified you' : 'Did not claim to have notified you'}
-                                </div>
-                              </div>
+                      {/* Expandable notes panel */}
+                      {isExpanded && (
+                        <div style={{ padding: '12px 16px', borderTop: `1px solid ${cfg.border}`,
+                          background: 'rgba(0,0,0,0.15)', display: 'flex', flexDirection: 'column', gap: 12 }}>
+
+                          {/* Formal email */}
+                          <div>
+                            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)',
+                              textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
+                              📧 Formal Email (paste or draft here)
                             </div>
-                            <button className="btn btn-secondary btn-sm" style={{ whiteSpace: 'nowrap' }}
-                              onClick={ev => { ev.stopPropagation(); openReviewEntry(u.id, e, u); }}>
-                              🔍 Review
+                            <textarea className="textarea" rows={4}
+                              placeholder="Paste or draft the formal email you sent / plan to send to this engineer…"
+                              value={formalEmailDraft[e.id] || ''}
+                              onChange={ev => setFormalEmailDraft(d => ({ ...d, [e.id]: ev.target.value }))}
+                              style={{ fontSize: 12 }} />
+                          </div>
+
+                          {/* Meeting minutes */}
+                          <div>
+                            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)',
+                              textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
+                              📋 Meeting Minutes
+                            </div>
+                            <textarea className="textarea" rows={3}
+                              placeholder="Record key points from any 1-to-1 or disciplinary meeting…"
+                              value={meetingMinutes[e.id] || ''}
+                              onChange={ev => setMeetingMinutes(d => ({ ...d, [e.id]: ev.target.value }))}
+                              style={{ fontSize: 12 }} />
+                          </div>
+
+                          {/* Saved notes readback */}
+                          {(e.formalEmailNote || e.meetingMinutes) && (
+                            <div style={{ fontSize: 11, color: '#34d399' }}>
+                              ✓ Notes previously saved to this entry
+                              {e.formalEmailNote && <span> · Email on record</span>}
+                              {e.meetingMinutes   && <span> · Meeting minutes on record</span>}
+                            </div>
+                          )}
+
+                          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                            <button className="btn btn-primary btn-sm"
+                              disabled={!formalEmailDraft[e.id] && !meetingMinutes[e.id]}
+                              onClick={() => {
+                                if (e._isMissed) return; // can't save to a virtual entry
+                                upsertEntry(u.id, {
+                                  ...e,
+                                  formalEmailNote: formalEmailDraft[e.id] || e.formalEmailNote || '',
+                                  meetingMinutes:  meetingMinutes[e.id]   || e.meetingMinutes  || '',
+                                });
+                              }}>
+                              {e._isMissed ? 'Log entry first to save notes' : '💾 Save notes to entry'}
                             </button>
                           </div>
                         </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-
-              {/* ── Late with no reason ── */}
-              {attentionItems.filter(i => i.kind === 'missing_reason').length > 0 && (
-                <div style={{ marginBottom: 24 }}>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: '#ef4444', textTransform: 'uppercase',
-                    letterSpacing: 1, marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
-                    ⚠ Late arrivals with no reason provided
-                    <span style={{ background: 'rgba(239,68,68,0.18)', color: '#fca5a5', borderRadius: 20,
-                      padding: '1px 8px', fontSize: 10 }}>
-                      {attentionItems.filter(i => i.kind === 'missing_reason').length}
-                    </span>
-                  </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    {attentionItems.filter(i => i.kind === 'missing_reason').map(({ user: u, entry: e }) => {
-                      const ls = e.checkIn ? computeLateStatus(e.checkIn, { userId: u.id, date: e.date, rota }) : null;
-                      return (
-                        <div key={e.id} onClick={() => openEditEntry(u.id, e)}
-                          style={{ padding: '14px 16px', borderRadius: 10, cursor: 'pointer',
-                            background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.3)',
-                            transition: 'background 0.15s' }}
-                          onMouseEnter={el => el.currentTarget.style.background = 'rgba(239,68,68,0.12)'}
-                          onMouseLeave={el => el.currentTarget.style.background = 'rgba(239,68,68,0.06)'}>
-                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                              <Avatar user={u} size={36} />
-                              <div>
-                                <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 2 }}>
-                                  {u.name} <span style={{ color: 'var(--text-muted)', fontWeight: 400, fontFamily: 'DM Mono', fontSize: 11 }}>{u.id}</span>
-                                </div>
-                                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>
-                                  {fmtDate(e.date)} · In {e.checkIn}
-                                  {ls && <span style={{ marginLeft: 8, color: '#fca5a5', fontWeight: 600 }}>⏰ {ls.label}</span>}
-                                </div>
-                                <div style={{ fontSize: 11, color: '#fca5a5', fontWeight: 600 }}>
-                                  No reason provided by engineer
-                                </div>
-                              </div>
-                            </div>
-                            <button className="btn btn-secondary btn-sm"
-                              onClick={ev => { ev.stopPropagation(); openEditEntry(u.id, e); }}>
-                              ✏ Edit Entry
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-            </>
-          )}
-        </div>
-      )}
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* ══ DASHBOARD ══ */}
       {tab === 'dashboard' && (
