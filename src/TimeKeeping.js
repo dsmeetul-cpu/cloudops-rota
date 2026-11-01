@@ -1929,9 +1929,30 @@ export default function TimeKeeping({
   // ═══════════════════════════════════════════════════════════════════════════
   const [engTab, setEngTab] = useState('overview'); // sub-tab inside per-engineer view
 
+  // ── Attention counts (used by tab badge + Attention tab) ──
+  const attentionItems = React.useMemo(() => {
+    const unconfirmedNotifs = engineers.flatMap(u =>
+      userEntries(u.id)
+        .filter(e => e.lateNotifiedManager && e.managerConfirmedNotification !== true && e.managerConfirmedNotification !== false)
+        .map(e => ({ kind: 'unconfirmed_notif', user: u, entry: e }))
+    );
+    const missReasons = engineers.flatMap(u =>
+      userEntries(u.id).filter(e => {
+        const ls = e.checkIn ? computeLateStatus(e.checkIn, { userId: u.id, date: e.date, rota }) : null;
+        return ls?.status === 'late' && !e.lateReason;
+      }).map(e => ({ kind: 'missing_reason', user: u, entry: e }))
+    );
+    const pendingReviews = engineers.flatMap(u =>
+      userEntries(u.id).filter(e => e.lateReason && e.lateReasonApproved == null)
+        .map(e => ({ kind: 'pending_review', user: u, entry: e }))
+    );
+    return [...unconfirmedNotifs, ...missReasons, ...pendingReviews];
+  }, [engineers, userEntries, rota]);
+
   const mgTabs = [
     { id: 'today',     label: "📍 Today" },
     { id: 'dashboard', label: '◈ Dashboard' },
+    { id: 'attention', label: `🔔 Attention${attentionItems.length > 0 ? ` (${attentionItems.length})` : ''}` },
     { id: 'analytics', label: '📊 Analytics' },
     { id: 'week',      label: '📅 Weekly' },
     { id: 'month',     label: '📆 Monthly' },
@@ -2281,71 +2302,193 @@ export default function TimeKeeping({
         </div>
       )}
 
+      {/* ══ ATTENTION ══ */}
+      {tab === 'attention' && (
+        <div>
+          {attentionItems.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--text-muted)' }}>
+              <div style={{ fontSize: 40, marginBottom: 12 }}>✅</div>
+              <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 6 }}>All clear</div>
+              <div style={{ fontSize: 13 }}>No items need your attention right now.</div>
+            </div>
+          ) : (
+            <>
+              {/* ── Unconfirmed notification claims ── */}
+              {attentionItems.filter(i => i.kind === 'unconfirmed_notif').length > 0 && (
+                <div style={{ marginBottom: 24 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: '#f59e0b', textTransform: 'uppercase',
+                    letterSpacing: 1, marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
+                    📩 Notification claims awaiting your confirmation
+                    <span style={{ background: 'rgba(245,158,11,0.2)', color: '#fcd34d', borderRadius: 20,
+                      padding: '1px 8px', fontSize: 10 }}>
+                      {attentionItems.filter(i => i.kind === 'unconfirmed_notif').length}
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {attentionItems.filter(i => i.kind === 'unconfirmed_notif').map(({ user: u, entry: e }) => (
+                      <div key={e.id} onClick={() => openReviewEntry(u.id, e, u)}
+                        style={{ padding: '14px 16px', borderRadius: 10, cursor: 'pointer',
+                          background: 'rgba(245,158,11,0.07)', border: '1px solid rgba(245,158,11,0.3)',
+                          transition: 'background 0.15s' }}
+                        onMouseEnter={el => el.currentTarget.style.background = 'rgba(245,158,11,0.14)'}
+                        onMouseLeave={el => el.currentTarget.style.background = 'rgba(245,158,11,0.07)'}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                            <Avatar user={u} size={36} />
+                            <div>
+                              <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 2 }}>
+                                {u.name} <span style={{ color: 'var(--text-muted)', fontWeight: 400, fontFamily: 'DM Mono', fontSize: 11 }}>{u.id}</span>
+                              </div>
+                              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>
+                                {fmtDate(e.date)} · Checked in {e.checkIn}
+                              </div>
+                              <div style={{ fontSize: 12, color: '#fcd34d', fontWeight: 600, marginBottom: 3 }}>
+                                📩 Claims they notified you
+                              </div>
+                              {e.lateReason && (
+                                <div style={{ fontSize: 11, color: 'var(--text-secondary)',
+                                  background: 'rgba(255,255,255,0.04)', borderRadius: 6, padding: '4px 8px', marginTop: 4 }}>
+                                  Reason: {e.lateReason}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                          <div style={{ display: 'flex', gap: 6 }}>
+                            <button className="btn btn-success btn-sm"
+                              onClick={ev => { ev.stopPropagation(); confirmNotificationReceipt(u.id, e.id); }}
+                              title="Confirm you received notification">✓ Confirm</button>
+                            <button className="btn btn-danger btn-sm"
+                              onClick={ev => { ev.stopPropagation(); openReviewEntry(u.id, e, u); }}
+                              title="Deny / review">✗ Review</button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* ── Pending reason reviews ── */}
+              {attentionItems.filter(i => i.kind === 'pending_review').length > 0 && (
+                <div style={{ marginBottom: 24 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: '#a78bfa', textTransform: 'uppercase',
+                    letterSpacing: 1, marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
+                    ⏳ Late reasons pending your review
+                    <span style={{ background: 'rgba(167,139,250,0.2)', color: '#c4b5fd', borderRadius: 20,
+                      padding: '1px 8px', fontSize: 10 }}>
+                      {attentionItems.filter(i => i.kind === 'pending_review').length}
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {attentionItems.filter(i => i.kind === 'pending_review').map(({ user: u, entry: e }) => {
+                      const ls = e.checkIn ? computeLateStatus(e.checkIn, { userId: u.id, date: e.date, rota }) : null;
+                      return (
+                        <div key={e.id} onClick={() => openReviewEntry(u.id, e, u)}
+                          style={{ padding: '14px 16px', borderRadius: 10, cursor: 'pointer',
+                            background: 'rgba(167,139,250,0.07)', border: '1px solid rgba(167,139,250,0.3)',
+                            transition: 'background 0.15s' }}
+                          onMouseEnter={el => el.currentTarget.style.background = 'rgba(167,139,250,0.14)'}
+                          onMouseLeave={el => el.currentTarget.style.background = 'rgba(167,139,250,0.07)'}>
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                              <Avatar user={u} size={36} />
+                              <div>
+                                <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 2 }}>
+                                  {u.name} <span style={{ color: 'var(--text-muted)', fontWeight: 400, fontFamily: 'DM Mono', fontSize: 11 }}>{u.id}</span>
+                                </div>
+                                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>
+                                  {fmtDate(e.date)} · In {e.checkIn}
+                                  {ls && <span style={{ marginLeft: 8, color: '#fca5a5', fontWeight: 600 }}>⏰ {ls.label}</span>}
+                                </div>
+                                <div style={{ fontSize: 12, color: '#c4b5fd',
+                                  background: 'rgba(255,255,255,0.04)', borderRadius: 6, padding: '4px 8px' }}>
+                                  "{e.lateReason}"
+                                </div>
+                                <div style={{ marginTop: 5, fontSize: 11, color: e.lateNotifiedManager ? '#f59e0b' : '#94a3b8' }}>
+                                  {e.lateNotifiedManager ? '📩 Claims they notified you' : 'Did not claim to have notified you'}
+                                </div>
+                              </div>
+                            </div>
+                            <button className="btn btn-secondary btn-sm" style={{ whiteSpace: 'nowrap' }}
+                              onClick={ev => { ev.stopPropagation(); openReviewEntry(u.id, e, u); }}>
+                              🔍 Review
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* ── Late with no reason ── */}
+              {attentionItems.filter(i => i.kind === 'missing_reason').length > 0 && (
+                <div style={{ marginBottom: 24 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: '#ef4444', textTransform: 'uppercase',
+                    letterSpacing: 1, marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
+                    ⚠ Late arrivals with no reason provided
+                    <span style={{ background: 'rgba(239,68,68,0.18)', color: '#fca5a5', borderRadius: 20,
+                      padding: '1px 8px', fontSize: 10 }}>
+                      {attentionItems.filter(i => i.kind === 'missing_reason').length}
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {attentionItems.filter(i => i.kind === 'missing_reason').map(({ user: u, entry: e }) => {
+                      const ls = e.checkIn ? computeLateStatus(e.checkIn, { userId: u.id, date: e.date, rota }) : null;
+                      return (
+                        <div key={e.id} onClick={() => openEditEntry(u.id, e)}
+                          style={{ padding: '14px 16px', borderRadius: 10, cursor: 'pointer',
+                            background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.3)',
+                            transition: 'background 0.15s' }}
+                          onMouseEnter={el => el.currentTarget.style.background = 'rgba(239,68,68,0.12)'}
+                          onMouseLeave={el => el.currentTarget.style.background = 'rgba(239,68,68,0.06)'}>
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                              <Avatar user={u} size={36} />
+                              <div>
+                                <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 2 }}>
+                                  {u.name} <span style={{ color: 'var(--text-muted)', fontWeight: 400, fontFamily: 'DM Mono', fontSize: 11 }}>{u.id}</span>
+                                </div>
+                                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>
+                                  {fmtDate(e.date)} · In {e.checkIn}
+                                  {ls && <span style={{ marginLeft: 8, color: '#fca5a5', fontWeight: 600 }}>⏰ {ls.label}</span>}
+                                </div>
+                                <div style={{ fontSize: 11, color: '#fca5a5', fontWeight: 600 }}>
+                                  No reason provided by engineer
+                                </div>
+                              </div>
+                            </div>
+                            <button className="btn btn-secondary btn-sm"
+                              onClick={ev => { ev.stopPropagation(); openEditEntry(u.id, e); }}>
+                              ✏ Edit Entry
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
       {/* ══ DASHBOARD ══ */}
       {tab === 'dashboard' && (
         <div>
-          {/* ── Needs attention banner ── */}
-          {(() => {
-            const allUnconfirmedNotifs = engineers.flatMap(u =>
-              userEntries(u.id)
-                .filter(e => e.lateNotifiedManager && !e.managerConfirmedNotification)
-                .map(e => ({ user: u, entry: e }))
-            );
-            const allMissReasons = engineers.flatMap(u =>
-              userEntries(u.id)
-                .filter(e => {
-                  const ls = e.checkIn ? computeLateStatus(e.checkIn, { userId: u.id, date: e.date, rota }) : null;
-                  return ls?.status === 'late' && !e.lateReason;
-                })
-                .map(e => ({ user: u, entry: e }))
-            );
-            if (allUnconfirmedNotifs.length === 0 && allMissReasons.length === 0) return null;
-            return (
-              <div style={{ marginBottom: 20 }}>
-                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 12 }}>
-                  🔔 Needs Your Attention
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {allUnconfirmedNotifs.map(({ user: u, entry: e }) => (
-                    <div key={e.id} style={{ padding: '10px 14px', borderRadius: 10, display: 'flex',
-                      alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10,
-                      background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.3)' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                        <Avatar user={u} size={28} />
-                        <div>
-                          <div style={{ fontSize: 12, fontWeight: 600, color: '#fcd34d' }}>
-                            {u.name} — {fmtDate(e.date)}
-                          </div>
-                          <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
-                            📩 Said they notified you · Reason: {e.lateReason}
-                          </div>
-                        </div>
-                      </div>
-                      <button className="btn btn-success btn-sm" onClick={() => confirmNotificationReceipt(u.id, e.id)}>
-                        ✓ Confirm
-                      </button>
-                    </div>
-                  ))}
-                  {allMissReasons.map(({ user: u, entry: e }) => (
-                    <div key={e.id} style={{ padding: '10px 14px', borderRadius: 10, display: 'flex',
-                      alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10,
-                      background: 'rgba(239,68,68,0.07)', border: '1px solid rgba(239,68,68,0.3)' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                        <Avatar user={u} size={28} />
-                        <div>
-                          <div style={{ fontSize: 12, fontWeight: 600, color: '#fca5a5' }}>
-                            {u.name} — {fmtDate(e.date)} · {e.checkIn}
-                          </div>
-                          <div style={{ fontSize: 11, color: '#f59e0b' }}>⚠ Late with no reason logged</div>
-                        </div>
-                      </div>
-                      <button className="btn btn-secondary btn-sm" onClick={() => openEditEntry(u.id, e)}>✏ Edit</button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            );
-          })()}
+          {/* Attention shortcut banner — only shown when items exist */}
+          {attentionItems.length > 0 && (
+            <div style={{ marginBottom: 20, padding: '12px 16px', borderRadius: 10, cursor: 'pointer',
+              background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.3)',
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
+              onClick={() => setTab('attention')}>
+              <span style={{ fontSize: 13, fontWeight: 700, color: '#fcd34d' }}>
+                🔔 {attentionItems.length} item{attentionItems.length !== 1 ? 's' : ''} need your attention
+              </span>
+              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>View all →</span>
+            </div>
+          )}
 
           {/* This-week RTO per engineer */}
           <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 12 }}>
