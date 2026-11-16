@@ -93,8 +93,47 @@ function useBulkSelect(items) {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
+// Local calendar date (YYYY-MM-DD). toISOString() is UTC, which is a day out
+// for an hour around midnight during BST, so countdowns use local time.
+const localISO = (d = new Date()) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+// Whole calendar days from today until dateStr. 0 = today, negative = past.
+function daysUntil(dateStr) {
+  if (!dateStr) return null;
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const t = new Date();
+  return Math.round((Date.UTC(y, m - 1, d) - Date.UTC(t.getFullYear(), t.getMonth(), t.getDate())) / 86400000);
+}
+
+// Label + colour for a countdown. Gets more urgent as D-Day approaches.
+function countdownInfo(dateStr) {
+  const n = daysUntil(dateStr);
+  if (n === null) return null;
+  if (n === 0) return { n, tag: 'D-Day',      line: 'Today',                                   color: '#10b981' };
+  if (n < 0)   return { n, tag: `D+${-n}`,    line: n === -1 ? 'Yesterday' : `${-n} days ago`, color: '#9ca3af' };
+  const color = n <= 3 ? '#ef4444' : n <= 7 ? '#f59e0b' : '#38bdf8';
+  return { n, tag: `D-${n}`, line: n === 1 ? 'Tomorrow' : `${n} days to go`, color };
+}
+
+function CountdownBadge({ date, big }) {
+  const c = countdownInfo(date);
+  if (!c) return null;
+  return (
+    <span title={c.line} style={{
+      display: 'inline-flex', alignItems: 'center', gap: 6,
+      background: c.color + '22', color: c.color, border: `1px solid ${c.color}55`,
+      borderRadius: 6, padding: big ? '6px 14px' : '3px 10px',
+      fontSize: big ? 22 : 11, fontWeight: 800, fontFamily: 'DM Mono, monospace', letterSpacing: 0.5,
+    }}>
+      ⏳ {c.tag}
+      <span style={{ fontSize: big ? 12 : 10, fontWeight: 600, fontFamily: 'inherit', opacity: 0.85 }}>{c.line}</span>
+    </span>
+  );
+}
+
 function upgradeStatus(up) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localISO();
   if (up.date > today) return 'upcoming';
   if (up.date === today) return 'today';
   return 'past';
@@ -172,11 +211,14 @@ export default function UpgradeDays({ users, upgrades, setUpgrades, isManager, c
     return () => { cancelled = true; };
   }, [driveToken, setUpgrades]);
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localISO();
 
   // ── Derived counts for stat cards ─────────────────────────────────────
   const upcoming      = upgrades.filter(u => u.date >= today);
   const past          = upgrades.filter(u => u.date < today);
+  const byWhen        = (a, b) => a.date.localeCompare(b.date) || (a.startTime || '').localeCompare(b.startTime || '');
+  const nextUps       = [...upcoming].sort(byWhen);        // soonest first (includes today)
+  const nextUp        = nextUps[0];
   const pendingAll    = upgrades.flatMap(u => (u.engineerTimes || []).filter(e => !e.approved));
   const totalHrsApproved = upgrades.flatMap(u => (u.engineerTimes || []).filter(e => e.approved)).reduce((a, e) => a + (e.hours || 0), 0);
 
@@ -430,10 +472,54 @@ export default function UpgradeDays({ users, upgrades, setUpgrades, isManager, c
       {/* Stat Cards */}
       <div className="grid-4 mb-16">
         <StatCard label="Total"           value={upgrades.length}   sub="all time"               accent="#991b1b" icon="⬆" />
-        <StatCard label="Upcoming"        value={upcoming.length}   sub="scheduled ahead"        accent="#1e40af" icon="📅" />
+        <StatCard label="Upcoming"        value={upcoming.length}   sub={nextUp ? `next: ${countdownInfo(nextUp.date).tag}` : 'scheduled ahead'} accent="#1e40af" icon="📅" />
         <StatCard label="Pending Approval" value={pendingAll.length} sub="engineer times awaiting" accent="#f59e0b" icon="⏳" />
         <StatCard label="Hours Approved"  value={totalHrsApproved + 'h'} sub="added to payroll"  accent="#166534" icon="✅" />
       </div>
+
+      {/* Countdown to the next upgrade day */}
+      {nextUp && (() => {
+        const c = countdownInfo(nextUp.date);
+        const later = nextUps.slice(1, 4);
+        return (
+          <div className="card mb-16" style={{ border: `1px solid ${c.color}55`, background: c.color + '10' }}>
+            <div style={{ display: 'flex', gap: 24, alignItems: 'center', flexWrap: 'wrap' }}>
+              <div style={{ textAlign: 'center', minWidth: 120 }}>
+                <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: 1.2, textTransform: 'uppercase', color: 'var(--text-muted)' }}>Next upgrade</div>
+                <div style={{ fontSize: 56, lineHeight: 1.05, fontWeight: 800, color: c.color, fontFamily: 'DM Mono, monospace' }}>
+                  {c.n === 0 ? 'D-Day' : c.n}
+                </div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: c.color }}>
+                  {c.n === 0 ? 'happening today' : c.n === 1 ? 'day to go' : 'days to go'}
+                </div>
+              </div>
+              <div style={{ flex: 1, minWidth: 220 }}>
+                <div style={{ fontSize: 18, fontWeight: 700, color: '#fecaca', marginBottom: 4 }}>{nextUp.name}</div>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', fontFamily: 'DM Mono', marginBottom: 6 }}>
+                  📅 {new Date(nextUp.date + 'T12:00:00').toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
+                  {nextUp.startTime && ` · 🕐 ${nextUp.startTime}`}
+                  {` · 👥 ${(nextUp.attendees || []).length} attending`}
+                </div>
+                {nextUp.desc && <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{nextUp.desc}</div>}
+              </div>
+              {later.length > 0 && (
+                <div style={{ minWidth: 200 }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: 1.2, textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: 6 }}>Then</div>
+                  {later.map(u => {
+                    const lc = countdownInfo(u.date);
+                    return (
+                      <div key={u.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', fontSize: 12, padding: '3px 0' }}>
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 160 }}>{u.name}</span>
+                        <span style={{ color: lc.color, fontFamily: 'DM Mono', fontWeight: 700 }}>{lc.tag}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Workflow hint */}
       <Alert type="info" style={{ marginBottom: 16 }}>
@@ -506,6 +592,7 @@ export default function UpgradeDays({ users, upgrades, setUpgrades, isManager, c
                 <div style={{ flex: 1 }}>
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 4 }}>
                     {statusBadge(status)}
+                    <CountdownBadge date={up.date} />
                     <span style={{ background: '#991b1b55', color: '#fecaca', padding: '3px 10px', borderRadius: 6, fontSize: 11, fontWeight: 600 }}>
                       ⬆ Upgrade Day
                     </span>
