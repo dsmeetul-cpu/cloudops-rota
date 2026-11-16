@@ -61,6 +61,25 @@ function StatCard({ label, value, sub, accent, icon }) {
   );
 }
 
+// ── Countdown helpers (same as UpgradeDays.js) ───────────────────────────
+// Local calendar date; toISOString() is UTC and is a day out around midnight in BST.
+const localISO = (d = new Date()) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+function daysUntil(dateStr) {
+  if (!dateStr) return null;
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const t = new Date();
+  return Math.round((Date.UTC(y, m - 1, d) - Date.UTC(t.getFullYear(), t.getMonth(), t.getDate())) / 86400000);
+}
+function countdownInfo(dateStr) {
+  const n = daysUntil(dateStr);
+  if (n === null) return null;
+  if (n === 0) return { n, tag: 'D-Day',   line: 'Today',                                    color: '#10b981' };
+  if (n < 0)   return { n, tag: `D+${-n}`, line: n === -1 ? 'Yesterday' : `${-n} days ago`,  color: '#9ca3af' };
+  const color = n <= 3 ? '#ef4444' : n <= 7 ? '#f59e0b' : '#38bdf8';
+  return { n, tag: `D-${n}`, line: n === 1 ? 'Tomorrow' : `${n} days to go`, color };
+}
+
 // ── TOIL balance helper (mirrors App.js) ──────────────────────────────────
 function calcTOILBalance(timesheetEntries, toilEntries, userId) {
   const workedOC   = (timesheetEntries || []).reduce((a, e) => a + (e.worked_wd || 0) + (e.worked_we || 0), 0);
@@ -75,8 +94,9 @@ function calcTOILBalance(timesheetEntries, toilEntries, userId) {
 }
 
 // ── Dashboard ─────────────────────────────────────────────────────────────
-export default function Dashboard({ users, rota, holidays, incidents, timesheets, swapRequests, absences, toil }) {
-  const today    = new Date().toISOString().slice(0, 10);
+// NOTE: `upgrades` is new — pass it from App.js:  <Dashboard ... upgrades={upgrades} />
+export default function Dashboard({ users, rota, holidays, incidents, timesheets, swapRequests, absences, toil, upgrades = [] }) {
+  const today    = localISO();
   const onCallToday = users.filter(u => rota[u.id]?.[today] && rota[u.id][today] !== 'off');
   const openInc  = incidents.filter(i => i.status === 'Investigating');
   const totalOC  = Object.values(timesheets).flatMap(t => t).reduce((a, b) => a + (b.weekday_oncall || 0) + (b.weekend_oncall || 0), 0);
@@ -145,11 +165,21 @@ export default function Dashboard({ users, rota, holidays, incidents, timesheets
   // right here so a manager doesn't have to go looking for it.
   const next14 = Array.from({ length: 14 }, (_, i) => {
     const d = new Date(); d.setDate(d.getDate() + i);
-    return d.toISOString().slice(0, 10);
+    return localISO(d);
   });
-  const coverageRisk = next14
-    .map(ds => ({ date: ds, covering: users.filter(u => rota[u.id]?.[ds] && rota[u.id][ds] !== 'off').length }))
-    .filter(d => d.covering <= 1);
+  const coverage14 = next14.map(ds => ({
+    date: ds,
+    covering: users.filter(u => rota[u.id]?.[ds] && rota[u.id][ds] !== 'off').length,
+    upgrade: (upgrades || []).some(up => up.date === ds),
+  }));
+  const coverageRisk = coverage14.filter(d => d.covering <= 1);
+
+  // ── Upgrade days: countdown, staffing and approvals ──────────────────────
+  const nextUps = (upgrades || []).filter(u => u.date >= today)
+    .sort((a, b) => a.date.localeCompare(b.date) || (a.startTime || '').localeCompare(b.startTime || ''));
+  const nextUp = nextUps[0];
+  const pendingUpgradeTimes = (upgrades || []).flatMap(u => (u.engineerTimes || []).filter(e => !e.approved)).length;
+  const unstaffedUpgrades   = nextUps.filter(u => daysUntil(u.date) <= 14 && (u.attendees || []).length === 0);
 
   // ── Load balance / burnout risk ──────────────────────────────────────────
   // Flags anyone carrying notably more OC hours than the team average, and
@@ -178,19 +208,88 @@ export default function Dashboard({ users, rota, holidays, incidents, timesheets
     .map(u => ({ user: u, streak: currentStreak(u.id) }))
     .filter(x => x.streak >= BURNOUT_STREAK_THRESHOLD);
 
-  const attentionCount = pendingSwaps.length + coverageRisk.length + overloaded.length + burnoutRisk.length;
+  const attentionCount = pendingSwaps.length + coverageRisk.length + overloaded.length + burnoutRisk.length + pendingUpgradeTimes + unstaffedUpgrades.length;
 
   return (
     <div>
-      <PageHeader title="Manager Dashboard" sub="Cloud Run Operations · Full team visibility" />
+      <PageHeader
+        title="Manager Dashboard"
+        sub={`Cloud Run Operations · Full team visibility · ${new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}`}
+      />
 
-      {/* ── Needs Your Attention ─────────────────────────────────────────────
-          One place to see everything that wants a manager decision, instead
-          of scanning five separate cards to piece it together. */}
-      {attentionCount > 0 && (
-        <div className="card mb-16" style={{ border: '1px solid rgba(245,158,11,0.35)', background: 'rgba(245,158,11,0.06)' }}>
-          <div className="card-title" style={{ color: '#fcd34d' }}>🚦 Needs Your Attention ({attentionCount})</div>
+      {/* ── Row 1: Upgrade countdown + Needs attention ───────────────────── */}
+      <div className="grid-2 mb-16" style={{ alignItems: 'stretch' }}>
+
+        {/* Countdown to the next upgrade day */}
+        {(() => {
+          const c = nextUp ? countdownInfo(nextUp.date) : null;
+          return (
+            <div className="card" style={c ? { border: `1px solid ${c.color}55`, background: c.color + '10' } : {}}>
+              <div className="card-title">⬆ Upgrade Day Countdown</div>
+              {!nextUp ? (
+                <p className="muted-sm">No upcoming upgrade days scheduled</p>
+              ) : (
+                <>
+                  <div style={{ display: 'flex', gap: 20, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <div style={{ textAlign: 'center', minWidth: 110 }}>
+                      <div style={{ fontSize: c.n === 0 ? 36 : 56, lineHeight: 1.05, fontWeight: 800, color: c.color, fontFamily: 'DM Mono, monospace' }}>
+                        {c.n === 0 ? 'D-Day' : c.n}
+                      </div>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: c.color }}>
+                        {c.n === 0 ? 'happening today' : c.n === 1 ? 'day to go' : 'days to go'}
+                      </div>
+                    </div>
+                    <div style={{ flex: 1, minWidth: 160 }}>
+                      <div style={{ fontSize: 15, fontWeight: 700, color: '#fecaca', marginBottom: 4 }}>{nextUp.name}</div>
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'DM Mono', lineHeight: 1.7 }}>
+                        📅 {new Date(nextUp.date + 'T12:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}
+                        {nextUp.startTime && <><br />🕐 Start {nextUp.startTime}</>}
+                        <br />👥 {(nextUp.attendees || []).length === 0
+                          ? <span style={{ color: '#f59e0b' }}>No engineers assigned yet</span>
+                          : `${(nextUp.attendees || []).length} attending`}
+                      </div>
+                    </div>
+                  </div>
+                  {nextUps.length > 1 && (
+                    <div style={{ borderTop: '1px solid var(--border)', marginTop: 12, paddingTop: 8 }}>
+                      {nextUps.slice(1, 4).map(u => {
+                        const lc = countdownInfo(u.date);
+                        return (
+                          <div key={u.id} className="flex-between row-item" style={{ fontSize: 12 }}>
+                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '65%' }}>
+                              {u.name} <span className="muted-xs">· {u.date}</span>
+                            </span>
+                            <span style={{ color: lc.color, fontFamily: 'DM Mono', fontWeight: 700 }}>{lc.tag}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          );
+        })()}
+
+        {/* Needs your attention — one place for everything that wants a decision */}
+        <div className="card" style={attentionCount > 0
+          ? { border: '1px solid rgba(245,158,11,0.35)', background: 'rgba(245,158,11,0.06)' }
+          : { border: '1px solid rgba(16,185,129,0.3)', background: 'rgba(16,185,129,0.05)' }}>
+          <div className="card-title" style={{ color: attentionCount > 0 ? '#fcd34d' : '#6ee7b7' }}>
+            🚦 {attentionCount > 0 ? `Needs Your Attention (${attentionCount})` : 'All Clear'}
+          </div>
+          {attentionCount === 0 && <p className="muted-sm">Nothing is waiting on you right now ✅</p>}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {pendingUpgradeTimes > 0 && (
+              <div className="row-item" style={{ fontSize: 12 }}>
+                ⬆ <strong>{pendingUpgradeTimes}</strong> upgrade-day time{pendingUpgradeTimes !== 1 ? 's' : ''} awaiting approval
+              </div>
+            )}
+            {unstaffedUpgrades.map(u => (
+              <div key={u.id} className="row-item" style={{ fontSize: 12 }}>
+                👥 <strong>{u.name}</strong> is {countdownInfo(u.date).tag} with no engineers assigned
+              </div>
+            ))}
             {pendingSwaps.length > 0 && (
               <div className="row-item" style={{ fontSize: 12 }}>
                 🔁 <strong>{pendingSwaps.length}</strong> swap request{pendingSwaps.length !== 1 ? 's' : ''} awaiting approval
@@ -213,23 +312,18 @@ export default function Dashboard({ users, rota, holidays, incidents, timesheets
             )}
           </div>
         </div>
-      )}
-
-
-      <div className="grid-4 mb-16">
-        <StatCard label="Team Size"      value={users.length}        sub="engineers + manager"    accent="#3b82f6" icon="👥" />
-        <StatCard label="Open Incidents" value={openInc.length}      sub={`${resolved} resolved`} accent="#ef4444" icon="🚨" />
-        <StatCard label="OC Hours"       value={totalOC + 'h'}       sub="All engineers total"    accent="#10b981" icon="⏱" />
-        <StatCard label="Pending Swaps"  value={pendingSwaps.length} sub="Awaiting approval"      accent="#818cf8" icon="🔁" />
       </div>
 
-      <div className="grid-4 mb-16">
-        <StatCard label="Disasters"      value={disasters}           sub="Critical severity"      accent="#ef4444" icon="🔴" />
-        <StatCard label="High Severity"  value={sevCounts.High}      sub="Needs attention"        accent="#f59e0b" icon="🟠" />
-        <StatCard label="Absences/Month" value={absencesThisMonth}   sub={thisMonth}              accent="#f59e0b" icon="🏥" />
-        <StatCard label="Incidents Total" value={incidents.length}
-          sub={`${Math.round((resolved / Math.max(incidents.length, 1)) * 100)}% resolved`}
-          accent="#6ee7b7" icon="📋" />
+      {/* ── KPI strip ────────────────────────────────────────────────────── */}
+      <div className="mb-16" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 12 }}>
+        <StatCard label="Team Size"        value={users.length}          sub="engineers + manager"                      accent="#3b82f6" icon="👥" />
+        <StatCard label="On Call Today"    value={onCallToday.length}    sub={onCallToday.length ? 'covering now' : 'no shifts today'} accent="#10b981" icon="🟢" />
+        <StatCard label="Open Incidents"   value={openInc.length}        sub={`${resolved} resolved of ${incidents.length}`} accent="#ef4444" icon="🚨" />
+        <StatCard label="Disasters"        value={disasters}             sub={`${sevCounts.High} high severity`}        accent="#f59e0b" icon="🔴" />
+        <StatCard label="OC Hours"         value={totalOC + 'h'}         sub="All engineers total"                      accent="#10b981" icon="⏱" />
+        <StatCard label="Pending Swaps"    value={pendingSwaps.length}   sub="Awaiting approval"                        accent="#818cf8" icon="🔁" />
+        <StatCard label="Upgrade Approvals" value={pendingUpgradeTimes}  sub="engineer times waiting"                   accent="#991b1b" icon="⬆" />
+        <StatCard label="Absences/Month"   value={absencesThisMonth}     sub={thisMonth}                                accent="#f59e0b" icon="🏥" />
       </div>
 
       <div className="grid-2 mb-16">
@@ -334,7 +428,22 @@ export default function Dashboard({ users, rota, holidays, incidents, timesheets
       {/* ── Coverage Risk + Load Balance/Burnout ─────────────────────────── */}
       <div className="grid-2 mb-16">
         <div className="card">
-          <div className="card-title">🗓 Coverage Risk — Next 14 Days</div>
+          <div className="card-title">🗓 Coverage — Next 14 Days</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 6, marginBottom: 10 }}>
+            {coverage14.map(d => {
+              const col = d.covering === 0 ? '#ef4444' : d.covering === 1 ? '#f59e0b' : '#10b981';
+              const dt  = new Date(d.date + 'T12:00:00');
+              return (
+                <div key={d.date} title={`${d.date}: ${d.covering} covering${d.upgrade ? ' · upgrade day' : ''}`}
+                  style={{ textAlign: 'center', padding: '6px 2px', borderRadius: 6, background: col + '22', border: `1px solid ${col}55` }}>
+                  <div style={{ fontSize: 9, color: 'var(--text-muted)' }}>{dt.toLocaleDateString('en-GB', { weekday: 'short' })}</div>
+                  <div style={{ fontSize: 11, fontFamily: 'DM Mono', color: 'var(--text-secondary)' }}>{dt.getDate()}</div>
+                  <div style={{ fontSize: 14, fontWeight: 800, color: col, fontFamily: 'DM Mono' }}>{d.covering}</div>
+                  <div style={{ fontSize: 9, height: 12 }}>{d.upgrade ? '⬆' : ''}</div>
+                </div>
+              );
+            })}
+          </div>
           {coverageRisk.length === 0 ? (
             <p className="muted-sm">✅ Every day has at least 2 people covering</p>
           ) : (
