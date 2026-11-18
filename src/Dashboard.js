@@ -181,6 +181,16 @@ export default function Dashboard({ users, rota, holidays, incidents, timesheets
   const pendingUpgradeTimes = (upgrades || []).flatMap(u => (u.engineerTimes || []).filter(e => !e.approved)).length;
   const unstaffedUpgrades   = nextUps.filter(u => daysUntil(u.date) <= 14 && (u.attendees || []).length === 0);
 
+  // ── Schedule progress for the next upgrade ───────────────────────────────
+  const nextUpPreDone      = nextUp ? (nextUp.preSteps || []).filter(s => s.done).length : 0;
+  const nextUpPreTotal     = nextUp ? (nextUp.preSteps || []).length : 0;
+  const nextUpStDone       = nextUp ? (nextUp.steps    || []).filter(s => s.done).length : 0;
+  const nextUpStTotal      = nextUp ? (nextUp.steps    || []).length : 0;
+  const nextUpHasSchedule  = nextUpPreTotal > 0 || nextUpStTotal > 0;
+  const nextUpTotalItems   = nextUpPreTotal + nextUpStTotal;
+  const nextUpDoneItems    = nextUpPreDone  + nextUpStDone;
+  const nextUpReadinessPct = nextUpTotalItems > 0 ? Math.round((nextUpDoneItems / nextUpTotalItems) * 100) : null;
+
   // ── Load balance / burnout risk ──────────────────────────────────────────
   // Flags anyone carrying notably more OC hours than the team average, and
   // anyone currently mid-way through a long unbroken on-call stretch. Neither
@@ -250,6 +260,75 @@ export default function Dashboard({ users, rota, holidays, incidents, timesheets
                       </div>
                     </div>
                   </div>
+                  {nextUpHasSchedule && (
+                    <div style={{ borderTop: '1px solid var(--border)', marginTop: 12, paddingTop: 10 }}>
+                      {nextUpReadinessPct !== null && (
+                        <div style={{ marginBottom: 8 }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--text-muted)', marginBottom: 3 }}>
+                            <span style={{ fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5 }}>Readiness</span>
+                            <span style={{ fontFamily: 'DM Mono', fontWeight: 700,
+                              color: nextUpReadinessPct === 100 ? '#10b981' : nextUpReadinessPct >= 50 ? '#f59e0b' : '#ef4444' }}>
+                              {nextUpReadinessPct}%
+                            </span>
+                          </div>
+                          <div style={{ height: 6, background: 'var(--bg-card2)', borderRadius: 3, overflow: 'hidden' }}>
+                            <div style={{ height: '100%', transition: 'width 0.4s',
+                              width: `${nextUpReadinessPct}%`,
+                              background: nextUpReadinessPct === 100 ? '#10b981' : nextUpReadinessPct >= 50 ? '#f59e0b' : '#ef4444' }} />
+                          </div>
+                        </div>
+                      )}
+                      {nextUpPreTotal > 0 && (
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 11, marginBottom: 4 }}>
+                          <span style={{ color: 'var(--text-muted)' }}>🔧 Pre-steps</span>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <div style={{ display: 'flex', gap: 2 }}>
+                              {(nextUp.preSteps || []).map(s => (
+                                <div key={s.id} style={{ width: 8, height: 8, borderRadius: 2,
+                                  background: s.done ? '#10b981' : 'rgba(255,255,255,0.1)',
+                                  border: `1px solid ${s.done ? '#10b981' : 'rgba(255,255,255,0.2)'}` }}
+                                  title={s.label + (s.done ? ' ✓' : '')} />
+                              ))}
+                            </div>
+                            <span style={{ fontFamily: 'DM Mono', fontSize: 10,
+                              color: nextUpPreDone === nextUpPreTotal ? '#10b981' : '#f59e0b', fontWeight: 700 }}>
+                              {nextUpPreDone}/{nextUpPreTotal}
+                            </span>
+                          </div>
+                        </div>
+                      )}
+                      {nextUpStTotal > 0 && (
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 11 }}>
+                          <span style={{ color: 'var(--text-muted)' }}>⚡ Steps</span>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <div style={{ display: 'flex', gap: 2 }}>
+                              {(nextUp.steps || []).map(s => (
+                                <div key={s.id} style={{ width: 8, height: 8, borderRadius: 2,
+                                  background: s.done ? '#10b981' : 'rgba(255,255,255,0.1)',
+                                  border: `1px solid ${s.done ? '#10b981' : 'rgba(255,255,255,0.2)'}` }}
+                                  title={s.label + (s.done ? ' ✓' : '')} />
+                              ))}
+                            </div>
+                            <span style={{ fontFamily: 'DM Mono', fontSize: 10,
+                              color: nextUpStDone === nextUpStTotal ? '#10b981' : '#38bdf8', fontWeight: 700 }}>
+                              {nextUpStDone}/{nextUpStTotal}
+                            </span>
+                          </div>
+                        </div>
+                      )}
+                      {nextUpPreTotal > 0 && nextUpPreDone < nextUpPreTotal && (
+                        <div style={{ marginTop: 6, fontSize: 11, color: '#f59e0b', fontWeight: 600 }}>
+                          ⚠ {nextUpPreTotal - nextUpPreDone} pre-step{nextUpPreTotal - nextUpPreDone !== 1 ? 's' : ''} still to complete
+                        </div>
+                      )}
+                      {nextUpPreDone === nextUpPreTotal && nextUpPreTotal > 0 && nextUpStTotal === 0 && (
+                        <div style={{ marginTop: 6, fontSize: 11, color: '#10b981', fontWeight: 600 }}>✅ All pre-steps done — ready to run</div>
+                      )}
+                      {nextUpDoneItems === nextUpTotalItems && nextUpTotalItems > 0 && (
+                        <div style={{ marginTop: 6, fontSize: 11, color: '#10b981', fontWeight: 600 }}>✅ Schedule complete</div>
+                      )}
+                    </div>
+                  )}
                   {nextUps.length > 1 && (
                     <div style={{ borderTop: '1px solid var(--border)', marginTop: 12, paddingTop: 8 }}>
                       {nextUps.slice(1, 4).map(u => {
