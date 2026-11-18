@@ -165,6 +165,9 @@ export default function UpgradeDays({ users, upgrades, setUpgrades, isManager, c
   const [filter,            setFilter]            = useState('all');
   const [search,            setSearch]            = useState('');
   const [isSaving,          setIsSaving]          = useState(false);
+  const [showStepsModal,    setShowStepsModal]    = useState(false);
+  const [stepsUpgradeId,    setStepsUpgradeId]    = useState(null);
+  const [stepsForm,         setStepsForm]         = useState({ preSteps: [], steps: [] });
   const saveInProgress = useRef(false);
   const pendingSave    = useRef(null);
   const { selected, toggleOne, clearAll } = useBulkSelect(upgrades);
@@ -449,6 +452,43 @@ export default function UpgradeDays({ users, upgrades, setUpgrades, isManager, c
     }
   };
 
+  // ── Pre-steps & Steps helpers ──────────────────────────────────────────
+  const openSteps = (up) => {
+    setStepsUpgradeId(up.id);
+    setStepsForm({
+      preSteps: up.preSteps ? up.preSteps.map(s => ({ ...s })) : [],
+      steps:    up.steps    ? up.steps.map(s => ({ ...s }))    : [],
+    });
+    setShowStepsModal(true);
+  };
+
+  const saveSteps = () => {
+    const next = upgrades.map(u => u.id !== stepsUpgradeId ? u : {
+      ...u,
+      preSteps: stepsForm.preSteps,
+      steps:    stepsForm.steps,
+    });
+    setUpgrades(next);
+    persistUpgrades(next);
+    setShowStepsModal(false);
+  };
+
+  const toggleStep = (upgradeId, listKey, stepId) => {
+    const upgrade = upgrades.find(u => u.id === upgradeId);
+    if (!upgrade) return;
+    const next = upgrades.map(u => u.id !== upgradeId ? u : {
+      ...u,
+      [listKey]: (u[listKey] || []).map(s => s.id !== stepId ? s : {
+        ...s,
+        done:   !s.done,
+        doneAt: !s.done ? new Date().toISOString() : null,
+        doneBy: !s.done ? currentUser : null,
+      }),
+    });
+    setUpgrades(next);
+    persistUpgrades(next);
+  };
+
   // ── Render ─────────────────────────────────────────────────────────────
   return (
     <div>
@@ -630,6 +670,7 @@ export default function UpgradeDays({ users, upgrades, setUpgrades, isManager, c
               </div>
               {isManager && (
                 <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                  <button className="btn btn-secondary btn-sm" onClick={e => { e.stopPropagation(); openSteps(up); }} title="Pre-steps & Steps">📋</button>
                   <button className="btn btn-secondary btn-sm" onClick={e => openEdit(up, e)} title="Edit">✏</button>
                   <button className="btn btn-danger btn-sm"    onClick={e => deleteOne(up.id, e)} title="Delete">🗑</button>
                 </div>
@@ -702,6 +743,86 @@ export default function UpgradeDays({ users, upgrades, setUpgrades, isManager, c
               </div>
             </div>
 
+            {/* ── Pre-steps & Steps progress ── */}
+            {((up.preSteps && up.preSteps.length > 0) || (up.steps && up.steps.length > 0)) && (() => {
+              const preDone  = (up.preSteps || []).filter(s => s.done).length;
+              const preTotal = (up.preSteps || []).length;
+              const stDone   = (up.steps || []).filter(s => s.done).length;
+              const stTotal  = (up.steps || []).length;
+              return (
+                <div style={{ borderTop: '1px solid var(--border)', paddingTop: 12, marginTop: 4, marginBottom: 8 }}>
+                  <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+                    {preTotal > 0 && (
+                      <div style={{ flex: 1, minWidth: 200 }}>
+                        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.7, marginBottom: 6, display: 'flex', justifyContent: 'space-between' }}>
+                          <span>🔧 Pre-steps</span>
+                          <span style={{ color: preDone === preTotal ? '#10b981' : '#f59e0b' }}>{preDone}/{preTotal}</span>
+                        </div>
+                        <div style={{ height: 4, background: 'var(--bg-card2)', borderRadius: 2, marginBottom: 8, overflow: 'hidden' }}>
+                          <div style={{ height: '100%', width: `${(preDone/preTotal)*100}%`, background: preDone===preTotal ? '#10b981' : '#f59e0b', transition: 'width 0.3s' }} />
+                        </div>
+                        {up.preSteps.map(s => (
+                          <div key={s.id} onClick={() => (isManager || status === 'upcoming') && toggleStep(up.id, 'preSteps', s.id)}
+                            style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '5px 0',
+                              cursor: isManager ? 'pointer' : 'default',
+                              borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                            <div style={{ width: 16, height: 16, borderRadius: 3, flexShrink: 0, marginTop: 1,
+                              background: s.done ? '#10b981' : 'transparent',
+                              border: `2px solid ${s.done ? '#10b981' : 'rgba(255,255,255,0.2)'}`,
+                              display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, color: '#fff' }}>
+                              {s.done ? '✓' : ''}
+                            </div>
+                            <div style={{ flex: 1 }}>
+                              <div style={{ fontSize: 12, color: s.done ? 'var(--text-muted)' : 'var(--text-secondary)',
+                                textDecoration: s.done ? 'line-through' : 'none' }}>{s.label}</div>
+                              {s.done && s.doneAt && (
+                                <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                                  ✓ {new Date(s.doneAt).toLocaleDateString('en-GB', { day:'numeric', month:'short' })} by {s.doneBy}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {stTotal > 0 && (
+                      <div style={{ flex: 1, minWidth: 200 }}>
+                        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.7, marginBottom: 6, display: 'flex', justifyContent: 'space-between' }}>
+                          <span>⚡ Steps</span>
+                          <span style={{ color: stDone === stTotal ? '#10b981' : '#38bdf8' }}>{stDone}/{stTotal}</span>
+                        </div>
+                        <div style={{ height: 4, background: 'var(--bg-card2)', borderRadius: 2, marginBottom: 8, overflow: 'hidden' }}>
+                          <div style={{ height: '100%', width: `${(stDone/stTotal)*100}%`, background: stDone===stTotal ? '#10b981' : '#38bdf8', transition: 'width 0.3s' }} />
+                        </div>
+                        {up.steps.map(s => (
+                          <div key={s.id} onClick={() => toggleStep(up.id, 'steps', s.id)}
+                            style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '5px 0',
+                              cursor: 'pointer',
+                              borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                            <div style={{ width: 16, height: 16, borderRadius: 3, flexShrink: 0, marginTop: 1,
+                              background: s.done ? '#10b981' : 'transparent',
+                              border: `2px solid ${s.done ? '#10b981' : 'rgba(255,255,255,0.2)'}`,
+                              display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, color: '#fff' }}>
+                              {s.done ? '✓' : ''}
+                            </div>
+                            <div style={{ flex: 1 }}>
+                              <div style={{ fontSize: 12, color: s.done ? 'var(--text-muted)' : 'var(--text-secondary)',
+                                textDecoration: s.done ? 'line-through' : 'none' }}>{s.label}</div>
+                              {s.done && s.doneAt && (
+                                <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                                  ✓ {new Date(s.doneAt).toLocaleDateString('en-GB', { day:'numeric', month:'short' })} by {s.doneBy}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* ── Log My Time (engineers when attending, managers always) ── */}
             {(iAmAttending || isManager) && (
               <div style={{ borderTop: '1px solid var(--border)', paddingTop: 12, marginTop: 4 }}>
@@ -767,6 +888,83 @@ export default function UpgradeDays({ users, upgrades, setUpgrades, isManager, c
           </div>
         );
       })}
+
+      {/* ── Pre-steps & Steps editor modal ── */}
+      {showStepsModal && isManager && (() => {
+        const renderList = (listKey, label, color) => {
+          const list = stepsForm[listKey];
+          const addItem = () => {
+            setStepsForm(f => ({
+              ...f,
+              [listKey]: [...f[listKey], { id: 's' + Date.now(), label: '', done: false, doneAt: null, doneBy: null }],
+            }));
+          };
+          const removeItem = (id) => setStepsForm(f => ({ ...f, [listKey]: f[listKey].filter(s => s.id !== id) }));
+          const updateLabel = (id, val) => setStepsForm(f => ({
+            ...f,
+            [listKey]: f[listKey].map(s => s.id === id ? { ...s, label: val } : s),
+          }));
+          const moveUp = (idx) => {
+            if (idx === 0) return;
+            setStepsForm(f => {
+              const arr = [...f[listKey]];
+              [arr[idx-1], arr[idx]] = [arr[idx], arr[idx-1]];
+              return { ...f, [listKey]: arr };
+            });
+          };
+          const moveDown = (idx) => {
+            setStepsForm(f => {
+              if (idx >= f[listKey].length - 1) return f;
+              const arr = [...f[listKey]];
+              [arr[idx], arr[idx+1]] = [arr[idx+1], arr[idx]];
+              return { ...f, [listKey]: arr };
+            });
+          };
+          return (
+            <div style={{ flex: 1, minWidth: 280 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color, textTransform: 'uppercase', letterSpacing: 0.7, marginBottom: 10 }}>
+                {label} ({list.length})
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {list.map((s, idx) => (
+                  <div key={s.id} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                      <button onClick={() => moveUp(idx)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 10, padding: '1px 3px' }}>▲</button>
+                      <button onClick={() => moveDown(idx)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 10, padding: '1px 3px' }}>▼</button>
+                    </div>
+                    <div style={{ width: 20, fontSize: 11, color: 'var(--text-muted)', textAlign: 'right', flexShrink: 0 }}>{idx + 1}.</div>
+                    <input
+                      className="input"
+                      style={{ flex: 1, fontSize: 12, padding: '6px 10px' }}
+                      placeholder={`Step ${idx + 1}…`}
+                      value={s.label}
+                      onChange={e => updateLabel(s.id, e.target.value)}
+                    />
+                    <button className="btn btn-danger btn-sm" onClick={() => removeItem(s.id)} style={{ padding: '4px 8px' }}>✕</button>
+                  </div>
+                ))}
+              </div>
+              <button className="btn btn-secondary btn-sm" style={{ marginTop: 10 }} onClick={addItem}>+ Add {label.replace(/🔧|⚡/g,'').trim()}</button>
+            </div>
+          );
+        };
+        return (
+          <Modal title="📋 Pre-steps &amp; Steps Schedule" onClose={() => setShowStepsModal(false)} wide>
+            <Alert type="info" style={{ marginBottom: 16 }}>
+              <strong>Pre-steps</strong> are tasks to complete before the upgrade begins (comms, backups, access checks).
+              <strong> Steps</strong> are the live upgrade run actions checked off during execution.
+            </Alert>
+            <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', marginBottom: 20 }}>
+              {renderList('preSteps', '🔧 Pre-steps', '#f59e0b')}
+              {renderList('steps',    '⚡ Steps',     '#38bdf8')}
+            </div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button className="btn btn-secondary" onClick={() => setShowStepsModal(false)}>Cancel</button>
+              <button className="btn btn-primary" onClick={saveSteps}>💾 Save Schedule</button>
+            </div>
+          </Modal>
+        );
+      })()}
 
       {/* ── Add / Edit Modal ─────────────────────────────────────────────── */}
       {showModal && isManager && (
