@@ -173,6 +173,40 @@ function isoWeek(date) {
   return Math.ceil((((d - jan1) / 86400000) + 1) / 7);
 }
 
+// ── Global OnCall rotation ────────────────────────────────────────────────────
+// From 7 Dec 2026 (W50), UK and France alternate Global OnCall coverage weekly.
+// W50 = UK 🇬🇧, W51 = France 🇫🇷, W52 = UK 🇬🇧, etc.
+const GLOBAL_ONCALL_START = '2026-12-07'; // Monday of W50 2026
+function getGlobalOnCallTeam(weekStartDate) {
+  // weekStartDate: Date object (Monday of the week)
+  const startMs = new Date(GLOBAL_ONCALL_START + 'T00:00:00').getTime();
+  const weekMs  = new Date(weekStartDate.toISOString().slice(0, 10) + 'T00:00:00').getTime();
+  if (weekMs < startMs) return null; // before rotation starts
+  const weeksDiff = Math.round((weekMs - startMs) / (7 * 24 * 60 * 60 * 1000));
+  return weeksDiff % 2 === 0 ? 'uk' : 'france';
+}
+
+function GlobalOnCallBanner({ weekStart }) {
+  const team = getGlobalOnCallTeam(weekStart);
+  if (!team) return null;
+  const isUK = team === 'uk';
+  return (
+    <div style={{
+      display: 'inline-flex', alignItems: 'center', gap: 5,
+      marginTop: 4,
+      background: isUK ? 'rgba(29,78,216,0.18)' : 'rgba(14,116,144,0.18)',
+      border: `1px solid ${isUK ? 'rgba(96,165,250,0.4)' : 'rgba(34,211,238,0.4)'}`,
+      borderRadius: 5, padding: '2px 8px',
+      fontSize: 10, fontWeight: 700,
+      color: isUK ? '#93c5fd' : '#67e8f9',
+      letterSpacing: 0.3,
+    }}>
+      <span style={{ fontSize: 13 }}>{isUK ? '🇬🇧' : '🇫🇷'}</span>
+      <span>{isUK ? 'UK' : 'France'} Global OnCall</span>
+    </div>
+  );
+}
+
 // ── StatCard ─────────────────────────────────────────────────────────────────
 function StatCard({ label, value, sub, accent, icon, onClick }) {
   return (
@@ -1427,7 +1461,10 @@ function RotaContent({
         if (viewMode==='hours') {
           return (
             <div key={wi} className="card mb-12">
-              <div className="card-title" style={{ fontSize:12, color:'#64748b', marginBottom:10 }}>Week of {weekDateStr} <span style={{ color:'#475569', fontFamily:'DM Mono' }}>W{weekNum}</span></div>
+              <div style={{ marginBottom:10 }}>
+                <div className="card-title" style={{ fontSize:12, color:'#64748b', marginBottom:2 }}>Week of {weekDateStr} <span style={{ color:'#475569', fontFamily:'DM Mono' }}>W{weekNum}</span></div>
+                <GlobalOnCallBanner weekStart={ws} />
+              </div>
               <div style={{ display:'flex', marginLeft:100, marginBottom:2 }}>
                 {hourCols.map(h=>(
                   <div key={h} style={{ flex:1, textAlign:'center', fontSize:7, color:'rgba(255,255,255,0.3)', fontFamily:'DM Mono', borderRight:h<23?'1px solid rgba(255,255,255,0.04)':'none' }}>
@@ -1504,6 +1541,7 @@ function RotaContent({
           <div key={wi} className="card mb-12" style={{ padding:0, overflow:'hidden' }}>
             <div style={{ padding:'12px 16px 8px' }}>
               <div className="card-title" style={{ fontSize:12, color:'#64748b' }}>Week of {weekDateStr} <span style={{ color:'#475569', fontFamily:'DM Mono' }}>W{weekNum}</span></div>
+              <GlobalOnCallBanner weekStart={ws} />
             </div>
             <div style={{ overflowX:'auto' }}>
             <table style={{ width:'100%', borderCollapse:'separate', borderSpacing:0, tableLayout:'fixed' }}>
