@@ -767,22 +767,6 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
     }
   }, [exportLogs, driveToken, isManager, cycleStart, cycleEnd]); // eslint-disable-line
 
-  // ── Engineer self-service view (non-managers) ─────────────────────────────
-  if (!isManager) {
-    const me = (users || []).find(u => u.id === currentUser);
-    if (!me) return <Alert type="warning">⚠ Your profile was not found. Contact MBA47.</Alert>;
-
-    return <EngineerPayrollView
-      user={me}
-      getUserData={getUserData}
-      allCycles={allCycles}
-      cycleStart={cycleStart}
-      cycleEnd={cycleEnd}
-      toil={safeToil}
-      timesheets={safeTS}
-    />;
-  }
-
   // ── Per-user helpers ──────────────────────────────────────────────────────
   const getUserData = (u, startDs, endDs) => {
     const p      = safePay[u.id] || { base: 2500 };
@@ -1537,6 +1521,21 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
   const viewCycleLabel = `${fmtD(viewCycleStart)} – ${fmtD(viewCycleEnd)}`;
 
   const tabIcons = { overview: '📋', oncall: '🌙', takehome: '💷', adjustments: '✏️', log: '📁', reports: '📊' };
+
+  // ── Engineer self-service view (non-managers) — after all hooks & helpers ──
+  if (!isManager) {
+    const me = (users || []).find(u => u.id === currentUser);
+    if (!me) return <Alert type="warning">⚠ Your profile was not found. Contact MBA47.</Alert>;
+    return <EngineerPayrollView
+      user={me}
+      getUserData={getUserData}
+      allCycles={allCycles}
+      cycleStart={cycleStart}
+      cycleEnd={cycleEnd}
+      toil={safeToil}
+      timesheets={safeTS}
+    />;
+  }
 
   return (
     <div>
