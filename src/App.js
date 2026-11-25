@@ -1056,7 +1056,7 @@ const NAV = [
     { id: 'reports',   icon: '📋', label: 'Weekly Reports', managerOnly: true },
   ]},
   { section: 'Finance', items: [
-    { id: 'payroll',   icon: '💷', label: 'Payroll',        managerOnly: true },
+    { id: 'payroll',   icon: '💷', label: 'Payroll' },
     { id: 'payconfig', icon: '⚙', label: 'Pay Config',     managerOnly: true },
   ]},
   { section: 'Account', items: [
