@@ -516,8 +516,183 @@ function calcUKTax(grossAnnual, { pensionPct = 0, studentLoan = false } = {}) {
   };
 }
 
+// ── Engineer self-service payroll view ───────────────────────────────────────
+// Shows the logged-in engineer their own hours, cycle by cycle. No other
+// engineers are visible. Read-only — no export, no adjustments.
+function EngineerPayrollView({ user, getUserData, allCycles, cycleStart, cycleEnd, toil, timesheets }) {
+  const [viewCycleStart, setViewCycleStart] = useState(cycleStart);
+  const [viewCycleEnd,   setViewCycleEnd]   = useState(cycleEnd);
+
+  const fmtD  = ds => ds ? new Date(ds + 'T12:00:00').toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}) : '—';
+  const fmtM  = ds => ds ? new Date(ds + 'T12:00:00').toLocaleDateString('en-GB',{month:'long',year:'numeric'}) : '—';
+
+  // Current cycle data
+  const { oc, tb, incHrs, upgradeHrs, bankHolHrs, overtimeHrs } = getUserData(user, viewCycleStart, viewCycleEnd);
+
+  // Month-by-month breakdown: each calendar month within the selected cycle
+  const monthRows = (() => {
+    if (!viewCycleStart || !viewCycleEnd) return [];
+    const rows = [];
+    const [sy, sm] = viewCycleStart.split('-').map(Number);
+    const [ey, em] = viewCycleEnd.split('-').map(Number);
+    let y = sy, m = sm;
+    while (y < ey || (y === ey && m <= em)) {
+      const mStart = `${y}-${String(m).padStart(2,'0')}-01`;
+      const mEnd   = new Date(y, m, 0).toISOString().slice(0,10); // last day of month
+      // clamp to cycle window
+      const rangeStart = mStart < viewCycleStart ? viewCycleStart : mStart;
+      const rangeEnd   = mEnd   > viewCycleEnd   ? viewCycleEnd   : mEnd;
+      const d = getUserData(user, rangeStart, rangeEnd);
+      rows.push({ label: fmtM(mStart), oc: d.oc, incHrs: d.incHrs, upgradeHrs: d.upgradeHrs, bankHolHrs: d.bankHolHrs, overtimeHrs: d.overtimeHrs });
+      m++; if (m > 12) { m = 1; y++; }
+    }
+    return rows;
+  })();
+
+  const Cell = ({ v, color }) => (
+    <td style={{ fontFamily:'DM Mono', fontSize:12, color: v > 0 ? color : 'var(--text-muted)', textAlign:'right', padding:'8px 10px' }}>
+      {v > 0 ? `${v}h` : '–'}
+    </td>
+  );
+
+  const totalStandby = (oc.standbyWD||0) + (oc.standbyWE||0) + (bankHolHrs||0);
+  const totalWorked  = (incHrs||0) + (upgradeHrs||0) + (overtimeHrs||0);
+
+  return (
+    <div>
+      <PageHeader
+        title="My Hours"
+        sub={`${user.name} · ${user.id} · Your on-call hours by payroll cycle`}
+      />
+
+      {/* Cycle selector */}
+      <div className="card mb-16">
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:10 }}>
+          <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+            <div className="card-title" style={{ marginBottom:0 }}>Payroll Cycle</div>
+            <div style={{ fontSize:11, color:'var(--text-muted)', fontFamily:'DM Mono', background:'rgba(0,194,255,0.07)', border:'1px solid rgba(0,194,255,0.15)', borderRadius:5, padding:'2px 8px' }}>
+              {fmtD(viewCycleStart)} – {fmtD(viewCycleEnd)}
+            </div>
+          </div>
+          <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+            <label style={{ fontSize:11, color:'var(--text-muted)', fontFamily:'DM Mono' }}>Select cycle:</label>
+            <select className="input" style={{ fontSize:12, padding:'5px 10px', minWidth:260, fontFamily:'DM Mono' }}
+              value={viewCycleStart}
+              onChange={e => {
+                const c = allCycles.find(c => c.start === e.target.value);
+                if (c) { setViewCycleStart(c.start); setViewCycleEnd(c.end); }
+              }}>
+              {allCycles.map(c => (
+                <option key={c.start} value={c.start}>
+                  {c.start === cycleStart ? '▶ ' : ''}{c.label}
+                </option>
+              ))}
+            </select>
+            {viewCycleStart !== cycleStart && (
+              <button className="btn btn-secondary btn-sm" onClick={() => { setViewCycleStart(cycleStart); setViewCycleEnd(cycleEnd); }}>
+                ↩ Current
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Summary KPI strip */}
+        <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(130px,1fr))', gap:10, marginTop:16 }}>
+          {[
+            { label:'Standby WD', value:`${oc.standbyWD||0}h`, color:'#93c5fd' },
+            { label:'Standby WE', value:`${oc.standbyWE||0}h`, color:'#a78bfa' },
+            { label:'Bank Hol',   value: bankHolHrs > 0 ? `${bankHolHrs}h` : '–', color:'#fca5a5' },
+            { label:'Incidents',  value: incHrs > 0 ? `${incHrs}h` : '–', color:'#f59e0b' },
+            { label:'Upgrades',   value: upgradeHrs > 0 ? `${upgradeHrs}h` : '–', color:'#818cf8' },
+            { label:'Overtime',   value: overtimeHrs > 0 ? `${overtimeHrs}h` : '–', color:'#e879f9' },
+            { label:'TOIL Bal.',  value: `${tb.balance >= 0 ? '+' : ''}${Math.round(tb.balance * 10)/10}h`, color: tb.balance >= 0 ? '#6ee7b7' : '#fca5a5' },
+          ].map(({ label, value, color }) => (
+            <div key={label} style={{ background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.08)', borderRadius:8, padding:'10px 12px' }}>
+              <div style={{ fontSize:10, color:'var(--text-muted)', fontWeight:600, textTransform:'uppercase', letterSpacing:0.5, marginBottom:4 }}>{label}</div>
+              <div style={{ fontSize:18, fontWeight:800, fontFamily:'DM Mono', color }}>{value}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Totals summary line */}
+        <div style={{ marginTop:12, padding:'10px 14px', background:'rgba(255,255,255,0.03)', borderRadius:8, border:'1px solid rgba(255,255,255,0.07)', fontSize:12, color:'var(--text-muted)', display:'flex', gap:20, flexWrap:'wrap' }}>
+          <span>Total standby: <strong style={{ color:'#93c5fd', fontFamily:'DM Mono' }}>{totalStandby}h</strong></span>
+          <span>Total worked: <strong style={{ color:'#6ee7b7', fontFamily:'DM Mono' }}>{totalWorked}h</strong></span>
+          <span style={{ marginLeft:'auto', fontSize:11 }}>📋 Contact MBA47 if any figures look incorrect</span>
+        </div>
+      </div>
+
+      {/* Month-by-month table */}
+      {monthRows.length > 1 && (
+        <div className="card mb-16" style={{ overflowX:'auto' }}>
+          <div className="card-title">Monthly Breakdown</div>
+          <table style={{ width:'100%', minWidth:700, tableLayout:'fixed' }}>
+            <colgroup>
+              <col style={{ width:160 }} />
+              <col /><col /><col /><col /><col /><col /><col />
+            </colgroup>
+            <thead>
+              <tr>
+                <th style={{ textAlign:'left', padding:'6px 10px', fontSize:11 }}>Month</th>
+                <th style={{ textAlign:'right', color:'#93c5fd', padding:'6px 10px', fontSize:11 }}>Standby WD</th>
+                <th style={{ textAlign:'right', color:'#a78bfa', padding:'6px 10px', fontSize:11 }}>Standby WE</th>
+                <th style={{ textAlign:'right', color:'#fca5a5', padding:'6px 10px', fontSize:11 }}>Bank Hol</th>
+                <th style={{ textAlign:'right', color:'#f59e0b', padding:'6px 10px', fontSize:11 }}>Incidents</th>
+                <th style={{ textAlign:'right', color:'#818cf8', padding:'6px 10px', fontSize:11 }}>Upgrades</th>
+                <th style={{ textAlign:'right', color:'#e879f9', padding:'6px 10px', fontSize:11 }}>Overtime</th>
+                <th style={{ textAlign:'right', color:'#6ee7b7', padding:'6px 10px', fontSize:11 }}>Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {monthRows.map((row, i) => {
+                const total = (row.oc.standbyWD||0) + (row.oc.standbyWE||0) + (row.bankHolHrs||0) + (row.incHrs||0) + (row.upgradeHrs||0) + (row.overtimeHrs||0);
+                return (
+                  <tr key={i} style={{ background: i%2===0 ? 'rgba(255,255,255,0.015)' : 'transparent' }}>
+                    <td style={{ fontSize:12, padding:'8px 10px', fontWeight:600 }}>{row.label}</td>
+                    <Cell v={row.oc.standbyWD||0}  color="#93c5fd" />
+                    <Cell v={row.oc.standbyWE||0}  color="#a78bfa" />
+                    <Cell v={row.bankHolHrs||0}    color="#fca5a5" />
+                    <Cell v={row.incHrs||0}        color="#f59e0b" />
+                    <Cell v={row.upgradeHrs||0}    color="#818cf8" />
+                    <Cell v={row.overtimeHrs||0}   color="#e879f9" />
+                    <td style={{ fontFamily:'DM Mono', fontSize:12, color: total > 0 ? '#6ee7b7' : 'var(--text-muted)', textAlign:'right', fontWeight:700, padding:'8px 10px' }}>
+                      {total > 0 ? `${Math.round(total*10)/10}h` : '–'}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* TOIL balance card */}
+      <div className="card mb-16">
+        <div className="card-title">TOIL Balance</div>
+        <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(130px,1fr))', gap:10 }}>
+          {[
+            { label:'Auto-accrued',  value:`${Math.round(tb.autoToil*10)/10}h`,    color:'#6ee7b7' },
+            { label:'Manual accrued', value:`${Math.round(tb.manualAccrued*10)/10}h`, color:'#6ee7b7' },
+            { label:'Total accrued', value:`${Math.round(tb.total*10)/10}h`,        color:'#6ee7b7' },
+            { label:'Used',          value:`${Math.round(tb.used*10)/10}h`,         color:'#fca5a5' },
+            { label:'Balance',       value:`${tb.balance >= 0 ? '+' : ''}${Math.round(tb.balance*10)/10}h`, color: tb.balance >= 0 ? '#6ee7b7' : '#fca5a5' },
+          ].map(({ label, value, color }) => (
+            <div key={label} style={{ background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.08)', borderRadius:8, padding:'10px 12px' }}>
+              <div style={{ fontSize:10, color:'var(--text-muted)', fontWeight:600, textTransform:'uppercase', letterSpacing:0.5, marginBottom:4 }}>{label}</div>
+              <div style={{ fontSize:18, fontWeight:800, fontFamily:'DM Mono', color }}>{value}</div>
+            </div>
+          ))}
+        </div>
+        <p style={{ fontSize:11, color:'var(--text-muted)', marginTop:10, marginBottom:0 }}>
+          TOIL auto-accrues at 1:1 from worked on-call hours. Contact MBA47 to book or query TOIL.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 // ── Payroll (Manager only) ─────────────────────────────────────────────────
-function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents, upgrades, rota, holidays, isManager, overtime: overtimeArr, driveToken, payrollAdjustments, setPayrollAdjustments, goToIncidents, appSettings }) {
+function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents, upgrades, rota, holidays, isManager, currentUser, overtime: overtimeArr, driveToken, payrollAdjustments, setPayrollAdjustments, goToIncidents, appSettings }) {
   const [tab,         setTab]         = useState('overview');  // 'overview' | 'takehome' | 'log' | 'reports' | 'adjustments'
   const [showExport, setShowExport]   = useState(false);
   const [exporting,   setExporting]   = useState(false);
@@ -592,8 +767,21 @@ function Payroll({ users, timesheets, setTimesheets, payconfig, toil, incidents,
     }
   }, [exportLogs, driveToken, isManager, cycleStart, cycleEnd]); // eslint-disable-line
 
-  // Guard AFTER all hooks
-  if (!isManager) return <Alert type="warning">⚠ Payroll is restricted to managers.</Alert>;
+  // ── Engineer self-service view (non-managers) ─────────────────────────────
+  if (!isManager) {
+    const me = (users || []).find(u => u.id === currentUser);
+    if (!me) return <Alert type="warning">⚠ Your profile was not found. Contact MBA47.</Alert>;
+
+    return <EngineerPayrollView
+      user={me}
+      getUserData={getUserData}
+      allCycles={allCycles}
+      cycleStart={cycleStart}
+      cycleEnd={cycleEnd}
+      toil={safeToil}
+      timesheets={safeTS}
+    />;
+  }
 
   // ── Per-user helpers ──────────────────────────────────────────────────────
   const getUserData = (u, startDs, endDs) => {
