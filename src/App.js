@@ -5198,7 +5198,7 @@ export default function App() {
       case 'swaps':      return <ShiftSwaps {...props} driveToken={driveToken} />;
       case 'upgrades':   return <UpgradeDays {...props} timesheets={timesheets} setTimesheets={setTimesheets} />;
       case 'stress':     return <StressScore {...props} overtime={overtime} holidays={holidays} />;
-      case 'toil':       return <TOIL users={users} timesheets={timesheets} toil={toil} setToil={setToil} currentUser={currentUser} isManager={isManager} />;
+      case 'toil':       return <TOIL users={users} timesheets={timesheets} toil={toil} setToil={setToil} currentUser={currentUser} isManager={isManager} upgrades={upgrades} />;
       case 'absence':    return <Absence {...props} driveToken={driveToken} />;
       case 'overtime':   return <Overtime {...props} overtime={overtime} setOvertime={setOvertime} driveToken={driveToken} />;
       case 'logbook':    return <Logbook {...props} />;
