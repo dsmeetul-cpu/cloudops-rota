@@ -127,44 +127,102 @@ function MiniBar({ values, color = T.accent, height = 28 }) {
   );
 }
 
+// ── TOIL carryover rule ───────────────────────────────────────────────────────
+// • TOIL accrued Jan–Nov resets each year (does NOT carry over).
+// • TOIL accrued in December carries over into the following year.
+// • Active window = 1 Dec of the PREVIOUS year → today.
+//   Anything with a date before that cutoff is expired and ignored.
+function toilAccrualCutoff() {
+  const now  = new Date();
+  const year = now.getMonth() === 11 ? now.getFullYear() : now.getFullYear() - 1;
+  // 1 Dec of that year
+  return `${year}-12-01`;
+}
+
 // ── TOIL balance calculator ───────────────────────────────────────────────────
 // TOIL accrues ONLY from:
-//   • INC timesheet entries (worked_wd + worked_we on incident rows)
-//   • upgradeHrs passed in from the upgrades array
+//   • INC timesheet entries (worked_wd + worked_we on incident rows, filtered by e.date)
+//   • upgradeEntries array (each has .date and .engineerTimes)
 // Standby WD/WE hours do NOT generate TOIL.
-function calcTOILBalance(timesheetEntries, toilEntries, userId, upgradeHrs = 0) {
-  const ts   = Array.isArray(timesheetEntries) ? timesheetEntries : [];
-  const toil = Array.isArray(toilEntries)      ? toilEntries      : Object.values(toilEntries || {});
+// upgradeEntries: raw upgrades array (pre-filtered or full — filtered here by date & engineerId)
+function calcTOILBalance(timesheetEntries, toilEntries, userId, upgradeEntries = []) {
+  const ts     = Array.isArray(timesheetEntries) ? timesheetEntries : [];
+  const toil   = Array.isArray(toilEntries)      ? toilEntries      : Object.values(toilEntries || {});
+  const cutoff = toilAccrualCutoff(); // e.g. "2025-12-01"
 
-  // Only INC-keyed timesheet rows count as "worked on-call" for TOIL purposes
+  // ── Incident hours (INC rows within active window) ─────────────────────────
   const incidentWorked = ts
-    .filter(t => t.week && t.week.startsWith('INC'))
+    .filter(t => t.week && t.week.startsWith('INC') && (t.date || '') >= cutoff)
     .reduce((a, t) => a + (t.worked_wd || 0) + (t.worked_we || 0), 0);
 
-  const workedOC = Math.round((incidentWorked + (upgradeHrs || 0)) * 10) / 10;
-  const autoToil = workedOC;
+  // ── Upgrade hours (approved, within active window) ─────────────────────────
+  const upgradeWorked = (Array.isArray(upgradeEntries) ? upgradeEntries : [])
+    .filter(up => (up.date || '') >= cutoff)
+    .reduce((a, up) => {
+      const et = (up.engineerTimes || []).find(e => e.engineerId === userId && e.approved);
+      return a + (et ? (+et.hours || 0) : 0);
+    }, 0);
 
+  // ── Manual TOIL entries (manager-added, within active window) ──────────────
   const manualAccrued = toil
-    .filter(t => t.userId === userId && t.type === 'Accrued' && t.status === 'approved')
+    .filter(t => t.userId === userId && t.type === 'Accrued' && t.status === 'approved' && (t.date || '') >= cutoff)
     .reduce((a, t) => a + (+t.hours || 0), 0);
 
+  // ── Used TOIL (within active window) ──────────────────────────────────────
   const used = toil
-    .filter(t => t.userId === userId && t.type === 'Used' && t.status === 'approved')
+    .filter(t => t.userId === userId && t.type === 'Used' && t.status === 'approved' && (t.date || '') >= cutoff)
     .reduce((a, t) => a + (+t.hours || 0), 0);
 
+  // ── Expired TOIL (accrued before cutoff — for breakdown display only) ──────
+  const expiredIncWorked = ts
+    .filter(t => t.week && t.week.startsWith('INC') && (t.date || '') < cutoff)
+    .reduce((a, t) => a + (t.worked_wd || 0) + (t.worked_we || 0), 0);
+  const expiredUpgradeWorked = (Array.isArray(upgradeEntries) ? upgradeEntries : [])
+    .filter(up => (up.date || '') < cutoff)
+    .reduce((a, up) => {
+      const et = (up.engineerTimes || []).find(e => e.engineerId === userId && e.approved);
+      return a + (et ? (+et.hours || 0) : 0);
+    }, 0);
+  const expiredManual = toil
+    .filter(t => t.userId === userId && t.type === 'Accrued' && t.status === 'approved' && (t.date || '') < cutoff)
+    .reduce((a, t) => a + (+t.hours || 0), 0);
+  const expiredTotal = Math.round((expiredIncWorked + expiredUpgradeWorked + expiredManual) * 10) / 10;
+
+  const autoToil     = incidentWorked + upgradeWorked;
   const totalAccrued = autoToil + manualAccrued;
-  // No carryover cap — only floor at zero.
-  const balance = Math.max(totalAccrued - used, 0);
+  const balance      = Math.max(totalAccrued - used, 0);
+
+  // ── December carry-over: accrued in Dec of previous year ──────────────────
+  // cutoff is "YYYY-12-01"; Dec of that year = YYYY-12
+  const decYear  = cutoff.slice(0, 4); // e.g. "2025"
+  const decStart = `${decYear}-12-01`;
+  const decEnd   = `${decYear}-12-31`;
+  const decInc = ts
+    .filter(t => t.week && t.week.startsWith('INC') && (t.date || '') >= decStart && (t.date || '') <= decEnd)
+    .reduce((a, t) => a + (t.worked_wd || 0) + (t.worked_we || 0), 0);
+  const decUpg = (Array.isArray(upgradeEntries) ? upgradeEntries : [])
+    .filter(up => (up.date || '') >= decStart && (up.date || '') <= decEnd)
+    .reduce((a, up) => {
+      const et = (up.engineerTimes || []).find(e => e.engineerId === userId && e.approved);
+      return a + (et ? (+et.hours || 0) : 0);
+    }, 0);
+  const decManual = toil
+    .filter(t => t.userId === userId && t.type === 'Accrued' && t.status === 'approved' && (t.date || '') >= decStart && (t.date || '') <= decEnd)
+    .reduce((a, t) => a + (+t.hours || 0), 0);
+  const decCarryover = Math.round((decInc + decUpg + decManual) * 10) / 10;
 
   return {
-    workedOC:      Math.round(workedOC               * 10) / 10,
-    incidentWorked:Math.round(incidentWorked          * 10) / 10,
-    upgradeWorked: Math.round((upgradeHrs || 0)       * 10) / 10,
-    autoToil:      Math.round(autoToil               * 10) / 10,
-    manualAccrued: Math.round(manualAccrued          * 10) / 10,
-    used:          Math.round(used                   * 10) / 10,
-    totalAccrued:  Math.round(totalAccrued           * 10) / 10,
-    balance:       Math.round(balance                * 10) / 10,
+    cutoff,
+    workedOC:       Math.round((incidentWorked + upgradeWorked) * 10) / 10,
+    incidentWorked: Math.round(incidentWorked  * 10) / 10,
+    upgradeWorked:  Math.round(upgradeWorked   * 10) / 10,
+    autoToil:       Math.round(autoToil        * 10) / 10,
+    manualAccrued:  Math.round(manualAccrued   * 10) / 10,
+    used:           Math.round(used            * 10) / 10,
+    totalAccrued:   Math.round(totalAccrued    * 10) / 10,
+    balance:        Math.round(balance         * 10) / 10,
+    expiredTotal,
+    decCarryover,
   };
 }
 
@@ -314,13 +372,7 @@ export default function TOIL({ users, timesheets, toil, setToil, currentUser, is
   // ── Pre-compute all balances ────────────────────────────────────────────────
   const allBalances = useMemo(() =>
     visibleUsers.map(u => {
-      // Sum all approved upgrade hours for this user (lifetime — TOIL has no carryover cap)
-      // Upgrades use up.engineerTimes: [{ engineerId, approved, hours }]
-      const userUpgradeHrs = safeUpgrades.reduce((a, up) => {
-        const et = (up.engineerTimes || []).find(e => e.engineerId === u.id && e.approved);
-        return a + (et ? (+et.hours || 0) : 0);
-      }, 0);
-      return { u, b: calcTOILBalance(safeTimesheets[u.id], safeToil, u.id, userUpgradeHrs) };
+      return { u, b: calcTOILBalance(safeTimesheets[u.id], safeToil, u.id, safeUpgrades) };
     }),
     [visibleUsers, safeTimesheets, safeToil, safeUpgrades]
   );
@@ -578,19 +630,50 @@ export default function TOIL({ users, timesheets, toil, setToil, currentUser, is
                 {/* Expanded detail */}
                 {isExpanded && (
                   <div style={{ padding: '10px 18px 14px', borderTop: `1px solid ${T.border}`, background: 'rgba(0,0,0,0.15)' }}>
-                    <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 8 }}>Accrual breakdown</div>
-                    <div style={{ fontSize: 12, color: T.textSec, marginBottom: 4, fontFamily: T.mono }}>
+
+                    {/* Carryover policy notice */}
+                    <div style={{ fontSize: 10, color: T.textMuted, marginBottom: 10, background: 'rgba(255,255,255,0.03)', borderRadius: 6, padding: '6px 10px', lineHeight: 1.5 }}>
+                      📅 Active window: <span style={{ color: T.accent, fontFamily: T.mono }}>1 Dec {b.cutoff.slice(0,4)}</span> → today
+                      &nbsp;·&nbsp; Dec accrual carries over · Jan–Nov resets annually
+                    </div>
+
+                    {/* Current window accrual */}
+                    <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 6, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.4px' }}>This period</div>
+                    <div style={{ fontSize: 12, color: T.textSec, marginBottom: 3, fontFamily: T.mono }}>
                       🚨 {b.incidentWorked}h incidents → {b.incidentWorked}h TOIL
                     </div>
-                    <div style={{ fontSize: 12, color: T.textSec, marginBottom: 4, fontFamily: T.mono }}>
+                    <div style={{ fontSize: 12, color: T.textSec, marginBottom: 3, fontFamily: T.mono }}>
                       🔧 {b.upgradeWorked}h upgrades → {b.upgradeWorked}h TOIL
                     </div>
-                    <div style={{ fontSize: 12, color: T.textSec, marginBottom: 10, fontFamily: T.mono }}>
-                      ✏️ {b.manualAccrued}h manually added by manager
+                    <div style={{ fontSize: 12, color: T.textSec, marginBottom: 3, fontFamily: T.mono }}>
+                      ✏️ {b.manualAccrued}h manually added
                     </div>
+                    <div style={{ fontSize: 12, color: T.amber, marginBottom: 3, fontFamily: T.mono }}>
+                      📤 {b.used}h used
+                    </div>
+
+                    {/* Dec carryover */}
+                    {b.decCarryover > 0 && (
+                      <div style={{ fontSize: 12, color: '#a78bfa', marginBottom: 3, fontFamily: T.mono }}>
+                        🎄 {b.decCarryover}h carried from Dec {b.cutoff.slice(0,4)}
+                      </div>
+                    )}
+
+                    {/* Expired */}
+                    {b.expiredTotal > 0 && (
+                      <div style={{ fontSize: 12, color: T.textMuted, marginBottom: 3, fontFamily: T.mono, textDecoration: 'line-through' }}>
+                        ✖ {b.expiredTotal}h expired (pre {b.cutoff.slice(0,4)}-12-01)
+                      </div>
+                    )}
+
+                    <div style={{ borderTop: `1px solid ${T.border}`, marginTop: 8, paddingTop: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontSize: 11, color: T.textMuted }}>Net balance</span>
+                      <span style={{ fontSize: 15, fontWeight: 800, color, fontFamily: T.mono }}>{b.balance}h</span>
+                    </div>
+
                     {isManager && (
                       <button onClick={() => openManual({ userId: u.id })}
-                        style={{ width: '100%', padding: '6px 0', background: T.bgCard2, border: `1px solid ${T.border}`, borderRadius: 7, color: T.textSec, fontSize: 11, cursor: 'pointer', fontWeight: 700 }}>
+                        style={{ width: '100%', marginTop: 10, padding: '6px 0', background: T.bgCard2, border: `1px solid ${T.border}`, borderRadius: 7, color: T.textSec, fontSize: 11, cursor: 'pointer', fontWeight: 700 }}>
                         + Add Entry for {u.name.split(' ')[0]}
                       </button>
                     )}
@@ -901,12 +984,18 @@ export default function TOIL({ users, timesheets, toil, setToil, currentUser, is
           {/* ── Detailed data table ────────────────────────────────────────── */}
           <div style={{ background: T.bgCard2, border: `1px solid ${T.border}`, borderRadius: 12, padding: '18px 20px' }}>
             <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>Engineer Detail Table</div>
-            <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 14 }}>Full TOIL breakdown per engineer</div>
+            <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 4 }}>Full TOIL breakdown per engineer · active window only</div>
+            {allBalances[0] && (
+              <div style={{ fontSize: 11, color: T.accent, marginBottom: 14, fontFamily: T.mono }}>
+                📅 Active window: 1 Dec {allBalances[0].b.cutoff.slice(0,4)} → today
+                &nbsp;·&nbsp; <span style={{ color: T.textMuted }}>Dec accrual carries over · Jan–Nov resets annually</span>
+              </div>
+            )}
             <div style={{ overflowX: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                 <thead>
                   <tr style={{ background: 'rgba(255,255,255,0.04)' }}>
-                    {['Engineer', 'Worked OC', 'Auto TOIL', 'Manual', 'Total Accrued', 'Used', 'Balance', 'Status'].map(h => (
+                    {['Engineer', 'Incidents', 'Upgrades', 'Manual', 'Total Accrued', 'Used', 'Dec Carryover', 'Expired', 'Balance', 'Status'].map(h => (
                       <th key={h} style={{ padding: '8px 12px', borderBottom: `1px solid ${T.border}`, fontSize: 10, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.5px', textAlign: h === 'Engineer' ? 'left' : 'right', whiteSpace: 'nowrap' }}>{h}</th>
                     ))}
                   </tr>
@@ -926,9 +1015,13 @@ export default function TOIL({ users, timesheets, toil, setToil, currentUser, is
                             </div>
                           </div>
                         </td>
-                        {[b.workedOC, b.autoToil, b.manualAccrued, b.totalAccrued, b.used].map((v, i) => (
-                          <td key={i} style={{ padding: '9px 12px', textAlign: 'right', fontFamily: T.mono, fontSize: 12, color: T.textSec }}>{v}h</td>
-                        ))}
+                        <td style={{ padding: '9px 12px', textAlign: 'right', fontFamily: T.mono, fontSize: 12, color: '#fca5a5' }}>{b.incidentWorked}h</td>
+                        <td style={{ padding: '9px 12px', textAlign: 'right', fontFamily: T.mono, fontSize: 12, color: '#6ee7b7' }}>{b.upgradeWorked}h</td>
+                        <td style={{ padding: '9px 12px', textAlign: 'right', fontFamily: T.mono, fontSize: 12, color: '#93c5fd' }}>{b.manualAccrued}h</td>
+                        <td style={{ padding: '9px 12px', textAlign: 'right', fontFamily: T.mono, fontSize: 12, color: T.textSec }}>{b.totalAccrued}h</td>
+                        <td style={{ padding: '9px 12px', textAlign: 'right', fontFamily: T.mono, fontSize: 12, color: T.amber }}>{b.used}h</td>
+                        <td style={{ padding: '9px 12px', textAlign: 'right', fontFamily: T.mono, fontSize: 12, color: '#a78bfa' }}>{b.decCarryover > 0 ? `${b.decCarryover}h` : '—'}</td>
+                        <td style={{ padding: '9px 12px', textAlign: 'right', fontFamily: T.mono, fontSize: 12, color: T.textMuted }}>{b.expiredTotal > 0 ? <span style={{ textDecoration: 'line-through' }}>{b.expiredTotal}h</span> : '—'}</td>
                         <td style={{ padding: '9px 12px', textAlign: 'right', fontFamily: T.mono, fontSize: 13, color, fontWeight: 800 }}>{b.balance}h</td>
                         <td style={{ padding: '9px 12px', textAlign: 'right' }}>
                           <span style={{ fontSize: 10, color: status.c, fontWeight: 700, background: `${status.c}18`, padding: '2px 8px', borderRadius: 4 }}>{status.l}</span>
