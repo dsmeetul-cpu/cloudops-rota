@@ -128,12 +128,21 @@ function MiniBar({ values, color = T.accent, height = 28 }) {
 }
 
 // ── TOIL balance calculator ───────────────────────────────────────────────────
-function calcTOILBalance(timesheetEntries, toilEntries, userId) {
+// TOIL accrues ONLY from:
+//   • INC timesheet entries (worked_wd + worked_we on incident rows)
+//   • upgradeHrs passed in from the upgrades array
+// Standby WD/WE hours do NOT generate TOIL.
+function calcTOILBalance(timesheetEntries, toilEntries, userId, upgradeHrs = 0) {
   const ts   = Array.isArray(timesheetEntries) ? timesheetEntries : [];
   const toil = Array.isArray(toilEntries)      ? toilEntries      : Object.values(toilEntries || {});
 
-  const workedOC = ts.reduce((a, t) => a + (t.worked_wd || 0) + (t.worked_we || 0), 0);
-  const autoToil = Math.round(workedOC * 10) / 10;
+  // Only INC-keyed timesheet rows count as "worked on-call" for TOIL purposes
+  const incidentWorked = ts
+    .filter(t => t.week && t.week.startsWith('INC'))
+    .reduce((a, t) => a + (t.worked_wd || 0) + (t.worked_we || 0), 0);
+
+  const workedOC = Math.round((incidentWorked + (upgradeHrs || 0)) * 10) / 10;
+  const autoToil = workedOC;
 
   const manualAccrued = toil
     .filter(t => t.userId === userId && t.type === 'Accrued' && t.status === 'approved')
@@ -148,12 +157,14 @@ function calcTOILBalance(timesheetEntries, toilEntries, userId) {
   const balance = Math.max(totalAccrued - used, 0);
 
   return {
-    workedOC:      Math.round(workedOC      * 10) / 10,
-    autoToil:      Math.round(autoToil      * 10) / 10,
-    manualAccrued: Math.round(manualAccrued * 10) / 10,
-    used:          Math.round(used          * 10) / 10,
-    totalAccrued:  Math.round(totalAccrued  * 10) / 10,
-    balance:       Math.round(balance       * 10) / 10,
+    workedOC:      Math.round(workedOC               * 10) / 10,
+    incidentWorked:Math.round(incidentWorked          * 10) / 10,
+    upgradeWorked: Math.round((upgradeHrs || 0)       * 10) / 10,
+    autoToil:      Math.round(autoToil               * 10) / 10,
+    manualAccrued: Math.round(manualAccrued          * 10) / 10,
+    used:          Math.round(used                   * 10) / 10,
+    totalAccrued:  Math.round(totalAccrued           * 10) / 10,
+    balance:       Math.round(balance                * 10) / 10,
   };
 }
 
@@ -267,7 +278,7 @@ function EmptyState({ icon, msg, sub }) {
 }
 
 // ── Main export ───────────────────────────────────────────────────────────────
-export default function TOIL({ users, timesheets, toil, setToil, currentUser, isManager }) {
+export default function TOIL({ users, timesheets, toil, setToil, currentUser, isManager, upgrades }) {
   // Only MBA47 (Meetul Bhundia) may add, edit, or delete any TOIL entry.
   // All other users — including other managers if any — are read-only.
   const canAdmin = currentUser === 'MBA47';
@@ -293,6 +304,8 @@ export default function TOIL({ users, timesheets, toil, setToil, currentUser, is
   const [historySort,  setHistorySort]  = useState('date_desc');
   const [expandCard,   setExpandCard]   = useState(null); // userId
 
+  const safeUpgrades = useMemo(() => Array.isArray(upgrades) ? upgrades : [], [upgrades]);
+
   const visibleUsers = isManager ? users : users.filter(u => u.id === currentUser);
 
   const pendingRequests = safeToil.filter(t => t.status === 'pending');
@@ -300,8 +313,16 @@ export default function TOIL({ users, timesheets, toil, setToil, currentUser, is
 
   // ── Pre-compute all balances ────────────────────────────────────────────────
   const allBalances = useMemo(() =>
-    visibleUsers.map(u => ({ u, b: calcTOILBalance(safeTimesheets[u.id], safeToil, u.id) })),
-    [visibleUsers, safeTimesheets, safeToil]
+    visibleUsers.map(u => {
+      // Sum all approved upgrade hours for this user (lifetime — TOIL has no carryover cap)
+      // Upgrades use up.engineerTimes: [{ engineerId, approved, hours }]
+      const userUpgradeHrs = safeUpgrades.reduce((a, up) => {
+        const et = (up.engineerTimes || []).find(e => e.engineerId === u.id && e.approved);
+        return a + (et ? (+et.hours || 0) : 0);
+      }, 0);
+      return { u, b: calcTOILBalance(safeTimesheets[u.id], safeToil, u.id, userUpgradeHrs) };
+    }),
+    [visibleUsers, safeTimesheets, safeToil, safeUpgrades]
   );
 
   // ── Summary stats (manager dashboard) ──────────────────────────────────────
@@ -559,10 +580,13 @@ export default function TOIL({ users, timesheets, toil, setToil, currentUser, is
                   <div style={{ padding: '10px 18px 14px', borderTop: `1px solid ${T.border}`, background: 'rgba(0,0,0,0.15)' }}>
                     <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 8 }}>Accrual breakdown</div>
                     <div style={{ fontSize: 12, color: T.textSec, marginBottom: 4, fontFamily: T.mono }}>
-                      {b.workedOC}h worked on-call → {b.autoToil}h TOIL (1:1)
+                      🚨 {b.incidentWorked}h incidents → {b.incidentWorked}h TOIL
+                    </div>
+                    <div style={{ fontSize: 12, color: T.textSec, marginBottom: 4, fontFamily: T.mono }}>
+                      🔧 {b.upgradeWorked}h upgrades → {b.upgradeWorked}h TOIL
                     </div>
                     <div style={{ fontSize: 12, color: T.textSec, marginBottom: 10, fontFamily: T.mono }}>
-                      {b.manualAccrued}h manually added by manager
+                      ✏️ {b.manualAccrued}h manually added by manager
                     </div>
                     {isManager && (
                       <button onClick={() => openManual({ userId: u.id })}
